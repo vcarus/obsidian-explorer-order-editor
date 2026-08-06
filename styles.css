@@ -94,3 +94,9 @@
 	gap: var(--size-4-2);
 	margin-top: var(--size-4-4);
 }
+
+/* Action button inside a Notice fragment (e.g. "Open sortspec.md"). */
+.eoe-notice-action {
+	display: block;
+	margin-top: var(--size-4-2);
+}

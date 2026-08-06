@@ -434,3 +434,181 @@ export function removeFolderOrder(spec: ParsedSpec, targetRaw: string): Mutation
 	const newSections = spec.sections.filter((_, index) => !deleteIndices.has(index));
 	return { spec: { ...spec, sections: newSections }, status: 'removed', diagnostics: [] };
 }
+
+// ---------------------------------------------------------------------------
+// Decoding: the inverse of encodeEntry, for restoring a previously-saved
+// order when the modal reopens.
+// ---------------------------------------------------------------------------
+
+/** Aliases custom-sort accepts for the two type prefixes `encodeEntry` writes. */
+const FOLDER_PREFIXES: readonly string[] = ['/folders ', '/ '];
+const FILE_PREFIXES: readonly string[] = ['/:files ', '/: '];
+
+interface ParsedEntryLine {
+	readonly name: string;
+	readonly kind: EntryKind;
+	/**
+	 * True when `kind` came from an explicit `/folders `/`/ ` or `/:files
+	 * `/`/: ` prefix. False means the line was a bare, unprefixed name and
+	 * `kind` is only a default guess — `readFolderOrder` can override it once
+	 * it has the folder's real siblings to look the name up in.
+	 */
+	readonly explicit: boolean;
+}
+
+/**
+ * Classifies one line from a section's body. Returns `null` for anything
+ * that is not a plain item name: blank lines, `//` comments (including our
+ * own `AUTHORED_MARKER`), sorting/attribute instructions (`order-asc:`,
+ * `> a-z`, `< a-z`, `sorting:`, `with-metadata:`, `bookmarked:`,
+ * `with-icon:`, ... — shares `ATTRIBUTE_LEXEMES` with `encodeEntry` so the
+ * two stay in lockstep), bare catch-all tokens (`%`, `/%`, `/folders:files`,
+ * a bare `/:files`, a bare `/folders`, ... — shares `RESERVED_TOKENS`),
+ * anything indented (belongs to a custom-sort group, not this folder's own
+ * list), and anything containing `...` (wildcard, unevaluable, and never
+ * something `encodeEntry` would have written).
+ */
+function parseEntryLine(line: string): ParsedEntryLine | null {
+	if (line.length === 0) return null;
+	const first = line[0];
+	if (first === ' ' || first === '\t') return null; // indented -> belongs to a group, not this folder
+
+	const trimmed = line.trimEnd();
+	if (trimmed === '') return null; // blank
+	if (trimmed.startsWith('//')) return null; // comment, including AUTHORED_MARKER
+	if (trimmed.includes('...')) return null; // wildcard, anywhere, is never a literal name
+
+	for (const lexeme of ATTRIBUTE_LEXEMES) {
+		if (trimmed.startsWith(lexeme)) return null; // sorting/attribute instruction
+	}
+	if (RESERVED_TOKENS.has(trimmed)) return null; // bare catch-all token, nothing follows it
+
+	for (const prefix of FOLDER_PREFIXES) {
+		if (trimmed.startsWith(prefix)) {
+			return { name: trimmed.slice(prefix.length), kind: 'folder', explicit: true };
+		}
+	}
+	for (const prefix of FILE_PREFIXES) {
+		if (trimmed.startsWith(prefix)) {
+			return { name: trimmed.slice(prefix.length), kind: 'file', explicit: true };
+		}
+	}
+
+	// Bare, unprefixed name: kind is ambiguous from the text alone. Default
+	// to 'file' — readFolderOrder can do better once it knows the siblings.
+	return { name: trimmed, kind: 'file', explicit: false };
+}
+
+/**
+ * Decodes a single line from a section body into an `Entry`, or `null` if
+ * the line isn't a plain item name (see `parseEntryLine` for the exact
+ * exclusions). Standalone: with no sibling context, a bare unprefixed name
+ * always decodes as `kind: 'file'`. `readFolderOrder` shares the same
+ * classification internally but can do better by consulting the folder's
+ * actual current children.
+ */
+export function decodeEntryLine(line: string): Entry | null {
+	const parsed = parseEntryLine(line);
+	if (parsed === null) return null;
+	return { name: parsed.name, kind: parsed.kind };
+}
+
+function soleKind(kinds: ReadonlySet<EntryKind> | undefined): EntryKind | null {
+	if (kinds === undefined || kinds.size !== 1) return null;
+	for (const kind of kinds) return kind;
+	return null; // unreachable — size === 1 guarantees exactly one iteration
+}
+
+/**
+ * Reads back the order stored for `targetRaw`, the read-side counterpart to
+ * `upsertFolderOrder`. Finds the section whose target set is exactly this
+ * one resolved target — reusing `findMatches`, the same matching rule
+ * `upsertFolderOrder` uses — and decodes its body in order.
+ *
+ * `siblings` is the folder's actual current children (e.g. from
+ * `entriesFor`). It resolves the one thing `decodeEntryLine` can't on its
+ * own: a bare, unprefixed line. `encodeEntry` only omits the type prefix
+ * when the name doesn't collide with a same-named sibling of the other kind
+ * — so if exactly one kind of `siblings` entry has this name, that must be
+ * the kind that was written. This is why `readFolderOrder` takes a third
+ * `siblings` parameter instead of the two-arg form: without live sibling
+ * context, nothing in the text of a bare line distinguishes a folder named
+ * "Foo" from a file named "Foo", so the two-arg form cannot satisfy the
+ * round-trip property (`readFolderOrder(upsertFolderOrder(...).spec, T) ===
+ * entries`) for arbitrary entries.
+ *
+ * Returns `null` when there is no section whose target set is exactly
+ * `targetRaw`: no match, the match is folded into a multi-target section, or
+ * more than one single-target section matches (an ambiguous, hand-edited
+ * duplicate). The caller must not pretend to know a single order in any of
+ * those cases.
+ */
+export function readFolderOrder(
+	spec: ParsedSpec,
+	targetRaw: string,
+	siblings: readonly Entry[],
+): readonly Entry[] | null {
+	const target = normalizeTarget(targetRaw.trim(), spec.specFolder);
+	const matches = findMatches(spec, target.resolved);
+	if (matches.length !== 1) return null;
+	const match = matches[0];
+	if (match === undefined) return null;
+	if (match.section.targets.length > 1) return null; // multi-target: can't claim to know "the" order
+
+	const siblingIndex = buildNameIndex(siblings);
+	const body = match.section.rawLines.slice(1); // header is always rawLines[0] for a single-target section
+	const entries: Entry[] = [];
+	for (const line of body) {
+		const parsed = parseEntryLine(line);
+		if (parsed === null) continue;
+		const kind = parsed.explicit ? parsed.kind : (soleKind(siblingIndex.get(parsed.name)) ?? parsed.kind);
+		entries.push({ name: parsed.name, kind });
+	}
+	return entries;
+}
+
+// ---------------------------------------------------------------------------
+// Restoring a modal's row order: reconcile a previously-saved order against
+// the folder's actual current children.
+// ---------------------------------------------------------------------------
+
+function entryKey(entry: Entry): string {
+	return `${entry.kind} ${entry.name}`;
+}
+
+/**
+ * Reconciles a previously-saved order (`stored`, typically from
+ * `readFolderOrder`, or `null` if there was none) against the folder's
+ * actual current children (`siblings`, in the fallback order — see
+ * `entriesFor`).
+ *
+ * Stored entries that still exist keep their stored positions, in order.
+ * Children not mentioned in the stored order are appended afterwards in the
+ * fallback order. Stored entries whose files/folders no longer exist are
+ * dropped. Without this, reopening the modal on an already-ordered folder
+ * would show alphabetical order, and saving would silently destroy the
+ * existing order.
+ */
+export function mergeStoredOrder(stored: readonly Entry[] | null, siblings: readonly Entry[]): Entry[] {
+	if (stored === null) return [...siblings];
+
+	const siblingByKey = new Map(siblings.map((entry) => [entryKey(entry), entry] as const));
+	const seen = new Set<string>();
+	const merged: Entry[] = [];
+
+	for (const storedEntry of stored) {
+		const key = entryKey(storedEntry);
+		if (seen.has(key)) continue; // defensive: ignore a duplicate within the stored order itself
+		const live = siblingByKey.get(key);
+		if (live === undefined) continue; // no longer exists -> dropped
+		seen.add(key);
+		merged.push(live);
+	}
+	for (const sibling of siblings) {
+		const key = entryKey(sibling);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		merged.push(sibling);
+	}
+	return merged;
+}

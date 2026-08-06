@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { parseSortingSpec, serializeSortingSpec, upsertFolderOrder } from '../src/sortspec';
+import { parseSortingSpec, readFolderOrder, serializeSortingSpec, upsertFolderOrder } from '../src/sortspec';
 import { readSortingSpecValue, replaceSortingSpecInFile } from '../src/frontmatter';
 import type { Entry } from '../src/types';
 
@@ -76,5 +76,24 @@ describe('integration: generated sortspec.md', () => {
 		expect(out).toContain('title: my notes');
 		expect(out).toContain('body text');
 		expect(out).toContain('  target-folder: .\n  // explorer-order-editor\n  x\n');
+	});
+
+	it('restores a saved order through a full disk round trip, and re-saving is a no-op', () => {
+		// Deliberately not alphabetical: this is the case where falling back to
+		// the default ordering would silently destroy what the user arranged.
+		const saved: Entry[] = [
+			{ name: 'Zebra', kind: 'file' },
+			{ name: 'beta', kind: 'folder' },
+			{ name: 'Apple', kind: 'file' },
+			{ name: 'alpha', kind: 'folder' },
+		];
+		const file = write('', '.', 'Notes', saved);
+
+		const read = readSortingSpecValue(file, deps);
+		expect(read.status).toBe('ok');
+		const spec = parseSortingSpec(read.status === 'ok' ? read.value : '', 'Notes');
+
+		expect(readFolderOrder(spec, '.', saved)).toEqual(saved);
+		expect(write(file, '.', 'Notes', saved)).toBe(file);
 	});
 });
