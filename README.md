@@ -13,10 +13,22 @@ which has no right-click menu of its own) to open a dialog listing that
 folder's direct children. Drag them into the order you want and hit **Save**.
 The order is written into a `sortspec.md` file inside that same folder.
 
-**Clear explorer order** (also a command and a context menu item, shown only
-when there is a saved order to remove) undoes this: it deletes what this
-plugin wrote for that folder, cleaning up the now-unneeded `sorting-spec`
-key, the front matter block, or the whole file, as each becomes empty.
+**Clear explorer order** in the same context menu undoes this — it appears
+only when there is a saved order to remove. It deletes what this plugin
+wrote for that folder, cleaning up the now-unneeded `sorting-spec` key, the
+front matter block, or the whole file, as each becomes empty. The vault root
+has its own **Clear explorer order for vault root** command, for the same
+reason the root needs a command to set an order in the first place.
+
+An order applies to **one folder only**. It does not cascade into
+subfolders: ordering `Projects` rearranges the items directly inside it,
+while `Projects/Client A` keeps sorting the way it did until you give that
+folder its own order. This also means ordering the vault root only
+rearranges top-level items. There is nothing to cascade — a manual order is
+a list of specific names, and those names don't exist in the folders below.
+
+The dialog works on mobile as well as desktop; drag a row by its grip
+handle, using a long press on touch.
 
 ## The dependency on Custom File Explorer sorting
 
@@ -68,15 +80,25 @@ A few things worth knowing about this format:
   everything, only what you want to pin.
 - `sortspec.md` never lists itself: it's the file doing the listing.
 - The `// explorer-order-editor` marker line identifies a section this
-  plugin wrote. Sections without it are left alone — if you already have a
-  hand-written `sorting-spec` section for a folder, saving from this plugin
-  for the same folder will warn you before replacing it, and **Clear
-  explorer order** will never touch it at all.
+  plugin wrote, and it is what keeps hand-written configuration safe.
+  **Clear explorer order** can only ever delete a marked section, so it
+  cannot remove something you wrote yourself. Saving is less conservative:
+  if a folder already has a hand-written `sorting-spec` section of its own,
+  saving replaces it and the notice afterwards tells you it did. Back up
+  anything you would not want overwritten before saving over it.
+- If `sortspec.md` contains a section covering this folder *together with
+  others* (a multi-folder `target-folder:` section), saving is refused
+  outright rather than rewriting it, since editing it here would silently
+  change the other folders too.
 - Only the `sorting-spec` front matter key and the file's own existence are
   ever touched. Any other front matter keys, and any body text below the
   front matter, are left byte-for-byte untouched.
 
 ## Settings
+
+The settings tab opens with a status row showing whether `custom-sort` was
+detected. If it wasn't, you also get a notice when Obsidian starts, since
+without it nothing you do here has a visible effect.
 
 - **Automatically refresh after saving** (on by default) — re-run
   `custom-sort`'s refresh command after a save or a clear. When off, a
@@ -92,11 +114,17 @@ A few things worth knowing about this format:
 
 ## Known limitations
 
-- Names containing `...` (anywhere) or a backslash can't be represented in
-  `custom-sort`'s syntax — `...` is its wildcard marker and there's no escape
-  mechanism. Such items are greyed out in the dialog with a tooltip
-  explaining why, and if you save anyway, everything else still saves; the
-  notice afterward names what was skipped.
+- Some names can't be represented in `custom-sort`'s syntax at all, because
+  it has no escape mechanism: names containing `...` anywhere (its wildcard
+  marker), names containing a backslash, and names with leading or trailing
+  whitespace (every line is trimmed when parsed). Such items are greyed out
+  in the dialog with a tooltip explaining why; saving still works for
+  everything else, and the notice afterwards names what was skipped. Skipped
+  items simply sort to the end, like anything else that isn't listed.
+  Names that merely *start* with one of `custom-sort`'s reserved tokens —
+  `%`, `/`, `<`, `>`, `//` and friends — are fine: they get written with an
+  explicit `/folders ` or `/:files ` prefix, which is also how a folder and
+  a note sharing one name are told apart.
 - `custom-sort` also reads a folder note (`FolderName/FolderName.md`, if one
   exists) as a sorting spec for that same folder. If that note has its own
   `sorting-spec` targeting the folder it lives in, it's a second,
@@ -143,12 +171,14 @@ automatically. `custom-sort` is pre-installed in the same vault under
 ### Source layout
 
 ```
-src/sortspec.ts       Pure functions: parse/serialize/upsert/remove the sorting-spec value, name encoding. Zero imports.
-src/frontmatter.ts     Pure functions: locating and splicing the sorting-spec key in a file's front matter.
-src/sortspecFile.ts    The only module that imports `obsidian`: TFolder -> entries, reading/writing sortspec.md, triggering custom-sort.
-src/OrderModal.ts       The drag-and-drop dialog.
-src/settings.ts         The settings tab.
-src/main.ts              Plugin entry point: commands, the context menu, lifecycle.
+src/types.ts         Entry / EntryKind — the vocabulary shared by the pure layer and the UI.
+src/sortspec.ts      Pure: parse/serialize/upsert/remove the sorting-spec value, plus name encoding and decoding.
+src/frontmatter.ts   Pure: locating and splicing the sorting-spec key within a file's front matter.
+src/sortspecFile.ts  The only module importing `obsidian` for data access: TFolder to entries, reading and
+                     writing sortspec.md, triggering custom-sort.
+src/OrderModal.ts    The drag-and-drop dialog.
+src/settings.ts      The settings tab.
+src/main.ts          Plugin entry point: commands, the context menu, lifecycle.
 ```
 
 `sortspec.ts` and `frontmatter.ts` have no dependency on the `obsidian`
