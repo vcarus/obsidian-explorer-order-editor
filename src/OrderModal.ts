@@ -37,8 +37,10 @@ const ICON_WARNING = 'lucide-triangle-alert';
 interface OrderRow {
 	readonly entry: Entry;
 	/**
-	 * Reason this entry can't be expressed in sorting-spec syntax, if any.
-	 * A defined value greys the row out and surfaces this text as a tooltip.
+	 * Reason this entry can't be expressed in sorting-spec syntax, if any. A
+	 * defined value routes the row into the non-sortable "unorderable"
+	 * region (greyed out, no drag handle) and surfaces this text as a
+	 * tooltip; `undefined` keeps it in the draggable list.
 	 */
 	readonly disabledReason?: string;
 }
@@ -47,6 +49,13 @@ export class OrderModal extends Modal {
 	private listEl: HTMLElement | null = null;
 	private sortable: Sortable | null = null;
 	private readonly entryByRowEl = new Map<HTMLElement, Entry>();
+	/**
+	 * Entries that can't be represented in custom-sort's syntax, in the order
+	 * they're rendered in the (non-sortable) second region. Not draggable, so
+	 * `collectOrderedEntries` can't recover them from DOM order the way it
+	 * does for `listEl`'s children — this is their fixed contribution instead.
+	 */
+	private unorderableEntries: readonly Entry[] = [];
 	private closed = false;
 	private saving = false;
 
@@ -91,44 +100,69 @@ export class OrderModal extends Modal {
 			disabledReason: this.computeDisabledReason(entry, index),
 		}));
 
-		const listEl = this.contentEl.createDiv({ cls: 'eoe-list' });
-		this.listEl = listEl;
+		// Split into two regions: only entries `encodeEntry` can actually
+		// represent get a sortable, draggable row — dragging an entry that
+		// can never be written to the spec (or dropping one below such an
+		// entry) would imply an ordering this plugin cannot deliver. See
+		// `collectOrderedEntries` for how the unorderable ones still make it
+		// into the saved result despite living outside the sortable list.
+		const orderableRows = rows.filter((row) => row.disabledReason === undefined);
+		const unorderableRows = rows.filter((row) => row.disabledReason !== undefined);
+		this.unorderableEntries = unorderableRows.map((row) => row.entry);
 
-		for (const row of rows) {
-			this.renderRow(listEl, row);
+		if (orderableRows.length > 0) {
+			const listEl = this.contentEl.createDiv({ cls: 'eoe-list' });
+			this.listEl = listEl;
+
+			for (const row of orderableRows) {
+				this.renderRow(listEl, row);
+			}
+
+			this.sortable = new Sortable(listEl, {
+				// Obsidian mobile is a WebView where native HTML5 drag events are
+				// unreliable, so we bypass them entirely — desktop and mobile
+				// both go through the same fallback path.
+				forceFallback: true,
+				// Only the grip element starts a drag; the rest of the row (and
+				// the modal itself) stays scrollable, including by touch.
+				handle: '.eoe-row-handle',
+				// Long-press to start a drag on touch so a swipe scrolls instead
+				// of immediately dragging. Desktop mouse users get no delay.
+				delay: 200,
+				delayOnTouchOnly: true,
+				// A few pixels of slop before a drag is recognized, so a tap
+				// isn't swallowed as an accidental drag.
+				fallbackTolerance: 5,
+				// The list is capped at 60vh and scrolls, so a folder with many
+				// children needs the dragged row to scroll the list when it nears
+				// an edge. SortableJS's auto-scroll does not engage on the fallback
+				// path unless forceAutoScrollFallback is set — and forceFallback
+				// above puts us on that path always, including on desktop.
+				scroll: true,
+				forceAutoScrollFallback: true,
+				scrollSensitivity: 60,
+				scrollSpeed: 12,
+				animation: 150,
+				ghostClass: 'eoe-row-ghost',
+				chosenClass: 'eoe-row-chosen',
+				dragClass: 'eoe-row-drag',
+			});
 		}
 
-		this.sortable = new Sortable(listEl, {
-			// Obsidian mobile is a WebView where native HTML5 drag events are
-			// unreliable, so we bypass them entirely — desktop and mobile
-			// both go through the same fallback path.
-			forceFallback: true,
-			// Only the grip element starts a drag; the rest of the row (and
-			// the modal itself) stays scrollable, including by touch.
-			handle: '.eoe-row-handle',
-			// Long-press to start a drag on touch so a swipe scrolls instead
-			// of immediately dragging. Desktop mouse users get no delay.
-			delay: 200,
-			delayOnTouchOnly: true,
-			// A few pixels of slop before a drag is recognized, so a tap
-			// isn't swallowed as an accidental drag.
-			fallbackTolerance: 5,
-			// The list is capped at 60vh and scrolls, so a folder with many
-			// children needs the dragged row to scroll the list when it nears
-			// an edge. SortableJS's auto-scroll does not engage on the fallback
-			// path unless forceAutoScrollFallback is set — and forceFallback
-			// above puts us on that path always, including on desktop.
-			scroll: true,
-			forceAutoScrollFallback: true,
-			scrollSensitivity: 60,
-			scrollSpeed: 12,
-			animation: 150,
-			ghostClass: 'eoe-row-ghost',
-			chosenClass: 'eoe-row-chosen',
-			dragClass: 'eoe-row-drag',
-		});
+		if (unorderableRows.length > 0) {
+			this.contentEl.createDiv({
+				cls: 'eoe-unorderable-note',
+				text: "These can't be ordered — custom file explorer sorting has no way to express their names. They always appear last.",
+			});
 
-		this.renderFooter();
+			const unorderableListEl = this.contentEl.createDiv({ cls: 'eoe-unorderable-list' });
+			for (const row of unorderableRows) {
+				this.renderRow(unorderableListEl, row);
+			}
+		}
+
+		// Nothing to drag into an order means nothing to save.
+		this.renderFooter(orderableRows.length > 0);
 	}
 
 	onClose(): void {
@@ -137,23 +171,30 @@ export class OrderModal extends Modal {
 		this.sortable = null;
 		this.listEl = null;
 		this.entryByRowEl.clear();
+		this.unorderableEntries = [];
 		this.contentEl.empty();
 	}
 
 	/**
-	 * Reads the on-screen order back into `Entry[]`, in the order the rows
-	 * currently appear after any dragging.
+	 * Reads the on-screen order back into `Entry[]`: the sortable rows in
+	 * their current on-screen order (after any dragging), followed by the
+	 * unorderable ones. The unorderable entries still need to reach
+	 * `upsertFolderOrder` even though they live outside the sortable list and
+	 * are never actually written — passing them through is what makes it emit
+	 * the `unrepresentable-entry` diagnostics the "Skipped N item(s)…" notice
+	 * depends on.
 	 */
 	private collectOrderedEntries(): Entry[] {
-		const listEl = this.listEl;
-		if (!listEl) return [];
-
 		const entries: Entry[] = [];
-		for (const child of Array.from(listEl.children)) {
-			if (!child.instanceOf(HTMLElement)) continue;
-			const entry = this.entryByRowEl.get(child);
-			if (entry) entries.push(entry);
+		const listEl = this.listEl;
+		if (listEl) {
+			for (const child of Array.from(listEl.children)) {
+				if (!child.instanceOf(HTMLElement)) continue;
+				const entry = this.entryByRowEl.get(child);
+				if (entry) entries.push(entry);
+			}
 		}
+		entries.push(...this.unorderableEntries);
 		return entries;
 	}
 
@@ -181,6 +222,13 @@ export class OrderModal extends Modal {
 		});
 	}
 
+	/**
+	 * Renders one row. A row with a `disabledReason` gets no drag handle at
+	 * all — not just a non-functional one — since these rows never sit in a
+	 * `Sortable`-managed container and dragging them would do nothing; a grip
+	 * that does nothing is the same false promise the disabled styling used
+	 * to make on its own.
+	 */
 	private renderRow(container: HTMLElement, row: OrderRow): void {
 		const rowEl = container.createDiv({ cls: 'eoe-row' });
 		this.entryByRowEl.set(rowEl, row.entry);
@@ -188,11 +236,11 @@ export class OrderModal extends Modal {
 		if (row.disabledReason !== undefined) {
 			rowEl.addClass('eoe-row-disabled');
 			setTooltip(rowEl, row.disabledReason);
+		} else {
+			const handle = rowEl.createDiv({ cls: 'eoe-row-handle' });
+			setIcon(handle, ICON_GRIP);
+			setTooltip(handle, 'Drag to reorder');
 		}
-
-		const handle = rowEl.createDiv({ cls: 'eoe-row-handle' });
-		setIcon(handle, ICON_GRIP);
-		setTooltip(handle, 'Drag to reorder');
 
 		const icon = rowEl.createDiv({ cls: 'eoe-row-icon' });
 		setIcon(icon, row.entry.kind === 'folder' ? ICON_FOLDER : ICON_FILE);
@@ -200,10 +248,13 @@ export class OrderModal extends Modal {
 		rowEl.createSpan({ cls: 'eoe-row-name', text: row.entry.name });
 	}
 
-	private renderFooter(): void {
+	/** `canSave` is false when every entry is unorderable — nothing dragged into an order, so nothing to offer saving. */
+	private renderFooter(canSave: boolean): void {
 		const footer = this.contentEl.createDiv({ cls: 'eoe-footer' });
 
 		new ButtonComponent(footer).setButtonText('Cancel').onClick(() => this.close());
+
+		if (!canSave) return;
 
 		const saveButton = new ButtonComponent(footer)
 			.setButtonText('Save')

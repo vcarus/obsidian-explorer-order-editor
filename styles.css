@@ -84,11 +84,14 @@
 
 .eoe-row-disabled {
 	opacity: 0.5;
+	cursor: not-allowed;
 }
 
-.eoe-row-disabled .eoe-row-handle,
-.eoe-row-disabled .eoe-row-name {
-	cursor: not-allowed;
+/* Unorderable rows aren't managed by SortableJS and have no drag handle, so
+   the hover highlight (which implies "you can act on this") is misleading —
+   suppress it back to the row's resting background. */
+.eoe-unorderable-list .eoe-row:hover {
+	background-color: var(--background-secondary);
 }
 
 /* SortableJS-driven states. The library manages the dynamic drag geometry
@@ -108,6 +111,32 @@
 .eoe-row-drag {
 	background-color: var(--background-primary);
 	box-shadow: var(--shadow-s);
+}
+
+/* The unorderable region: a short explanation followed by a static list of
+   entries custom-sort's syntax can't express. Not SortableJS-managed —
+   these rows can never be dragged, so there is nothing to configure here
+   beyond layout. A rule above the note visually separates it from the
+   sortable list above it; when there is no sortable list (every entry is
+   unorderable), the note is the first thing in the modal and needs no such
+   separator. */
+.eoe-unorderable-note {
+	margin-top: var(--size-4-4);
+	color: var(--text-muted);
+}
+
+.eoe-list + .eoe-unorderable-note {
+	padding-top: var(--size-4-3);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.eoe-unorderable-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+	max-height: 30vh;
+	margin-top: var(--size-4-2);
+	overflow-y: auto;
 }
 
 .eoe-footer {

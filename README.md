@@ -121,10 +121,11 @@ without it nothing you do here has a visible effect.
   word is itself one of `custom-sort`'s reserved prefix tokens (`%`, `/`,
   `/folders`, `/:files`, `--%`, `/!`, `/+` and their close relatives — see
   the "sorting group type" and priority/combine prefixes in `custom-sort`'s
-  own syntax). Such items are greyed out in the dialog with a tooltip
-  explaining why; saving still works for everything else, and the notice
-  afterwards names what was skipped. Skipped items simply sort to the end,
-  like anything else that isn't listed.
+  own syntax). Such items are listed separately in the dialog, below the
+  orderable ones, each with a tooltip explaining why; they aren't draggable,
+  since there's no order for them to take — they always sort to the end,
+  like anything else that isn't listed. Saving still works for everything
+  else, and the notice afterwards names what was skipped.
   Names that merely *start* with one of those tokens as a prefix of a longer
   word — `%Report`, `--dashes`, `<x` — are fine: they get written with an
   explicit `/folders ` or `/:files ` prefix, which is also how a folder and
