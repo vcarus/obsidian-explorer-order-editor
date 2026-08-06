@@ -122,3 +122,13 @@
 	display: block;
 	margin-top: var(--size-4-2);
 }
+
+/* Dependency status row in the settings tab. The missing state is a real
+   warning: nothing this plugin writes will be visible until it is resolved. */
+.eoe-dependency-missing .setting-item-description {
+	color: var(--text-warning);
+}
+
+.eoe-dependency-ok .setting-item-description {
+	color: var(--text-muted);
+}

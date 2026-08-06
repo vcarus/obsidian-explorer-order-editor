@@ -303,9 +303,25 @@ function waitForMetadataChange(app: App, file: TFile, timeoutMs: number): Promis
  * succeeded and should still be treated as a success; this only affects
  * whether the file explorer visibly reflects it.
  */
+/**
+ * Whether the custom-sort plugin is installed *and* enabled right now.
+ *
+ * Probed through the command registry rather than the plugin list: the
+ * command is the thing we actually need, so its presence is exactly the
+ * capability we care about, and unlike `app.plugins` it survives the plugin
+ * being installed-but-disabled without a separate check.
+ *
+ * Not meaningful during our own `onload` — plugin load order is not
+ * guaranteed, so custom-sort may not have registered its commands yet. Call
+ * it from `onLayoutReady` or later, or it will report a false negative.
+ */
+export function isCustomSortAvailable(app: App): boolean {
+	return CUSTOM_SORT_COMMAND_ID in app.commands.commands;
+}
+
 export async function refreshCustomSort(app: App, file: TFile): Promise<'triggered' | 'missing'> {
 	await waitForMetadataChange(app, file, METADATA_WAIT_TIMEOUT_MS);
-	if (!(CUSTOM_SORT_COMMAND_ID in app.commands.commands)) {
+	if (!isCustomSortAvailable(app)) {
 		return 'missing';
 	}
 	app.commands.executeCommandById(CUSTOM_SORT_COMMAND_ID);

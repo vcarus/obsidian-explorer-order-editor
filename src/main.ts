@@ -1,7 +1,13 @@
 import { Notice, Plugin, TFolder } from 'obsidian';
 import { OrderModal } from './OrderModal';
 import { DEFAULT_SETTINGS, ExplorerOrderEditorSettingTab, type ExplorerOrderEditorSettings } from './settings';
-import { clearFolderOrder, folderHasClearableOrder, refreshCustomSort, sortspecPathFor } from './sortspecFile';
+import {
+	clearFolderOrder,
+	folderHasClearableOrder,
+	isCustomSortAvailable,
+	refreshCustomSort,
+	sortspecPathFor,
+} from './sortspecFile';
 
 export default class ExplorerOrderEditorPlugin extends Plugin {
 	settings: ExplorerOrderEditorSettings = DEFAULT_SETTINGS;
@@ -9,6 +15,23 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.addSettingTab(new ExplorerOrderEditorSettingTab(this.app, this));
+
+		// This plugin only writes configuration; the custom-sort plugin is what
+		// actually reorders the file explorer. Without it everything here still
+		// works and sortspec.md is still written correctly, but nothing visibly
+		// changes — so say so up front rather than letting someone arrange a
+		// folder, save, and only then discover a piece is missing.
+		//
+		// Deferred to onLayoutReady because plugin load order is not guaranteed:
+		// checking during onload can run before custom-sort has registered its
+		// commands and report a false negative.
+		this.app.workspace.onLayoutReady(() => {
+			if (isCustomSortAvailable(this.app)) return;
+			new Notice(
+				'Explorer Order Editor: install and enable the custom file explorer sorting plugin to see your ordering applied. Orders you save are still written correctly without it.',
+				10000,
+			);
+		});
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {

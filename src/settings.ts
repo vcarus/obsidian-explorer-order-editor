@@ -5,7 +5,13 @@
  * plugin would write happily to a file custom-sort never looks at.
  */
 import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-import { refreshCustomSort, SORTSPEC_FILENAME, syncHideSetting, type HideSettingSyncResult } from './sortspecFile';
+import {
+	isCustomSortAvailable,
+	refreshCustomSort,
+	SORTSPEC_FILENAME,
+	syncHideSetting,
+	type HideSettingSyncResult,
+} from './sortspecFile';
 
 export interface ExplorerOrderEditorSettings {
 	/**
@@ -57,6 +63,19 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+
+		// Both settings below are about talking to custom-sort, and neither has
+		// any visible effect without it, so its status belongs above them
+		// rather than buried in a note at the bottom.
+		const available = isCustomSortAvailable(this.app);
+		new Setting(containerEl)
+			.setName('Custom file explorer sorting')
+			.setDesc(
+				available
+					? 'Detected. Orders you save here will be applied to the file explorer.'
+					: 'Not detected. Orders are still saved to sortspec.md correctly, but the file explorer will keep sorting alphabetically until this plugin is installed and enabled.',
+			)
+			.setClass(available ? 'eoe-dependency-ok' : 'eoe-dependency-missing');
 
 		new Setting(containerEl)
 			.setName('Automatically refresh after saving')
