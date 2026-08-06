@@ -22,12 +22,11 @@ export default defineConfig(
 			},
 			parserOptions: {
 				projectService: {
-					allowDefaultProject: [
-						'eslint.config.mts',
-						'manifest.json',
-						'vitest.config.ts',
-						'test/*.ts',
-					],
+					// Test files are covered by test/tsconfig.json, not by the
+					// default project: typescript-eslint hard-errors once more
+					// than 8 files fall through to it, so listing 'test/*.ts'
+					// here breaks as soon as the suite grows by one file.
+					allowDefaultProject: ['eslint.config.mts', 'manifest.json', 'vitest.config.ts'],
 				},
 				tsconfigRootDir: import.meta.dirname,
 				extraFileExtensions: ['.json'],
