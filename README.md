@@ -116,7 +116,8 @@ without it nothing you do here has a visible effect.
 
 - Some names can't be represented in `custom-sort`'s syntax at all, because
   it has no escape mechanism: names containing `...` anywhere (its wildcard
-  marker), names containing a backslash, names with leading or trailing
+  marker), names containing a backslash (in practice unreachable — Obsidian does not
+  index such files at all), names with leading or trailing
   whitespace (every line is trimmed when parsed), and names whose first
   word is itself one of `custom-sort`'s reserved prefix tokens (`%`, `/`,
   `/folders`, `/:files`, `--%`, `/!`, `/+` and their close relatives — see

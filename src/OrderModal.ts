@@ -349,8 +349,7 @@ export class OrderModal extends Modal {
 			message += ' Replaced a hand-written section for this folder.';
 		}
 		if (skipped.length > 0) {
-			const names = skipped.map((d) => `"${d.name}" (${describeUnencodableReason(d.reason)})`).join(', ');
-			message += ` Skipped ${skipped.length} item(s) that cannot be represented: ${names}.`;
+			message += ` ${describeSkipped(skipped)}`;
 		}
 		new Notice(message);
 
@@ -372,6 +371,60 @@ export class OrderModal extends Modal {
 		if (file === null) return;
 		await this.app.workspace.getLeaf(false).openFile(file);
 		this.close();
+	}
+}
+
+/**
+ * Groups skipped entries by reason rather than repeating the explanation
+ * once per name — with several items sharing a cause, the per-name form
+ * grew into a wall of identical clauses.
+ *
+ * Says where they end up, not just that they were skipped: they are still
+ * in the folder, they just cannot be given a position, so custom-sort's
+ * default puts them after everything that was listed.
+ */
+function describeSkipped(skipped: readonly { name: string; reason: UnencodableReason }[]): string {
+	const byReason = new Map<UnencodableReason, string[]>();
+	for (const { name, reason } of skipped) {
+		const names = byReason.get(reason);
+		if (names === undefined) {
+			byReason.set(reason, [name]);
+		} else {
+			names.push(name);
+		}
+	}
+
+	const clauses = [...byReason].map(
+		([reason, names]) => `${names.map((n) => `"${n}"`).join(', ')} — ${describeUnencodableCause(reason)}`,
+	);
+	const count = skipped.length === 1 ? '1 item' : `${skipped.length} items`;
+	return `${count} could not be given a position and will sort last: ${clauses.join('; ')}.`;
+}
+
+/**
+ * The same causes as `describeUnencodableReason`, phrased as noun phrases so
+ * they read correctly after a list of several names. The tooltip form is a
+ * verb phrase because it describes exactly one row.
+ *
+ * Note `backslash` is close to unreachable in practice: Obsidian does not
+ * index files whose name contains a backslash, so such a file never reaches
+ * `folder.children` and never gets this far. Kept because the encoder must
+ * still refuse the name if one ever does.
+ */
+function describeUnencodableCause(reason: UnencodableReason): string {
+	switch (reason) {
+		case 'empty':
+			return 'an empty name';
+		case 'whitespace':
+			return 'leading or trailing whitespace';
+		case 'newline':
+			return 'a line break';
+		case 'wildcard':
+			return "the wildcard sequence '...'";
+		case 'backslash':
+			return 'a backslash';
+		case 'reserved-token':
+			return 'a leading symbol reserved by the sorting syntax';
 	}
 }
 
