@@ -204,7 +204,7 @@ export function specTargets(spec: ParsedSpec, key: string): boolean {
 // Name encoding
 // ---------------------------------------------------------------------------
 
-export type UnencodableReason = 'empty' | 'whitespace' | 'newline' | 'wildcard' | 'backslash';
+export type UnencodableReason = 'empty' | 'whitespace' | 'newline' | 'wildcard' | 'backslash' | 'reserved-token';
 
 export type EncodeEntryResult =
 	| { readonly ok: true; readonly line: string }
@@ -222,6 +222,14 @@ export function buildNameIndex(siblings: readonly Entry[]): NameIndex {
 	return map;
 }
 
+// All 17 tokens custom-sort treats specially when one of them is the whole
+// remaining text or is immediately followed by a literal space at the start
+// of a sorting-group line (verified against the bundled `main.js`: its `co`
+// map — group type prefixes — plus its `ao` map — priority prefixes — plus
+// its `fi` array — the combine prefix). Also used unchanged by
+// `parseEntryLine` below to recognize bare catch-all directive lines on
+// decode; that recognition doesn't change here, only what `encodeEntry` does
+// when an entry's own name happens to start with one of them.
 const RESERVED_TOKENS: ReadonlySet<string> = new Set([
 	'/',
 	'/folders',
@@ -242,6 +250,40 @@ const RESERVED_TOKENS: ReadonlySet<string> = new Set([
 	'/+',
 ]);
 
+// Of the 17 tokens above, these 13 are custom-sort's *sorting group type*
+// prefixes — its `co` map. custom-sort allows exactly one per sorting-group
+// line; a second one anywhere it's recognized as a token is
+// `TooManyGroupTypePrefixes` (error 21) — the parser error from the bug this
+// file fixes ("/:files --% hidden" has two: the one we inject, and "--%").
+const GROUP_TYPE_PREFIX_TOKENS: readonly string[] = [
+	'/folders:files.',
+	'/%.',
+	'/:.',
+	'/:files.',
+	'/:',
+	'/:files',
+	'/',
+	'/folders',
+	'%',
+	'/folders:files',
+	'/%',
+	'--%',
+	'/--hide:',
+];
+
+// The remaining 4 reserved tokens are a different class: priority prefixes
+// (custom-sort's `ao` map — `/!`, `/!!`, `/!!!`) and the combine prefix
+// (`fi` — `/+`). Up to one of each may legitimately appear *before* a group
+// type prefix on the same line (that's their entire purpose) — but one
+// appearing *after* a group type prefix is a hard parse error too
+// (`PriorityPrefixAfterGroupTypePrefix` / `CombinePrefixAfterGroupTypePrefix`,
+// errors 22/23), and since our injected `/folders `/`/:files ` prefix is
+// itself a group type token, an entry whose own leading token is one of
+// these 4 always ends up positioned *after* it. So, like the 13 above,
+// prefixing cannot rescue these either.
+const PRIORITY_PREFIX_TOKENS: readonly string[] = ['/!', '/!!', '/!!!'];
+const COMBINE_PREFIX_TOKENS: readonly string[] = ['/+'];
+
 const ATTRIBUTE_LEXEMES: readonly string[] = [
 	'target-folder:',
 	'::::',
@@ -259,9 +301,100 @@ const ATTRIBUTE_LEXEMES: readonly string[] = [
 	// `/--hide: <exact name with ext>` filters that child out of the folder's
 	// rendered children before sorting even runs). We emit this ourselves
 	// (see `upsertFolderOrder`'s `hideNames` parameter) so it must round-trip
-	// as an instruction, never as a literal entry name.
+	// as an instruction, never as a literal entry name. Note `/--hide:` is
+	// *also* one of the 13 `GROUP_TYPE_PREFIX_TOKENS` above (custom-sort's
+	// `co` map serves double duty as its item-hide directive); this entry
+	// only ever matters for a name that starts with `/--hide:` immediately
+	// followed by more non-space text (e.g. `/--hide:foo`) — a name where
+	// `/--hide:` is the *entire* first token is caught by `RESERVED_TOKENS`
+	// before this list is even consulted.
 	'/--hide:',
 ];
+
+/**
+ * Mirrors the greedy, front-of-line prefix-stripping loop in custom-sort's
+ * own `parseSortingGroupSpec` (bundled `main.js`, feeding the
+ * `TooManyGroupTypePrefixes` / `PriorityPrefixAfterGroupTypePrefix` /
+ * `CombinePrefixAfterGroupTypePrefix` checks): repeatedly, from the front of
+ * the (trimmed) remaining string, it tries a priority prefix, then a combine
+ * prefix, then a group-type prefix; each match consumes exactly that token
+ * plus one following space, and the loop repeats on what's left, stopping
+ * the moment nothing matches at the current position. A token counts as
+ * matched only when it is the *entire* remaining string or is immediately
+ * followed by a literal space — a token stuck to more text with no space
+ * boundary is never recognized, mirroring custom-sort's own
+ * `r === g || r.startsWith(g + " ")` check exactly (a literal space, not
+ * general whitespace).
+ *
+ * Returns true iff that walk would see a second group-type prefix, a second
+ * priority prefix, a second combine prefix, or any priority/combine prefix
+ * positioned after a group-type prefix has already been seen — all hard
+ * parse errors that suspend the whole plugin, not just skip one line.
+ *
+ * What this does NOT catch: anything outside this specific loop —
+ * `ItemToHideExactNameWithExtRequired` (a bare `--%`/`/--hide:` group with
+ * nothing after it — unreachable here anyway, since a bare reserved token is
+ * already rejected by the `RESERVED_TOKENS` check in `encodeEntry` before a
+ * line is ever built), wildcard (`...`) handling (already rejected earlier
+ * in `encodeEntry`), or attribute/header-line misidentification (governed by
+ * `ATTRIBUTE_LEXEMES` and unrelated to this loop, per the source). It is
+ * also a static mirror of the *current* bundled parser: a future custom-sort
+ * version that adds new prefix tokens would need this list updated too.
+ *
+ * In practice, given `RESERVED_TOKENS` is checked up front, this function
+ * should never actually return true — the up-front check already excludes
+ * every name whose first token could trigger it. It's kept as an
+ * independent, from-scratch check on the literal line about to be emitted,
+ * so a mistake in the token classification above (or a future edit to
+ * `needsTypePrefix`) can't silently reintroduce the bug this file fixes.
+ */
+function misparsesAsMultipleGroupPrefixes(line: string): boolean {
+	let rest = line;
+	let groupTypeSeen = false;
+	let groupTypeCount = 0;
+	let priorityCount = 0;
+	let combineCount = 0;
+
+	for (;;) {
+		let matched = false;
+
+		for (const token of PRIORITY_PREFIX_TOKENS) {
+			if (rest === token || rest.startsWith(`${token} `)) {
+				if (groupTypeSeen) return true; // PriorityPrefixAfterGroupTypePrefix
+				priorityCount++;
+				if (priorityCount > 1) return true; // TooManyPriorityPrefixes
+				rest = rest.slice(token.length).trim();
+				matched = true;
+				break;
+			}
+		}
+		if (matched) continue;
+
+		for (const token of COMBINE_PREFIX_TOKENS) {
+			if (rest === token || rest.startsWith(`${token} `)) {
+				if (groupTypeSeen) return true; // CombinePrefixAfterGroupTypePrefix
+				combineCount++;
+				if (combineCount > 1) return true; // TooManyCombinePrefixes
+				rest = rest.slice(token.length).trim();
+				matched = true;
+				break;
+			}
+		}
+		if (matched) continue;
+
+		for (const token of GROUP_TYPE_PREFIX_TOKENS) {
+			if (rest === token || rest.startsWith(`${token} `)) {
+				groupTypeSeen = true;
+				groupTypeCount++;
+				if (groupTypeCount > 1) return true; // TooManyGroupTypePrefixes
+				rest = rest.slice(token.length).trim();
+				matched = true;
+				break;
+			}
+		}
+		if (!matched) return false;
+	}
+}
 
 function needsTypePrefix(entry: Entry, index: NameIndex): boolean {
 	const name = entry.name;
@@ -270,16 +403,12 @@ function needsTypePrefix(entry: Entry, index: NameIndex): boolean {
 	const kinds = index.get(name);
 	if (kinds !== undefined && kinds.size > 1) return true;
 
-	// 2. First space-delimited token is a reserved token.
-	const firstToken = name.split(/\s/)[0] ?? '';
-	if (RESERVED_TOKENS.has(firstToken)) return true;
-
-	// 3. Starts with an attribute lexeme.
+	// 2. Starts with an attribute lexeme.
 	for (const lexeme of ATTRIBUTE_LEXEMES) {
 		if (name.startsWith(lexeme)) return true;
 	}
 
-	// 4. Conservative catch-all.
+	// 3. Conservative catch-all.
 	const first = name[0];
 	if (first !== undefined && '/%<>:\\'.includes(first)) return true;
 	if (name.startsWith('--')) return true;
@@ -296,11 +425,24 @@ export function encodeEntry(entry: Entry, index: NameIndex): EncodeEntryResult {
 	if (name.includes('...')) return { ok: false, reason: 'wildcard' };
 	if (name.includes('\\')) return { ok: false, reason: 'backslash' };
 
-	if (needsTypePrefix(entry, index)) {
-		const prefix = entry.kind === 'folder' ? '/folders ' : '/:files ';
-		return { ok: true, line: `${prefix}${name}` };
-	}
-	return { ok: true, line: name };
+	// A leading group-type/priority/combine prefix token can never be
+	// neutralized by our own `/folders `/`/:files ` prefix: prefixing just
+	// gives custom-sort's parser a second one to find, which is a hard parse
+	// error that suspends the whole plugin (see `misparsesAsMultipleGroupPrefixes`
+	// and the token lists above for exactly why). Nothing rescues this —
+	// skip the entry rather than guess.
+	const firstToken = name.split(/\s/)[0] ?? '';
+	if (RESERVED_TOKENS.has(firstToken)) return { ok: false, reason: 'reserved-token' };
+
+	const line = needsTypePrefix(entry, index)
+		? `${entry.kind === 'folder' ? '/folders ' : '/:files '}${name}`
+		: name;
+
+	// Final whole-line sanity check on exactly what we are about to emit,
+	// independent of the token-classification reasoning above.
+	if (misparsesAsMultipleGroupPrefixes(line)) return { ok: false, reason: 'reserved-token' };
+
+	return { ok: true, line };
 }
 
 // ---------------------------------------------------------------------------

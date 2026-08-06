@@ -167,14 +167,41 @@ interface EncodeCase {
 	readonly expected: EncodeEntryResult;
 }
 
+// Every one of these 17 tokens, when it is the *entire* first
+// space-delimited word of a name, cannot be rescued by our own
+// `/folders `/`/:files ` prefix: custom-sort's `parseSortingGroupSpec`
+// recognizes the injected prefix as one group-type token, then recognizes
+// the name's own leading token as a second one (or, for the 4
+// priority/combine tokens, as one positioned illegally *after* a group-type
+// token) — a hard parse error that suspends the whole plugin. Verified by
+// tracing custom-sort's bundled `main.js` line by line for each token (see
+// `misparsesAsMultipleGroupPrefixes` in `src/sortspec.ts` for the mirrored
+// logic). This replaces what used to be the buggy expectation here: every
+// one of these previously expected `{ ok: true, line: '/:files ' + token }`,
+// which is exactly the shape of the reported bug (`/:files --% hidden`).
 const reservedTokenCases: EncodeCase[] = RESERVED_TOKENS.map((token) => ({
-	label: `reserved token ${JSON.stringify(token)}`,
+	label: `reserved token ${JSON.stringify(token)} (whole name)`,
 	name: token,
-	expected: { ok: true, line: `/:files ${token}` },
+	expected: { ok: false, reason: 'reserved-token' },
 }));
 
 const otherCases: EncodeCase[] = [
-	{ label: 'reserved token as first space-delimited token', name: '/folders rest of name', expected: { ok: true, line: '/:files /folders rest of name' } },
+	// Regression test for the exact reported bug: a file named "--% hidden"
+	// must be unrepresentable, never emitted as "/:files --% hidden" (which
+	// custom-sort rejects with "TooManyGroupTypePrefixes" and suspends).
+	{ label: 'regression: the exact reported bug ("--% hidden")', name: '--% hidden', expected: { ok: false, reason: 'reserved-token' } },
+	{ label: 'reserved token as first space-delimited token, with more text after', name: '/folders rest of name', expected: { ok: false, reason: 'reserved-token' } },
+	{ label: 'catch-all "%" as a real leading word, not just a leading character', name: '% catch all', expected: { ok: false, reason: 'reserved-token' } },
+	{
+		label: 'priority prefix "/!" as a leading word (would trigger PriorityPrefixAfterGroupTypePrefix if prefixed)',
+		name: '/! rest',
+		expected: { ok: false, reason: 'reserved-token' },
+	},
+	{
+		label: 'combine prefix "/+" as a leading word (would trigger CombinePrefixAfterGroupTypePrefix if prefixed)',
+		name: '/+ rest',
+		expected: { ok: false, reason: 'reserved-token' },
+	},
 	{ label: 'attribute lexeme target-folder:', name: 'target-folder: x', expected: { ok: true, line: '/:files target-folder: x' } },
 	{ label: 'attribute lexeme ::::', name: '::::x', expected: { ok: true, line: '/:files ::::x' } },
 	{ label: 'attribute lexeme <', name: '<x', expected: { ok: true, line: '/:files <x' } },
@@ -182,6 +209,7 @@ const otherCases: EncodeCase[] = [
 	{ label: 'catch-all %Report', name: '%Report', expected: { ok: true, line: '/:files %Report' } },
 	{ label: 'catch-all //comment shape', name: '//comment', expected: { ok: true, line: '/:files //comment' } },
 	{ label: 'catch-all --double-dash', name: '--x', expected: { ok: true, line: '/:files --x' } },
+	{ label: 'reserved token stuck to more text with no space boundary is safe', name: '/foldersXYZ', expected: { ok: true, line: '/:files /foldersXYZ' } },
 	{ label: 'ordinary name, no prefix needed', name: 'Meeting notes', expected: { ok: true, line: 'Meeting notes' } },
 	{ label: 'unrepresentable: empty', name: '', expected: { ok: false, reason: 'empty' } },
 	{ label: 'unrepresentable: whitespace (leading)', name: ' Foo', expected: { ok: false, reason: 'whitespace' } },
@@ -200,10 +228,30 @@ describe.each([...reservedTokenCases, ...otherCases])('encodeEntry: $label', ({ 
 	});
 });
 
+describe('encodeEntry: reserved-token reason applies regardless of entry kind', () => {
+	it.each(['--% hidden', '%', '/folders', '/!', '/+'])('%s: file and folder both unrepresentable', (name) => {
+		expect(encodeEntry(file(name), emptyIndex)).toEqual({ ok: false, reason: 'reserved-token' });
+		expect(encodeEntry(folder(name), emptyIndex)).toEqual({ ok: false, reason: 'reserved-token' });
+	});
+});
+
+describe('upsertFolderOrder never emits the buggy "/:files --% hidden" line for the reported case', () => {
+	it('skips the entry with a reserved-token diagnostic instead', () => {
+		const result = upsertFolderOrder(parseSortingSpec('', '/'), '.', [file('--% hidden')]);
+		expect(result.diagnostics).toEqual([{ kind: 'unrepresentable-entry', name: '--% hidden', reason: 'reserved-token' }]);
+		expect(serializeSortingSpec(result.spec)).not.toContain('--% hidden');
+		expect(serializeSortingSpec(result.spec)).toBe('target-folder: .\n// explorer-order-editor');
+	});
+});
+
 describe('encodeEntry output re-parses as an instruction and survives trim()', () => {
 	const representative = [
-		'/',
-		'/:files',
+		// Not "/" or "/:files" bare — those are now unrepresentable (see
+		// reservedTokenCases above). These exercise the same prefixed-line
+		// re-parse property for names that merely *start* with reserved
+		// punctuation, which is where prefixing genuinely applies.
+		'/slash-first',
+		'--dashes',
 		'target-folder: x',
 		'::::x',
 		'<x',

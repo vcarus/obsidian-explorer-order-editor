@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeEntryLine, parseSortingSpec, readFolderOrder, upsertFolderOrder } from '../src/sortspec';
+import { decodeEntryLine, parseSortingSpec, readFolderOrder, serializeSortingSpec, upsertFolderOrder } from '../src/sortspec';
 import type { Entry } from '../src/types';
 
 const SORTSPEC_FILENAME = 'sortspec.md';
@@ -119,7 +119,11 @@ describe('round trip: readFolderOrder(upsertFolderOrder(...)) === entries', () =
 		['empty folder', []],
 		['ordinary bare names, mixed kinds', [folder('Projects'), folder('Archive'), file('Welcome'), file('Todo')]],
 		['a folder and a file sharing a name (forces prefixes on both)', [file('Notes'), folder('Notes')]],
-		['a name that is itself a reserved token', [file('/folders'), folder('/:files')]],
+		// A name that is itself a reserved token (e.g. bare "/folders") is no
+		// longer representable at all -- see the dedicated describe block
+		// below ("reserved-token names are never written..."). It doesn't
+		// belong in this corpus list any more, since every entry here is
+		// expected to round-trip losslessly.
 		[
 			'names starting with attribute lexemes',
 			[file('target-folder: x'), file('::::x'), file('<x'), file('>x'), file('with-metadata: x'), file('sorting: x')],
@@ -134,7 +138,10 @@ describe('round trip: readFolderOrder(upsertFolderOrder(...)) === entries', () =
 				file('Notes'),
 				folder('Notes'),
 				file('target-folder: trap'),
-				file('/folders'),
+				// A near-miss on a reserved token -- starts with "/folders" but
+				// isn't the complete leading word, so it's still representable
+				// (unlike a bare "/folders", covered separately below).
+				file('/folders-ish'),
 				file('Ordinary name'),
 			],
 		],
@@ -149,11 +156,78 @@ describe('round trip: readFolderOrder(upsertFolderOrder(...)) === entries', () =
 	});
 });
 
+// ---------------------------------------------------------------------------
+// Reserved-token names (see encodeEntry's `reserved-token` reason in
+// src/sortspec.ts): a name whose first space-delimited word is itself one of
+// custom-sort's group-type/priority/combine prefix tokens can't be rescued
+// by our own `/folders `/`/:files ` prefix -- prefixing just gives
+// custom-sort's parser a second prefix token to find on the same line,
+// which is a hard parse error that suspends the whole plugin (not just this
+// line). upsertFolderOrder skips such entries instead of writing a line
+// that would trigger that; correspondingly, they can never round-trip
+// through readFolderOrder, because nothing was ever written for them.
+// ---------------------------------------------------------------------------
+
+describe('reserved-token names are never written, and so never round-trip', () => {
+	it('upsertFolderOrder skips them with a reserved-token diagnostic; readFolderOrder sees only the rest', () => {
+		const entries: readonly Entry[] = [file('/folders'), folder('/:files'), file('--% hidden'), file('Ordinary name')];
+		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
+		expect(written.diagnostics).toEqual([
+			{ kind: 'unrepresentable-entry', name: '/folders', reason: 'reserved-token' },
+			{ kind: 'unrepresentable-entry', name: '/:files', reason: 'reserved-token' },
+			{ kind: 'unrepresentable-entry', name: '--% hidden', reason: 'reserved-token' },
+		]);
+		expect(readFolderOrder(written.spec, '.', entries)).toEqual([file('Ordinary name')]);
+	});
+
+	it('the exact reported bug: "--% hidden" never appears in the written spec at all', () => {
+		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', [file('--% hidden')]);
+		expect(serializeSortingSpec(written.spec)).not.toContain('--%');
+	});
+});
+
 describe('round trip holds across the full encodeEntry test matrix from sortspec.test.ts', () => {
-	// Mirrors the reserved-token / attribute-lexeme / catch-all names exercised
-	// there, but driven through the real upsert+read pipeline instead of
-	// calling encodeEntry directly.
-	const names: readonly string[] = [
+	// Mirrors the attribute-lexeme / catch-all names exercised there, driven
+	// through the real upsert+read pipeline instead of calling encodeEntry
+	// directly. These are all representable, so a full round trip applies.
+	const representableNames: readonly string[] = [
+		// Reserved tokens stuck to more text with no space boundary are safe
+		// (the "/folders" here is a prefix of a longer word, not the whole
+		// first token) -- unlike the bare/word-boundary cases exercised in
+		// unrepresentableNames below.
+		'/foldersXYZ',
+		'target-folder: x',
+		'::::x',
+		'<x',
+		'with-metadata: x',
+		'%Report',
+		'//comment',
+		'--x',
+		'Meeting notes',
+	];
+
+	it.each(representableNames.map((n, i) => [i, n] as const))('file entry %i: %s', (_i, name) => {
+		const entries: readonly Entry[] = [file(name)];
+		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
+		expect(written.diagnostics).toEqual([]);
+		expect(readFolderOrder(written.spec, '.', entries)).toEqual(entries);
+	});
+
+	it.each(representableNames.map((n, i) => [i, n] as const))('folder entry %i: %s', (_i, name) => {
+		const entries: readonly Entry[] = [folder(name)];
+		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
+		expect(written.diagnostics).toEqual([]);
+		expect(readFolderOrder(written.spec, '.', entries)).toEqual(entries);
+	});
+
+	// The full 17-token reserved set, plus a reserved token followed by more
+	// text -- every one of these is unrepresentable (see
+	// `test/sortspec.test.ts`'s `reservedTokenCases`/`otherCases`). Included
+	// here, against the real upsert+read pipeline, as defence in depth: even
+	// though a name containing "/" (13 of these 17 tokens) can never occur in
+	// a real POSIX filename, custom-sort's own syntax doesn't know that, so
+	// they're covered anyway.
+	const unrepresentableNames: readonly string[] = [
 		'/',
 		'/folders',
 		'/:',
@@ -172,26 +246,20 @@ describe('round trip holds across the full encodeEntry test matrix from sortspec
 		'/!!!',
 		'/+',
 		'/folders rest of name',
-		'target-folder: x',
-		'::::x',
-		'<x',
-		'with-metadata: x',
-		'%Report',
-		'//comment',
-		'--x',
-		'Meeting notes',
 	];
 
-	it.each(names.map((n, i) => [i, n] as const))('file entry %i: %s', (_i, name) => {
+	it.each(unrepresentableNames.map((n, i) => [i, n] as const))('file entry %i: %s is skipped, not round-tripped', (_i, name) => {
 		const entries: readonly Entry[] = [file(name)];
 		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
-		expect(readFolderOrder(written.spec, '.', entries)).toEqual(entries);
+		expect(written.diagnostics).toEqual([{ kind: 'unrepresentable-entry', name, reason: 'reserved-token' }]);
+		expect(readFolderOrder(written.spec, '.', entries)).toEqual([]);
 	});
 
-	it.each(names.map((n, i) => [i, n] as const))('folder entry %i: %s', (_i, name) => {
+	it.each(unrepresentableNames.map((n, i) => [i, n] as const))('folder entry %i: %s is skipped, not round-tripped', (_i, name) => {
 		const entries: readonly Entry[] = [folder(name)];
 		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
-		expect(readFolderOrder(written.spec, '.', entries)).toEqual(entries);
+		expect(written.diagnostics).toEqual([{ kind: 'unrepresentable-entry', name, reason: 'reserved-token' }]);
+		expect(readFolderOrder(written.spec, '.', entries)).toEqual([]);
 	});
 });
 

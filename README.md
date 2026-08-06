@@ -116,15 +116,25 @@ without it nothing you do here has a visible effect.
 
 - Some names can't be represented in `custom-sort`'s syntax at all, because
   it has no escape mechanism: names containing `...` anywhere (its wildcard
-  marker), names containing a backslash, and names with leading or trailing
-  whitespace (every line is trimmed when parsed). Such items are greyed out
-  in the dialog with a tooltip explaining why; saving still works for
-  everything else, and the notice afterwards names what was skipped. Skipped
-  items simply sort to the end, like anything else that isn't listed.
-  Names that merely *start* with one of `custom-sort`'s reserved tokens —
-  `%`, `/`, `<`, `>`, `//` and friends — are fine: they get written with an
+  marker), names containing a backslash, names with leading or trailing
+  whitespace (every line is trimmed when parsed), and names whose first
+  word is itself one of `custom-sort`'s reserved prefix tokens (`%`, `/`,
+  `/folders`, `/:files`, `--%`, `/!`, `/+` and their close relatives — see
+  the "sorting group type" and priority/combine prefixes in `custom-sort`'s
+  own syntax). Such items are greyed out in the dialog with a tooltip
+  explaining why; saving still works for everything else, and the notice
+  afterwards names what was skipped. Skipped items simply sort to the end,
+  like anything else that isn't listed.
+  Names that merely *start* with one of those tokens as a prefix of a longer
+  word — `%Report`, `--dashes`, `<x` — are fine: they get written with an
   explicit `/folders ` or `/:files ` prefix, which is also how a folder and
-  a note sharing one name are told apart.
+  a note sharing one name are told apart. It's only when the reserved token
+  is a complete leading word (the whole name, or followed by a space) that
+  prefixing can't help: `/folders ` in front of a name that is itself, say,
+  `--% hidden` gives `custom-sort` two prefixes to recognize on one line,
+  which it rejects outright — and unlike a single unrepresentable item, that
+  specific failure suspends the whole plugin, dropping every folder's order
+  in the vault. So those names are skipped instead of guessed at.
 - `custom-sort` also reads a folder note (`FolderName/FolderName.md`, if one
   exists) as a sorting spec for that same folder. If that note has its own
   `sorting-spec` targeting the folder it lives in, it's a second,

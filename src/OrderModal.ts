@@ -336,6 +336,8 @@ function describeUnencodableReason(reason: UnencodableReason): string {
 			return "contains '...'";
 		case 'backslash':
 			return 'contains a backslash';
+		case 'reserved-token':
+			return 'starts with a symbol sequence reserved by the sorting syntax';
 	}
 }
 

@@ -28,7 +28,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => {
 			if (isCustomSortAvailable(this.app)) return;
 			new Notice(
-				'Explorer Order Editor: install and enable the custom file explorer sorting plugin to see your ordering applied. Orders you save are still written correctly without it.',
+				'Orders you save are written correctly, but the file explorer will keep sorting alphabetically until the custom file explorer sorting plugin is installed and enabled.',
 				10000,
 			);
 		});
