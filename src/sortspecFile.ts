@@ -4,12 +4,13 @@
  * read-modify-write of a folder's sortspec.md and (once written) pokes
  * custom-sort into picking the change up.
  *
- * `App.commands` is not part of Obsidian's public typed API (see CLAUDE.md's
- * "custom-sort 契约" section). The module augmentation below declares only
- * the slice we actually call — looking a command up by id and executing it
- * — right here, next to (and only next to) the code that uses it. The shape
- * has been stable across the plugin API's history; every community plugin
- * that pokes commands programmatically relies on the same two members.
+ * `App.commands` is not part of Obsidian's public typed API. The module
+ * augmentation below declares only the slice we actually call — looking a
+ * command up by id and executing it — right here, next to (and only next
+ * to) the code that uses it, rather than casting to `any` at each call site.
+ * The shape has been stable across the plugin API's history; every community
+ * plugin that pokes commands programmatically relies on the same two
+ * members.
  */
 import { App, normalizePath, parseYaml, TFile, TFolder, type Command } from 'obsidian';
 import { readSortingSpecValue, removeSortingSpecFromFile, replaceSortingSpecInFile, SORTING_SPEC_KEY, type FrontMatterDeps } from './frontmatter';
