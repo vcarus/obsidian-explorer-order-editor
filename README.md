@@ -150,17 +150,27 @@ without it nothing you do here has a visible effect.
 
 ## Installation
 
-This plugin isn't yet in Obsidian's community plugin directory. Until then:
+This plugin isn't in Obsidian's community plugin directory yet, so install it
+with [BRAT](https://github.com/TfTHacker/obsidian42-brat), which installs
+plugins straight from a GitHub repository and keeps them updated.
 
-1. Download `main.js`, `manifest.json`, and `styles.css` from the
-   [latest release](https://github.com/haltorg/obsidian-explorer-order-editor/releases).
-2. Create a folder named `explorer-order-editor` inside your vault's
-   `.obsidian/plugins/` directory and put those three files in it.
-3. In Obsidian, go to **Settings → Community plugins**, reload the plugin
-   list if needed, and enable **Explorer Order Editor**.
-4. Install and enable
+1. In Obsidian, open **Settings → Community plugins**, browse for **BRAT**,
+   then install and enable it.
+2. Open the command palette and run **BRAT: Plugins: Add a beta plugin for
+   testing (with or without version)**.
+3. Paste this repository's address:
+   `https://github.com/vcarus/obsidian-explorer-order-editor`
+   Leave the version empty to track the latest release.
+4. BRAT downloads and enables the plugin. It checks for updates on startup,
+   and you can update on demand with **BRAT: Plugins: Check for updates to
+   all beta plugins and UPDATE**.
+5. Install and enable
    [Custom File Explorer sorting](https://obsidian.md/plugins?id=custom-sort)
-   from the community plugin directory too — required, see above.
+   from the community plugin directory as well — required, see above.
+
+Once the plugin is in the community directory, you can remove it from BRAT
+with **BRAT: Plugins: Remove a graduated plugin from BRAT (keep installed)**
+and let Obsidian handle updates instead.
 
 ## Development
 
@@ -179,6 +189,20 @@ contains an empty `.hotreload` file so the
 [Hot Reload](https://github.com/pjeby/hot-reload) plugin picks up rebuilds
 automatically. `custom-sort` is pre-installed in the same vault under
 `testvault/testvault/.obsidian/plugins/custom-sort/` for manual testing.
+
+### Releasing
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and
+attaches `main.js`, `manifest.json` and `styles.css` — the three files BRAT
+looks for — to a **draft** release.
+
+Publish that draft. GitHub's "latest release" API skips drafts, so BRAT
+cannot see one, and testers get nothing until it is published.
+
+Keep `manifest.json` and `versions.json` in step with the tag: BRAT reads
+`id` and `version` from the `manifest.json` attached to the release, and
+refuses to install if the plugin's `minAppVersion` is newer than the user's
+Obsidian.
 
 ### Source layout
 
