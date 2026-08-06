@@ -3,7 +3,10 @@ name: Release Obsidian plugin
 on:
     push:
         tags:
-            - 'v*'
+            # Obsidian requires the release tag to equal manifest.json's
+            # version exactly, so tags carry no `v` prefix and this cannot
+            # match on one.
+            - '*'
 
 jobs:
     build:

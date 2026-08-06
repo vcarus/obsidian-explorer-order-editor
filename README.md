@@ -192,9 +192,13 @@ automatically. `custom-sort` is pre-installed in the same vault under
 
 ### Releasing
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and
-attaches `main.js`, `manifest.json` and `styles.css` — the three files BRAT
-looks for — to a **draft** release.
+Pushing a tag runs `.github/workflows/release.yml`, which builds and attaches
+`main.js`, `manifest.json` and `styles.css` — the three files BRAT looks for
+— to a **draft** release.
+
+The tag must equal `manifest.json`'s version exactly, with no `v` prefix
+(`git tag -a 0.2.0 -m "0.2.0"`): that is what Obsidian requires of a plugin
+release, and the community directory checks it.
 
 Publish that draft. GitHub's "latest release" API skips drafts, so BRAT
 cannot see one, and testers get nothing until it is published.
