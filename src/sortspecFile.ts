@@ -14,11 +14,14 @@
 import { App, normalizePath, parseYaml, TFile, TFolder, type Command } from 'obsidian';
 import { readSortingSpecValue, removeSortingSpecFromFile, replaceSortingSpecInFile, SORTING_SPEC_KEY, type FrontMatterDeps } from './frontmatter';
 import {
+	hasAuthoredSection,
+	mergeStoredOrder,
 	parseSortingSpec,
 	readFolderOrder,
 	removeFolderOrder,
 	serializeSortingSpec,
 	specTargets,
+	upsertFolderOrder,
 	type MutationResult,
 	type ParsedSpec,
 } from './sortspec';
@@ -307,4 +310,94 @@ export async function refreshCustomSort(app: App, file: TFile): Promise<'trigger
 	}
 	app.commands.executeCommandById(CUSTOM_SORT_COMMAND_ID);
 	return 'triggered';
+}
+
+export interface HideSettingSyncResult {
+	/** sortspec.md files examined. */
+	readonly scanned: number;
+	/** Files actually rewritten. */
+	readonly changed: number;
+	/** Files that threw and were left alone. */
+	readonly failed: number;
+}
+
+/**
+ * Vault-wide pass that immediately syncs every folder's authored `/--hide:`
+ * state with the "hide sortspec.md" setting, instead of waiting for the
+ * setting's only other effect site — `OrderModal.save`, which only emits the
+ * directive the next time that particular folder's order happens to be
+ * saved. Without this, toggling the setting does nothing observable until
+ * some unrelated future save — which, from the user's side, looks like the
+ * setting doing nothing at all.
+ *
+ * Only rewrites sortspec.md files that already carry a section *authored by
+ * us* for their own folder (`hasAuthoredSection`) — a folder with no
+ * authored section is left completely alone, per the "never touch
+ * hand-written config" rule; we must not upsert a brand-new section into
+ * existence here. The order re-written is always
+ * `mergeStoredOrder(<the folder's current stored order>, <its live
+ * children>)` — whatever the user already arranged, reconciled against
+ * what's actually there now — never a fresh alphabetical order, which would
+ * silently destroy every saved order in the vault the first time this
+ * setting is toggled. When the stored order can't be read back
+ * unambiguously (`readFolderOrder` returns `null` — e.g. a duplicated,
+ * hand-edited authored section), the folder is skipped for the same reason:
+ * guessing at an order here is worse than doing nothing.
+ *
+ * As a side effect, rewriting an authored section also re-encodes it from
+ * scratch, which drops any stale entry `entriesFor` no longer produces (for
+ * example, sortspec.md's own former self-listing, from before `entriesFor`
+ * started excluding it). This is a desirable migration, not a bug, but the
+ * caller should mention it so a "hide" toggle doesn't appear to have also
+ * changed unrelated list contents as a surprise.
+ *
+ * Goes through `updateFolderSpec`, the same atomic `Vault.process`
+ * read-modify-write every other mutation in this plugin uses. A file that
+ * throws while being processed (`FrontMatterError`, etc.) increments
+ * `failed` and is left untouched; it does not abort the rest of the pass.
+ * Does not trigger custom-sort's refresh — that stays the caller's
+ * responsibility (as with every other mutation here), since only the caller
+ * knows whether the "auto-refresh" setting is on.
+ */
+export async function syncHideSetting(app: App, hide: boolean): Promise<HideSettingSyncResult> {
+	const files = app.vault.getAllLoadedFiles().filter((f): f is TFile => f instanceof TFile && f.name === SORTSPEC_FILENAME);
+	const hideNames = hide ? [SORTSPEC_FILENAME] : [];
+
+	let scanned = 0;
+	let changed = 0;
+	let failed = 0;
+
+	for (const file of files) {
+		const folder = file.parent;
+		if (folder === null) continue;
+		scanned++;
+
+		try {
+			const targetRaw = targetKeyFor(folder);
+			const siblings = entriesFor(folder);
+
+			const result = await updateFolderSpec(app, folder, (spec) => {
+				if (!hasAuthoredSection(spec, targetRaw)) {
+					return { spec, status: 'unchanged', diagnostics: [] };
+				}
+				const stored = readFolderOrder(spec, targetRaw, siblings);
+				if (stored === null) {
+					// Ambiguous (e.g. a duplicated, hand-edited authored
+					// section) — don't guess at an order, don't touch the file.
+					return { spec, status: 'unchanged', diagnostics: [] };
+				}
+				const order = mergeStoredOrder(stored, siblings);
+				return upsertFolderOrder(spec, targetRaw, order, hideNames);
+			});
+
+			if (result.status === 'replaced' || result.status === 'appended') {
+				changed++;
+			}
+		} catch (err) {
+			failed++;
+			console.error('[explorer-order-editor] failed to sync hide setting for', file.path, err);
+		}
+	}
+
+	return { scanned, changed, failed };
 }

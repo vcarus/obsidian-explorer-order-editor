@@ -355,6 +355,24 @@ function findMatches(spec: ParsedSpec, resolvedTarget: string | null): SectionMa
 }
 
 /**
+ * Whether `spec` has a section *authored by us* (bearing `AUTHORED_MARKER`)
+ * whose target set resolves to `targetRaw`. Used to gate automated,
+ * unattended rewrites (e.g. syncing the "hide sortspec.md" setting across
+ * the whole vault) so they only ever touch a folder this plugin already has
+ * a section for — never a folder whose sortspec.md is entirely hand-written,
+ * and never a folder with no section at all. Matches on any section
+ * (single- or multi-target) the same way `findMatches` does, not just
+ * single-target ones: a multi-target match is still "authored" if the
+ * marker is present, even though `upsertFolderOrder` itself would then
+ * refuse to touch it (multi-target conflict) — that refusal is a separate,
+ * later check, not this function's job.
+ */
+export function hasAuthoredSection(spec: ParsedSpec, targetRaw: string): boolean {
+	const target = normalizeTarget(targetRaw.trim(), spec.specFolder);
+	return findMatches(spec, target.resolved).some((m) => m.section.authored);
+}
+
+/**
  * `hideNames`: exact on-disk names (with extension, if any — the same string
  * custom-sort's own `t.children` names, not `Entry.name`) to emit as
  * `/--hide: <name>` lines in the authored section, so custom-sort filters
@@ -604,7 +622,7 @@ export function readFolderOrder(
 // ---------------------------------------------------------------------------
 
 function entryKey(entry: Entry): string {
-	return `${entry.kind} ${entry.name}`;
+	return `${entry.kind}\u0000${entry.name}`;
 }
 
 /**

@@ -3,6 +3,7 @@ import {
 	buildNameIndex,
 	canonicalizeSortingSpec,
 	encodeEntry,
+	hasAuthoredSection,
 	normalizeTarget,
 	parseSortingSpec,
 	removeFolderOrder,
@@ -397,6 +398,42 @@ describe('specTargets', () => {
 	it('does not care whether the matching section is authored by us or foreign', () => {
 		const spec = parseSortingSpec('target-folder: .\nHand-written, no marker', 'Notes');
 		expect(specTargets(spec, 'Notes')).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// hasAuthoredSection — gates the vault-wide "hide sortspec.md" sync
+// (syncHideSetting) so it only ever touches a folder this plugin already
+// has a section for, never hand-written config and never a folder with no
+// section at all.
+// ---------------------------------------------------------------------------
+
+describe('hasAuthoredSection', () => {
+	it('true when the matching section carries our marker', () => {
+		const spec = parseSortingSpec('target-folder: .\n// explorer-order-editor\nA', 'Notes');
+		expect(hasAuthoredSection(spec, '.')).toBe(true);
+	});
+
+	it('false when the matching section is hand-written (no marker)', () => {
+		const spec = parseSortingSpec('target-folder: .\nHand-written, no marker', 'Notes');
+		expect(hasAuthoredSection(spec, '.')).toBe(false);
+	});
+
+	it('false when nothing in the spec targets the key at all', () => {
+		const spec = parseSortingSpec('target-folder: Elsewhere\n// explorer-order-editor\nA', '/');
+		expect(hasAuthoredSection(spec, '.')).toBe(false);
+	});
+
+	it('false for an empty spec', () => {
+		expect(hasAuthoredSection(parseSortingSpec('', '/'), '.')).toBe(false);
+	});
+
+	it('true if any one of several matching sections for the same key is authored', () => {
+		const spec = parseSortingSpec(
+			['target-folder: .', 'Hand-written', '', 'target-folder: .', '// explorer-order-editor', 'Ours'].join('\n'),
+			'Notes',
+		);
+		expect(hasAuthoredSection(spec, '.')).toBe(true);
 	});
 });
 
