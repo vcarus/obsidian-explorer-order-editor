@@ -1,0 +1,96 @@
+/* OrderModal — reorder dialog */
+
+.eoe-empty {
+	padding: var(--size-4-8) var(--size-4-2);
+	color: var(--text-muted);
+	text-align: center;
+}
+
+.eoe-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+	max-height: 60vh;
+	margin-top: var(--size-4-2);
+	overflow-y: auto;
+}
+
+.eoe-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-2);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+}
+
+.eoe-row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.eoe-row-handle {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-faint);
+	cursor: grab;
+	/* Dragging is fully handled by SortableJS's pointer-event fallback, not
+	   native touch gestures — this keeps the browser from intercepting
+	   touch-and-hold on the handle before Sortable's own delay logic does. */
+	touch-action: none;
+}
+
+.eoe-row-handle:active {
+	cursor: grabbing;
+}
+
+.eoe-row-icon {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-muted);
+}
+
+.eoe-row-name {
+	overflow: hidden;
+	flex: 1 1 auto;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.eoe-row-disabled {
+	opacity: 0.5;
+}
+
+.eoe-row-disabled .eoe-row-handle,
+.eoe-row-disabled .eoe-row-name {
+	cursor: not-allowed;
+}
+
+/* SortableJS-driven states. The library manages the dynamic drag geometry
+   itself (inline transforms while dragging); these classes only supply the
+   static visual treatment for each state. */
+
+.eoe-row-ghost {
+	border: 1px dashed var(--background-modifier-border);
+	background-color: var(--background-primary);
+	opacity: 0.5;
+}
+
+.eoe-row-chosen {
+	border-left: 2px solid var(--interactive-accent);
+}
+
+.eoe-row-drag {
+	background-color: var(--background-primary);
+	box-shadow: var(--shadow-s);
+}
+
+.eoe-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-4);
+}
