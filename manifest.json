@@ -1,0 +1,10 @@
+{
+	"id": "explorer-order-editor",
+	"name": "Explorer Order Editor",
+	"version": "0.1.0",
+	"minAppVersion": "1.7.2",
+	"description": "Set a manual order for folders and notes by dragging them in a dialog, and save the result to sortspec.md.",
+	"author": "haltorg",
+	"authorUrl": "https://github.com/haltorg/obsidian-explorer-order-editor",
+	"isDesktopOnly": false
+}
