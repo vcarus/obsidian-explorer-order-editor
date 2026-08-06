@@ -82,11 +82,13 @@ A few things worth knowing about this format:
   `custom-sort`'s refresh command after a save or a clear. When off, a
   notice tells you to run that command yourself.
 - **Hide sortspec.md in the file explorer** (off by default) — ask
-  `custom-sort` to hide `sortspec.md` from folders where you save an order,
-  using `custom-sort`'s own item-hide syntax. This takes effect the next
-  time that folder's order is saved (a folder gets a `sortspec.md` only once
-  an order has actually been saved for it, so there's nothing to hide
-  before then).
+  `custom-sort` to hide `sortspec.md` from folders where you've saved an
+  order, using `custom-sort`'s own item-hide syntax. Toggling this applies
+  immediately across the vault, in both directions: every section this
+  plugin wrote is updated, and sections you wrote by hand are left alone.
+  Because those sections get rewritten, this also drops any stale entry
+  from them — notably `sortspec` itself, which older versions of this plugin
+  used to list.
 
 ## Known limitations
 
@@ -164,3 +166,10 @@ verify the result before treating the write as successful.
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+
+This plugin is not a fork of, and contains no code from,
+[Custom File Explorer sorting](https://github.com/SebastianMC/obsidian-custom-sort)
+(GPL-3.0). It is an independent implementation that writes a configuration
+file in the format that plugin reads, and asks it to refresh through a
+command registered with Obsidian. The two are separate programs that
+communicate through a data file; no linking is involved.
