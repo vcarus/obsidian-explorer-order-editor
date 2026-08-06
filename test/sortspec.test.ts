@@ -7,6 +7,7 @@ import {
 	parseSortingSpec,
 	removeFolderOrder,
 	serializeSortingSpec,
+	specTargets,
 	upsertFolderOrder,
 	type EncodeEntryResult,
 	type NameIndex,
@@ -314,6 +315,88 @@ describe('upsertFolderOrder: unrepresentable entries', () => {
 		expect(result.status).toBe('appended');
 		expect(result.diagnostics).toEqual([{ kind: 'unrepresentable-entry', name: 'a...b', reason: 'wildcard' }]);
 		expect(serializeSortingSpec(result.spec)).toBe('target-folder: .\n// explorer-order-editor\nGood1\nGood2');
+	});
+
+	it('several different unencodable reasons in one save are all skipped, and the rest still saves', () => {
+		const entries = [file('Good1'), file(' leading space'), file('a...b'), file('back\\slash'), file('Good2'), file('')];
+		const result = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
+		expect(result.status).toBe('appended');
+		expect(result.diagnostics).toEqual([
+			{ kind: 'unrepresentable-entry', name: ' leading space', reason: 'whitespace' },
+			{ kind: 'unrepresentable-entry', name: 'a...b', reason: 'wildcard' },
+			{ kind: 'unrepresentable-entry', name: 'back\\slash', reason: 'backslash' },
+			{ kind: 'unrepresentable-entry', name: '', reason: 'empty' },
+		]);
+		expect(serializeSortingSpec(result.spec)).toBe('target-folder: .\n// explorer-order-editor\nGood1\nGood2');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// upsertFolderOrder: hideNames (custom-sort's own `/--hide:` item-hide
+// directive, emitted for the "hide sortspec.md" setting)
+// ---------------------------------------------------------------------------
+
+describe('upsertFolderOrder: hideNames', () => {
+	it('emits one "/--hide: <name>" line per hidden name, right after the marker and before entries', () => {
+		const result = upsertFolderOrder(parseSortingSpec('', '/'), '.', [file('A'), folder('B')], ['sortspec.md']);
+		expect(result.status).toBe('appended');
+		expect(serializeSortingSpec(result.spec)).toBe(
+			'target-folder: .\n// explorer-order-editor\n/--hide: sortspec.md\nA\nB',
+		);
+	});
+
+	it('supports multiple hidden names, in the given order', () => {
+		const result = upsertFolderOrder(parseSortingSpec('', '/'), '.', [], ['a.md', 'b.md']);
+		expect(serializeSortingSpec(result.spec)).toBe('target-folder: .\n// explorer-order-editor\n/--hide: a.md\n/--hide: b.md');
+	});
+
+	it('defaults to no hidden names when the parameter is omitted', () => {
+		const result = upsertFolderOrder(parseSortingSpec('', '/'), '.', [file('A')]);
+		expect(serializeSortingSpec(result.spec)).toBe('target-folder: .\n// explorer-order-editor\nA');
+	});
+
+	it('running the identical upsert with the same hideNames twice is idempotent', () => {
+		const once = upsertFolderOrder(parseSortingSpec('', '/'), '.', [file('A')], ['sortspec.md']);
+		const twice = upsertFolderOrder(once.spec, '.', [file('A')], ['sortspec.md']);
+		expect(twice.status).toBe('unchanged');
+		expect(serializeSortingSpec(twice.spec)).toBe(serializeSortingSpec(once.spec));
+	});
+
+	it('turning hideNames on for an already-saved folder is a real change, not a no-op', () => {
+		const withoutHide = upsertFolderOrder(parseSortingSpec('', '/'), '.', [file('A')]);
+		const withHide = upsertFolderOrder(withoutHide.spec, '.', [file('A')], ['sortspec.md']);
+		expect(withHide.status).toBe('replaced');
+		expect(serializeSortingSpec(withHide.spec)).toContain('/--hide: sortspec.md');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// specTargets
+// ---------------------------------------------------------------------------
+
+describe('specTargets', () => {
+	it('true when a single-target section resolves to the key', () => {
+		const spec = parseSortingSpec('target-folder: .\nItem', 'Archive');
+		expect(specTargets(spec, 'Archive')).toBe(true);
+	});
+
+	it('true when the key is one of several targets in a multi-target section', () => {
+		const spec = parseSortingSpec('target-folder: Archive\ntarget-folder: Inbox\n// shared\nItem', '/');
+		expect(specTargets(spec, 'Inbox')).toBe(true);
+	});
+
+	it('false when nothing in the spec targets the key', () => {
+		const spec = parseSortingSpec('target-folder: Elsewhere\nItem', '/');
+		expect(specTargets(spec, 'Archive')).toBe(false);
+	});
+
+	it('false for an empty spec', () => {
+		expect(specTargets(parseSortingSpec('', '/'), '/')).toBe(false);
+	});
+
+	it('does not care whether the matching section is authored by us or foreign', () => {
+		const spec = parseSortingSpec('target-folder: .\nHand-written, no marker', 'Notes');
+		expect(specTargets(spec, 'Notes')).toBe(true);
 	});
 });
 

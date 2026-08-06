@@ -149,7 +149,8 @@ export type ReadSortingSpecResult =
 	| { readonly status: 'non-string' }
 	| { readonly status: 'ok'; readonly value: string };
 
-const SORTING_SPEC_KEY = 'sorting-spec';
+/** Exported so `sortspecFile.ts` can read the same key straight out of `metadataCache` without duplicating the string. */
+export const SORTING_SPEC_KEY = 'sorting-spec';
 
 type FrontMatterParseResult =
 	| { readonly status: 'no-frontmatter' }

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { decodeEntryLine, parseSortingSpec, readFolderOrder, upsertFolderOrder } from '../src/sortspec';
 import type { Entry } from '../src/types';
 
+const SORTSPEC_FILENAME = 'sortspec.md';
+
 const file = (name: string): Entry => ({ name, kind: 'file' });
 const folder = (name: string): Entry => ({ name, kind: 'folder' });
 
@@ -35,6 +37,8 @@ describe('decodeEntryLine: not a plain item name -> null', () => {
 		['catch-all ... alone', '...'],
 		['wildcard anywhere in an otherwise plain name', 'a...b'],
 		['wildcard inside a prefixed name', '/:files a...b'],
+		["custom-sort's item-hide directive, bare token", '/--hide:'],
+		["custom-sort's item-hide directive, with a name", '/--hide: sortspec.md'],
 	];
 
 	it.each(nullCases)('%s: %j', (_label, line) => {
@@ -188,5 +192,24 @@ describe('round trip holds across the full encodeEntry test matrix from sortspec
 		const entries: readonly Entry[] = [folder(name)];
 		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
 		expect(readFolderOrder(written.spec, '.', entries)).toEqual(entries);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// hideNames does not leak into the decoded order: the "hide sortspec.md"
+// setting writes a "/--hide: sortspec.md" line into the same authored
+// section as the entries, and it must never come back as a phantom entry.
+// ---------------------------------------------------------------------------
+
+describe('a "/--hide:" line written alongside entries never decodes as an entry', () => {
+	it('readFolderOrder returns exactly the real entries, hide line excluded', () => {
+		const entries: readonly Entry[] = [folder('Projects'), file('Welcome')];
+		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries, [SORTSPEC_FILENAME]);
+		expect(readFolderOrder(written.spec, '.', entries)).toEqual(entries);
+	});
+
+	it('holds even with zero orderable entries (hide line is the only body content)', () => {
+		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', [], [SORTSPEC_FILENAME]);
+		expect(readFolderOrder(written.spec, '.', [])).toEqual([]);
 	});
 });

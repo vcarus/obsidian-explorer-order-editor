@@ -7,8 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { parseSortingSpec, readFolderOrder, serializeSortingSpec, upsertFolderOrder } from '../src/sortspec';
-import { readSortingSpecValue, replaceSortingSpecInFile } from '../src/frontmatter';
+import { parseSortingSpec, readFolderOrder, removeFolderOrder, serializeSortingSpec, upsertFolderOrder } from '../src/sortspec';
+import { readSortingSpecValue, removeSortingSpecFromFile, replaceSortingSpecInFile } from '../src/frontmatter';
 import type { Entry } from '../src/types';
 
 const deps = { parseYaml };
@@ -18,6 +18,26 @@ function write(raw: string, target: string, specFolder: string, entries: readonl
 	const spec = parseSortingSpec(read.status === 'ok' ? read.value : '', specFolder);
 	const result = upsertFolderOrder(spec, target, entries);
 	return replaceSortingSpecInFile(raw, serializeSortingSpec(result.spec), deps);
+}
+
+/**
+ * Mirrors `sortspecFile.ts`'s private `applyMutation`, specifically the
+ * branch it takes for a `removeFolderOrder` result: when nothing is left to
+ * say for the folder, drop the key (and cascade further, per
+ * `removeSortingSpecFromFile`) instead of writing back an empty
+ * `sorting-spec: |` block. `sortspecFile.ts` itself can't be unit tested
+ * here — the `obsidian` package ships type declarations only, no runtime —
+ * so this recomposes the same two pure functions it calls, to cover the
+ * "clear explorer order" cascade (key -> block -> whole file) at the level
+ * this test suite can reach.
+ */
+function clear(raw: string, target: string, specFolder: string): string {
+	const read = readSortingSpecValue(raw, deps);
+	const spec = parseSortingSpec(read.status === 'ok' ? read.value : '', specFolder);
+	const result = removeFolderOrder(spec, target);
+	if (result.status === 'blocked' || result.status === 'unchanged') return raw;
+	const newValue = serializeSortingSpec(result.spec);
+	return newValue === '' ? removeSortingSpecFromFile(raw, deps) : replaceSortingSpecInFile(raw, newValue, deps);
 }
 
 describe('integration: generated sortspec.md', () => {
@@ -95,5 +115,47 @@ describe('integration: generated sortspec.md', () => {
 
 		expect(readFolderOrder(spec, '.', saved)).toEqual(saved);
 		expect(write(file, '.', 'Notes', saved)).toBe(file);
+	});
+});
+
+describe('integration: clearing a folder cascades key -> block -> whole file', () => {
+	it('clearing one of several sections drops only that section, keeping the key and its siblings', () => {
+		// Two independent sections: one for a different folder ("Elsewhere",
+		// an explicit path unaffected by specFolder), one for this folder
+		// ("." within "Archive", which resolves to "Archive").
+		const file = write(write('', 'Elsewhere', '/', [{ name: 'Old', kind: 'file' }]), '.', 'Archive', [{ name: 'New', kind: 'file' }]);
+		const cleared = clear(file, '.', 'Archive');
+		expect(readSortingSpecValue(cleared, deps).status).toBe('ok');
+		expect(cleared).toContain('target-folder: Elsewhere');
+		expect(cleared).toContain('Old');
+		expect(cleared).not.toContain('New');
+	});
+
+	it('clearing the only section drops the sorting-spec key, keeping other front matter keys and the body', () => {
+		const withOrder = [
+			'---',
+			'title: My notes',
+			'sorting-spec: |',
+			'  target-folder: .',
+			'  // explorer-order-editor',
+			'  A',
+			'---',
+			'Some hand-written body text.',
+			'',
+		].join('\n');
+		const cleared = clear(withOrder, '.', 'Notes');
+		expect(readSortingSpecValue(cleared, deps).status).toBe('absent');
+		expect(cleared).toContain('title: My notes');
+		expect(cleared).toContain('Some hand-written body text.');
+	});
+
+	it('clearing a sortspec.md with nothing else in it empties the file entirely, ready to be trashed', () => {
+		const withOrder = write('', '.', 'Notes', [{ name: 'A', kind: 'file' }]);
+		expect(clear(withOrder, '.', 'Notes')).toBe('');
+	});
+
+	it('a foreign (non-authored) section for the same folder is never touched by clear', () => {
+		const foreign = 'target-folder: .\nHand-written, no marker\n';
+		expect(clear(foreign, '.', 'Notes')).toBe(foreign);
 	});
 });

@@ -188,6 +188,18 @@ export function serializeSortingSpec(spec: ParsedSpec): string {
 	return lines.join('\n');
 }
 
+/**
+ * Whether `spec` has any section — single- or multi-target, ours or
+ * someone else's — whose resolved target set includes `key`. Doesn't decode
+ * or claim to know "the" order; just answers "does something here talk
+ * about this folder at all". Used to detect a second, independent source of
+ * truth for the same folder (e.g. a folder note's own `sorting-spec`
+ * targeting the folder it lives in) without pretending to resolve it.
+ */
+export function specTargets(spec: ParsedSpec, key: string): boolean {
+	return spec.sections.some((section) => section.targets.some((t) => t.resolved === key));
+}
+
 // ---------------------------------------------------------------------------
 // Name encoding
 // ---------------------------------------------------------------------------
@@ -243,6 +255,12 @@ const ATTRIBUTE_LEXEMES: readonly string[] = [
 	'with-metadata:',
 	'bookmarked:',
 	'with-icon:',
+	// custom-sort's item-hide directive (verified against its bundled source:
+	// `/--hide: <exact name with ext>` filters that child out of the folder's
+	// rendered children before sorting even runs). We emit this ourselves
+	// (see `upsertFolderOrder`'s `hideNames` parameter) so it must round-trip
+	// as an instruction, never as a literal entry name.
+	'/--hide:',
 ];
 
 function needsTypePrefix(entry: Entry, index: NameIndex): boolean {
@@ -336,7 +354,20 @@ function findMatches(spec: ParsedSpec, resolvedTarget: string | null): SectionMa
 	return matches;
 }
 
-export function upsertFolderOrder(spec: ParsedSpec, targetRaw: string, entries: readonly Entry[]): MutationResult {
+/**
+ * `hideNames`: exact on-disk names (with extension, if any — the same string
+ * custom-sort's own `t.children` names, not `Entry.name`) to emit as
+ * `/--hide: <name>` lines in the authored section, so custom-sort filters
+ * them out of this folder's rendering entirely. Currently only ever used for
+ * `sortspec.md` itself, gated by the "hide sortspec.md" setting. Order among
+ * `hideNames` is preserved; they're written before the entry lines.
+ */
+export function upsertFolderOrder(
+	spec: ParsedSpec,
+	targetRaw: string,
+	entries: readonly Entry[],
+	hideNames: readonly string[] = [],
+): MutationResult {
 	const target = normalizeTarget(targetRaw.trim(), spec.specFolder);
 	const matches = findMatches(spec, target.resolved);
 
@@ -363,7 +394,7 @@ export function upsertFolderOrder(spec: ParsedSpec, targetRaw: string, entries: 
 	}
 
 	const nameIndex = buildNameIndex(entries);
-	const encodedLines: string[] = [];
+	const encodedLines: string[] = hideNames.map((name) => `/--hide: ${name}`);
 	const entryDiagnostics: Diagnostic[] = [];
 	for (const entry of entries) {
 		const result = encodeEntry(entry, nameIndex);

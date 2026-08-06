@@ -1,6 +1,7 @@
 import { App, ButtonComponent, Modal, Notice, setIcon, setTooltip, TFolder } from 'obsidian';
 import Sortable from 'sortablejs';
 import { FrontMatterError, type FrontMatterErrorCode } from './frontmatter';
+import type { ExplorerOrderEditorSettings } from './settings';
 import {
 	buildNameIndex,
 	encodeEntry,
@@ -11,12 +12,22 @@ import {
 	type NameIndex,
 	type UnencodableReason,
 } from './sortspec';
-import { entriesFor, readStoredOrder, refreshCustomSort, sortspecPathFor, targetKeyFor, updateFolderSpec } from './sortspecFile';
+import {
+	entriesFor,
+	folderNoteConflict,
+	readStoredOrder,
+	refreshCustomSort,
+	SORTSPEC_FILENAME,
+	sortspecPathFor,
+	targetKeyFor,
+	updateFolderSpec,
+} from './sortspecFile';
 import type { Entry } from './types';
 
 const ICON_FOLDER = 'lucide-folder';
 const ICON_FILE = 'lucide-file-text';
 const ICON_GRIP = 'lucide-grip-vertical';
+const ICON_WARNING = 'lucide-triangle-alert';
 
 /**
  * One row in the reorder list. `entry` is the immutable identity (name +
@@ -42,6 +53,7 @@ export class OrderModal extends Modal {
 	constructor(
 		app: App,
 		private readonly folder: TFolder,
+		private readonly settings: ExplorerOrderEditorSettings,
 	) {
 		super(app);
 	}
@@ -50,11 +62,17 @@ export class OrderModal extends Modal {
 		const displayPath = this.folder.isRoot() ? this.app.vault.getName() || 'Vault root' : this.folder.path;
 		this.setTitle(displayPath);
 
+		const hasFolderNoteConflict = await folderNoteConflict(this.app, this.folder);
+		if (this.closed) return; // the modal was closed while the read was in flight
+		if (hasFolderNoteConflict) {
+			this.renderFolderNoteWarning();
+		}
+
 		const siblings = entriesFor(this.folder);
-		if (siblings.length === 0) {
+		if (siblings.length <= 1) {
 			this.contentEl.createDiv({
 				cls: 'eoe-empty',
-				text: 'This folder has nothing to order.',
+				text: siblings.length === 0 ? 'This folder has nothing to order.' : 'This folder has only one item — nothing to order.',
 			});
 			return;
 		}
@@ -95,6 +113,15 @@ export class OrderModal extends Modal {
 			// A few pixels of slop before a drag is recognized, so a tap
 			// isn't swallowed as an accidental drag.
 			fallbackTolerance: 5,
+			// The list is capped at 60vh and scrolls, so a folder with many
+			// children needs the dragged row to scroll the list when it nears
+			// an edge. SortableJS's auto-scroll does not engage on the fallback
+			// path unless forceAutoScrollFallback is set — and forceFallback
+			// above puts us on that path always, including on desktop.
+			scroll: true,
+			forceAutoScrollFallback: true,
+			scrollSensitivity: 60,
+			scrollSpeed: 12,
 			animation: 150,
 			ghostClass: 'eoe-row-ghost',
 			chosenClass: 'eoe-row-chosen',
@@ -135,6 +162,23 @@ export class OrderModal extends Modal {
 		const result = encodeEntry(entry, index);
 		if (result.ok) return undefined;
 		return describeUnencodableReason(result.reason);
+	}
+
+	/**
+	 * custom-sort also reads `Folder/Folder.md` as a sorting spec for this
+	 * folder. If that note also targets this folder, its section is a
+	 * second, independent source of truth custom-sort has no documented
+	 * precedence rule for — surfaced here, before the user invests effort
+	 * dragging rows, rather than only discovered after saving. We never
+	 * touch the note itself.
+	 */
+	private renderFolderNoteWarning(): void {
+		const banner = this.contentEl.createDiv({ cls: 'eoe-warning' });
+		setIcon(banner.createSpan({ cls: 'eoe-warning-icon' }), ICON_WARNING);
+		banner.createSpan({
+			cls: 'eoe-warning-text',
+			text: `${this.folder.name}.md also has a sorting-spec for this folder and may override the order saved here.`,
+		});
 	}
 
 	private renderRow(container: HTMLElement, row: OrderRow): void {
@@ -180,8 +224,9 @@ export class OrderModal extends Modal {
 
 		let result: MutationResult;
 		try {
+			const hideNames = this.settings.hideSortspec ? [SORTSPEC_FILENAME] : [];
 			result = await updateFolderSpec(this.app, this.folder, (spec) =>
-				upsertFolderOrder(spec, targetKeyFor(this.folder), orderedEntries),
+				upsertFolderOrder(spec, targetKeyFor(this.folder), orderedEntries, hideNames),
 			);
 		} catch (err) {
 			if (err instanceof FrontMatterError) {
@@ -257,6 +302,11 @@ export class OrderModal extends Modal {
 			message += ` Skipped ${skipped.length} item(s) that cannot be represented: ${names}.`;
 		}
 		new Notice(message);
+
+		if (!this.settings.autoRefresh) {
+			new Notice('Automatic refresh is off. Run the custom file explorer sorting plugin\'s refresh command to see the change.');
+			return;
+		}
 
 		const file = this.app.vault.getFileByPath(sortspecPathFor(this.folder));
 		if (file === null) return; // shouldn't happen right after a successful write

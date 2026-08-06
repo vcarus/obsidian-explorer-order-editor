@@ -6,6 +6,28 @@
 	text-align: center;
 }
 
+.eoe-warning {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+	border-radius: var(--radius-s);
+	background-color: var(--background-secondary);
+	border-left: 2px solid var(--text-warning);
+}
+
+.eoe-warning-icon {
+	display: flex;
+	flex-shrink: 0;
+	margin-top: 2px;
+	color: var(--text-warning);
+}
+
+.eoe-warning-text {
+	color: var(--text-muted);
+}
+
 .eoe-list {
 	display: flex;
 	flex-direction: column;

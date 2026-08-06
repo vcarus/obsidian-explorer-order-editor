@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-explorer-order-editor",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Set a manual order for folders and notes by dragging them in a dialog, and save the result to sortspec.md.",
 	"main": "main.js",
 	"type": "module",
