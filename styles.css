@@ -28,6 +28,189 @@
 	color: var(--text-muted);
 }
 
+/* Breadcrumb trail (M8c): a stepped vertical hierarchy, one folder per line,
+   each indented one step past the one above — replacing M8b's single
+   horizontal line, which had no good answer for a long ancestor sitting next
+   to a long current folder (see .eoe-breadcrumb-crumb below for the specific
+   bug that forced the rewrite). Compact — var(--font-ui-small) and a tight
+   line-height — because up to five of these lines sit above the row list. */
+.eoe-breadcrumb {
+	display: flex;
+	flex-direction: column;
+	margin-bottom: var(--size-4-2);
+	font-size: var(--font-ui-small);
+	line-height: 1.3;
+}
+
+/* One line of the trail. Flex row so the tee glyph and the crumb/current/
+   ellipsis it precedes sit side by side; must not wrap, since a wrapped tee
+   would land under the middle of the previous line's text instead of under
+   its start. */
+.eoe-breadcrumb-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: nowrap;
+	/* Obsidian sizes buttons like inputs (--input-height is 28-40px depending
+	   on platform and appearance settings), which made every line of the
+	   trail roughly twice as tall as its text and pushed the row list down by
+	   more than the whole feature is worth. Vertical space is the entire cost
+	   of the stepped layout, so the line height is stated here rather than
+	   left to whatever the tallest child happens to bring with it. */
+	min-height: 0;
+}
+
+/* Indent steps. `position` (see renderBreadcrumbs) is the *rendered* line,
+   not the folder's real depth in the vault, so this is a small fixed set —
+   one class per possible rendered position, not one per possible vault
+   depth — built from a single Obsidian size variable so the steps stay
+   visually equal. Depth 0 (the vault root's line) gets none. */
+.eoe-breadcrumb-depth-0 {
+	padding-left: 0;
+}
+
+.eoe-breadcrumb-depth-1 {
+	padding-left: var(--size-4-4);
+}
+
+.eoe-breadcrumb-depth-2 {
+	padding-left: calc(var(--size-4-4) * 2);
+}
+
+.eoe-breadcrumb-depth-3 {
+	padding-left: calc(var(--size-4-4) * 3);
+}
+
+.eoe-breadcrumb-depth-4 {
+	padding-left: calc(var(--size-4-4) * 4);
+}
+
+.eoe-breadcrumb-tee {
+	flex-shrink: 0;
+	margin-right: var(--size-2-1);
+	color: var(--text-faint);
+}
+
+/* Obsidian styles a bare <button> inside a modal with a background and
+   box-shadow (meant for its own dialogs' primary actions); all of that is
+   reset here so a crumb reads as a flat, muted, text-like control instead.
+
+   display: flex is not a layout preference here — it's the actual fix for a
+   real bug, confirmed on screen twice: overflow/text-overflow/text-align set
+   directly on a <button> do nothing, because a button's text lives in an
+   anonymous inner box that the browser generates and centres itself, and
+   text-overflow only ever applies to the box that *directly* contains the
+   inline text — which is that anonymous box, not the button. A shrunken
+   crumb rendered as the *middle* of its own name ("testvault" as "stvau"),
+   with no ellipsis, no matter what was set on the button. A flex container
+   has no such anonymous box; its content is laid out as flex items instead,
+   which is what makes `.eoe-breadcrumb-label` below — a real element that
+   directly contains the text — the thing that actually gets to truncate.
+
+   min-width: 0 is the other half of making that truncation reachable: the
+   button is itself a flex item of `.eoe-breadcrumb-row`, and a flex item's
+   default minimum width is its content's width, not 0 — without overriding
+   it here, the button would refuse to shrink below its label's full,
+   untruncated width no matter what `.eoe-breadcrumb-label` sets, and the row
+   would overflow instead of truncating. flex: 1 1 auto then has the button
+   fill whatever width the row leaves after the tee, so the hover highlight
+   (below) covers the whole line — a click target the width of a tree row,
+   not just a tight box around the text.
+
+   Making it a flex container is necessary but not sufficient: a <button>
+   centres its own content, and `display: flex` only changes *how* — the
+   label went from a centred anonymous box to a centred flex item, still
+   sitting in the middle of a full-width row while the adjacent <span>
+   segments (the ellipsis, the current folder) sat correctly at the start.
+   That same "buttons behave, spans don't" split is the signature of this
+   whole family of bugs. Obsidian sets no justify-content on buttons, so
+   nothing of ours was competing with the browser's own centring — it had to
+   be declared, not overridden. justify-content covers the flex-item case and
+   text-align the anonymous-box one; they address different mechanisms and
+   only one of them is doing the work on any given engine.
+
+   Written as a descendant selector purely for specificity. Obsidian's own
+   modal-button styling is element-qualified (`.modal button` and friends,
+   0-1-1), which outranks a lone class (0-1-0) — the flat look below was
+   silently losing to it, and the crumbs rendered with Obsidian's button
+   background still on. Two classes (0-2-0) wins without resorting to
+   !important. */
+.eoe-breadcrumb .eoe-breadcrumb-crumb {
+	display: flex;
+	min-width: 0;
+	flex: 1 1 auto;
+	justify-content: flex-start;
+	text-align: left;
+	/* Stated outright rather than inherited or left at the browser default:
+	   Obsidian gives buttons an input-sized height and its own font metrics,
+	   and a <button> does not inherit font-size from its parent the way a
+	   <span> does. Every one of these is undoing a value that would otherwise
+	   make a crumb taller than the line of text it contains. */
+	height: auto;
+	min-height: 0;
+	padding: var(--size-2-1) var(--size-4-1);
+	border: none;
+	border-radius: var(--radius-s);
+	background-color: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-family: inherit;
+	font-size: var(--font-ui-small);
+	line-height: inherit;
+	cursor: pointer;
+}
+
+.eoe-breadcrumb .eoe-breadcrumb-crumb:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+	box-shadow: none;
+}
+
+/* The element that actually truncates — see the structural explanation
+   above. min-width: 0 lets it shrink below its text's natural width inside
+   the flex button (without it, a long name just pushes the button wider
+   instead of truncating); overflow/text-overflow/white-space turn that
+   shrinking into an ellipsis instead of a hard clip. */
+.eoe-breadcrumb-label {
+	overflow: hidden;
+	min-width: 0;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* The folder actually being edited: "you are here", on its own line same as
+   every ancestor. Reads against --text-normal rather than the ancestors'
+   muted --text-muted, and gets no hover affordance since clicking it would
+   do nothing — it's not a button. It's a <span>, so — unlike a crumb — it
+   directly contains its own text and needs no inner element to truncate
+   correctly; same overflow/text-overflow/white-space treatment as
+   .eoe-breadcrumb-label above, for the same reason: a long current name
+   should end in an ellipsis, not get clipped at a hard edge.
+
+   No width cap here (the horizontal version's .eoe-breadcrumb-current had
+   one, to make ancestors share the strip): every line now has the full
+   modal width to itself, so there's nothing left to share. */
+.eoe-breadcrumb-current {
+	overflow: hidden;
+	min-width: 0;
+	padding: var(--size-2-1) var(--size-4-1);
+	color: var(--text-normal);
+	font-size: inherit;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* The collapsed run standing in for hidden mid-chain ancestors, on its own
+   line like everything else. Same padding as a crumb but never clickable —
+   its tooltip (the hidden folders' names) is the only way it names what it
+   stands for — so flex-shrink: 0 rather than the crumb's flex: 1 1 auto:
+   '…' never needs to give up room to anything. */
+.eoe-breadcrumb-ellipsis {
+	flex-shrink: 0;
+	padding: var(--size-2-1) var(--size-4-1);
+	color: var(--text-muted);
+	font-size: inherit;
+}
+
 .eoe-list {
 	display: flex;
 	flex-direction: column;
@@ -130,6 +313,16 @@
 	box-shadow: none;
 }
 
+/* The per-row "enter subfolder" control (M8). It sits in the same
+   .eoe-row-actions group as move-to-top/move-to-bottom, but it's a different
+   kind of action — navigating away, not reordering in place — so it gets a
+   hairline separator instead of just the gap the other two share. */
+.eoe-row-enter {
+	margin-left: var(--size-4-1);
+	padding-left: var(--size-4-2);
+	border-left: 1px solid var(--background-modifier-border);
+}
+
 /* Footnote under the sortable list naming the keyboard shortcuts. Muted,
    smaller and italic so it reads as an aside rather than as another row. One
    child element per sentence: a newline inside text content collapses to a
@@ -206,6 +399,22 @@
 .eoe-list + .eoe-unorderable-note {
 	padding-top: var(--size-4-3);
 	border-top: 1px solid var(--background-modifier-border);
+}
+
+/* The lone row shown when a folder holds exactly one item. Not SortableJS-
+   managed and never scrollable — there is exactly one row — so this only
+   supplies the same spacing the sortable list has above it, keeping that
+   screen from reading as a different kind of dialog than every other one. */
+.eoe-static-list {
+	margin-top: var(--size-4-2);
+}
+
+/* Nothing about that row can be dragged or nudged, so the hover highlight —
+   which implies "you can act on this" — would be misleading, exactly as it
+   is for the unorderable rows below. The "enter" control it may carry is a
+   button with its own hover state, so nothing is lost. */
+.eoe-static-list .eoe-row:hover {
+	background-color: var(--background-secondary);
 }
 
 .eoe-unorderable-list {

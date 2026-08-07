@@ -1,6 +1,7 @@
 import { App, ButtonComponent, Modal, Notice, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
 import Sortable from 'sortablejs';
 import { FrontMatterError, type FrontMatterErrorCode } from './frontmatter';
+import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
 import { targetIndexFor, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
 import {
@@ -31,6 +32,20 @@ const ICON_GRIP = 'lucide-grip-vertical';
 const ICON_WARNING = 'lucide-triangle-alert';
 const ICON_MOVE_TOP = 'lucide-chevrons-up';
 const ICON_MOVE_BOTTOM = 'lucide-chevrons-down';
+/** The per-row "enter subfolder" control (M8). */
+const ICON_ENTER = 'lucide-chevron-right';
+
+/**
+ * How many breadcrumb positions (folders plus, when truncated, the ellipsis
+ * that stands in for the rest) the trail ever renders. The budget this
+ * bounds is no longer horizontal width but *rendered lines* (M8c): each
+ * position gets its own row now, and a line is cheap in a way a share of one
+ * shared line's width never was — that's the whole reason for going
+ * vertical. 5 keeps the vault root, two real ancestors and the current
+ * folder all visible at once while still bounding how far the trail can
+ * push the row list down.
+ */
+const MAX_VISIBLE_CRUMBS = 5;
 
 /**
  * Renders one of this modal's shortcuts the way the running platform writes
@@ -104,6 +119,15 @@ interface OrderRow {
 	readonly disabledReason?: string;
 }
 
+/**
+ * What `save()` actually did, so callers (the footer Save button, and
+ * `navigateTo`'s save-before-leaving) can each decide for themselves what to
+ * do next instead of `save()` closing the modal unilaterally — navigating
+ * needs to keep the modal open on a successful save (to then switch levels),
+ * where the footer button needs to close it.
+ */
+type SaveOutcome = 'saved' | 'unchanged' | 'blocked' | 'failed';
+
 export class OrderModal extends Modal {
 	private listEl: HTMLElement | null = null;
 	private sortable: Sortable | null = null;
@@ -122,33 +146,145 @@ export class OrderModal extends Modal {
 	 * does for `listEl`'s children — this is their fixed contribution instead.
 	 */
 	private unorderableEntries: readonly Entry[] = [];
+	/**
+	 * This level's child folders, keyed by name, rebuilt at the top of every
+	 * `render()`. Folder names are unique within a folder, so name is an
+	 * exact key. Used only to decide which orderable folder rows get an
+	 * "enter" control (`renderRow`) — a folder that no longer exists (deleted
+	 * between renders) simply has no entry here and gets no button.
+	 */
+	private readonly childFolderByName = new Map<string, TFolder>();
+	/**
+	 * Every navigation control on screen (each clickable breadcrumb crumb and
+	 * each row's "enter" button), in creation order. `targetLabel` is the
+	 * short name `navigationLabel` needs to phrase that control's tooltip;
+	 * `refreshNavigationLabels` walks this list whenever dirtiness might have
+	 * changed, so a control's label never goes stale.
+	 */
+	private navControls: { readonly button: HTMLElement; readonly targetLabel: string }[] = [];
 	private closed = false;
-	private saving = false;
+	/**
+	 * Guards both the footer Save button and every navigation control, so a
+	 * click on either cannot land while a save or a level switch is already
+	 * in flight. The footer button's own `setDisabled` toggle is the visual
+	 * half of the same guard; the navigation controls have no equivalent
+	 * visual state, only this logical one.
+	 */
+	private busy = false;
+	/**
+	 * Bumped at the start of every `render()`; a render checks its own token
+	 * against this field after each `await` and bails out if they no longer
+	 * match. Without this, navigating to a new level while a previous
+	 * `render()` is still awaiting `folderNoteConflict`/`readStoredOrder`
+	 * would let that stale render finish by appending the *old* folder's rows
+	 * onto the *new* folder's already-drawn screen — `resetContent`/`render`
+	 * for the new level runs first (navigation awaits the whole switch), but
+	 * the old call is still suspended on the event loop and has no way to
+	 * know it's obsolete without checking.
+	 */
+	private renderToken = 0;
+	/**
+	 * What `collectOrderedEntries()` returned right after this level's
+	 * `render()` finished — i.e. exactly what a save would write at that
+	 * moment. `isDirty` compares the live order against this, not against
+	 * "what's on disk right now": a folder with no sortspec.md that the user
+	 * only looked at (drilled through on the way to a subfolder, then came
+	 * back up) must not get one written just because navigating triggers a
+	 * save-if-dirty. Reset to `[]` by `resetContent` and set again at the end
+	 * of every `render()`.
+	 */
+	private initialOrder: readonly Entry[] = [];
+	private folder: TFolder;
 
 	constructor(
 		app: App,
-		private readonly folder: TFolder,
+		folder: TFolder,
 		private readonly settings: ExplorerOrderEditorSettings,
 	) {
 		super(app);
+		this.folder = folder;
 	}
 
-	async onOpen(): Promise<void> {
-		const displayPath = this.folder.isRoot() ? this.app.vault.getName() || 'Vault root' : this.folder.path;
-		this.setTitle(displayPath);
+	onOpen(): void {
+		void this.render();
+	}
+
+	onClose(): void {
+		this.closed = true;
+		this.resetContent();
+	}
+
+	/**
+	 * Renders the current `this.folder` from scratch. Navigating to a new
+	 * level is `resetContent()` followed by another call to this — there is
+	 * no cross-level screen state kept around, only whatever the fresh read
+	 * produces, so a level revisited after saving always shows exactly what
+	 * was just written.
+	 */
+	private async render(): Promise<void> {
+		const token = ++this.renderToken;
+
+		// Sentence case, and deliberately the same wording as the file-menu item
+		// that opens this modal. The path itself now lives in the breadcrumb
+		// trail below, which is why this no longer needs to vary per folder.
+		this.setTitle('Set explorer order');
+
+		this.childFolderByName.clear();
+		for (const child of this.folder.children) {
+			if (child instanceof TFolder) {
+				this.childFolderByName.set(child.name, child);
+			}
+		}
+
+		// The breadcrumb trail, rendered before anything else below —
+		// including the folder-note warning and the `siblings.length <= 1`
+		// early return — so that even an empty or fully-unorderable subfolder
+		// still has a way back out, rather than being a dead end only
+		// reachable by navigating into it in the first place.
+		this.renderBreadcrumbs();
 
 		const hasFolderNoteConflict = await folderNoteConflict(this.app, this.folder);
-		if (this.closed) return; // the modal was closed while the read was in flight
+		if (this.isStale(token)) return; // the modal was closed, or a newer render started, while the read was in flight
 		if (hasFolderNoteConflict) {
 			this.renderFolderNoteWarning();
 		}
 
 		const siblings = entriesFor(this.folder);
-		if (siblings.length <= 1) {
-			this.contentEl.createDiv({
-				cls: 'eoe-empty',
-				text: siblings.length === 0 ? 'This folder has nothing to order.' : 'This folder has only one item — nothing to order.',
-			});
+		const soleEntry = siblings.length === 1 ? siblings[0] : undefined;
+		if (siblings.length === 0 || soleEntry !== undefined) {
+			if (soleEntry === undefined) {
+				// Nothing at all to show, so the message *is* the screen and
+				// gets the centred empty-state treatment.
+				this.contentEl.createDiv({ cls: 'eoe-empty', text: 'This folder has nothing to order.' });
+			} else {
+				// The single item is still rendered, even though its position
+				// can never change. Saying "nothing to order" and showing no
+				// rows was a dead end: when that one item is a folder, its
+				// *contents* may well need ordering, and with nothing on
+				// screen there was no way to reach them — a chain of
+				// single-child folders simply could not be walked through from
+				// in here. The row is not sortable (there is nothing to move
+				// it past) but it does carry the "enter" control, which is the
+				// whole point of showing it.
+				const listEl = this.contentEl.createDiv({ cls: 'eoe-static-list' });
+				this.renderRow(listEl, { entry: soleEntry }, false);
+
+				// Below the row and in `.eoe-hint`, not centred in
+				// `.eoe-empty`: once there is a row on screen this sentence is
+				// a footnote about it, the same role the keyboard-shortcut
+				// hint plays under the sortable list. The centred empty-state
+				// treatment only reads correctly when the message is the only
+				// thing there.
+				this.contentEl.createDiv({ cls: 'eoe-hint', text: 'Only one item here, so there is nothing to reorder.' });
+			}
+
+			// Reachable now that a user can navigate into such a folder rather
+			// than only opening one directly — it needs a Cancel button (and,
+			// via the breadcrumb rendered above, a way back up) same as every
+			// other screen. Never a Save button: with no order to express,
+			// saving would write a sortspec.md that says nothing.
+			this.renderFooter(false);
+			this.finishRender();
 			return;
 		}
 
@@ -157,7 +293,7 @@ export class OrderModal extends Modal {
 		// on an already-ordered folder would show alphabetical order and
 		// saving would silently destroy the existing order.
 		const stored = await readStoredOrder(this.app, this.folder, siblings);
-		if (this.closed) return; // the modal was closed while the read was in flight
+		if (this.isStale(token)) return; // the modal was closed, or a newer render started, while the read was in flight
 		const orderedEntries = mergeStoredOrder(stored, siblings);
 
 		const index = buildNameIndex(siblings);
@@ -181,13 +317,8 @@ export class OrderModal extends Modal {
 			this.listEl = listEl;
 
 			for (const row of orderableRows) {
-				this.renderRow(listEl, row);
+				this.renderRow(listEl, row, true);
 			}
-			// First/last are now known (they're just the first/last rows just
-			// rendered) — set their buttons' disabled state before the modal is
-			// ever shown, rather than leaving both enabled until some later move
-			// happens to refresh them.
-			this.refreshRowActionsDisabled();
 
 			this.sortable = new Sortable(listEl, {
 				// Obsidian mobile is a WebView where native HTML5 drag events are
@@ -195,7 +326,10 @@ export class OrderModal extends Modal {
 				// both go through the same fallback path.
 				forceFallback: true,
 				// Only the grip element starts a drag; the rest of the row (and
-				// the modal itself) stays scrollable, including by touch.
+				// the modal itself) stays scrollable, including by touch. This
+				// is also why the per-row "enter" button needs no `filter`
+				// option to keep it from starting a drag — it isn't part of
+				// `.eoe-row-handle` either.
 				handle: '.eoe-row-handle',
 				// Long-press to start a drag on touch so a swipe scrolls instead
 				// of immediately dragging. Desktop mouse users get no delay.
@@ -220,10 +354,11 @@ export class OrderModal extends Modal {
 				// A drag can carry a row to or away from either end of the list
 				// just as much as a button click or keyboard move can — without
 				// this, dropping the last row at the top would leave the old
-				// first row's "move to top" button stuck enabled and the dropped
-				// row's own buttons stuck disabled until some unrelated move
-				// happened to refresh them.
-				onEnd: () => this.refreshRowActionsDisabled(),
+				// first row's "move to top" button stuck enabled, the dropped
+				// row's own buttons stuck disabled, and every navigation
+				// control's label stuck describing the pre-drag dirtiness, all
+				// until some unrelated change happened to refresh them.
+				onEnd: () => this.afterOrderChanged(),
 			});
 
 			// The shortcuts are otherwise undiscoverable: the buttons name them
@@ -251,23 +386,216 @@ export class OrderModal extends Modal {
 
 			const unorderableListEl = this.contentEl.createDiv({ cls: 'eoe-unorderable-list' });
 			for (const row of unorderableRows) {
-				this.renderRow(unorderableListEl, row);
+				this.renderRow(unorderableListEl, row, false);
 			}
 		}
 
 		// Nothing to drag into an order means nothing to save.
 		this.renderFooter(orderableRows.length > 0);
+		this.finishRender();
 	}
 
-	onClose(): void {
-		this.closed = true;
+	/**
+	 * The last thing every `render()` exit path does, and the order of these
+	 * two lines is the point: the baseline `isDirty()` measures against has
+	 * to exist before anything asks, and `afterOrderChanged` asks
+	 * immediately. Run the other way round, the live rows get compared
+	 * against the empty list `resetContent` left behind, come out unequal,
+	 * and every navigation control paints "Save and open …" onto a screen
+	 * nobody has touched yet. What made that worth guarding against rather
+	 * than shrugging at is that the *behaviour* was right either way —
+	 * `navigateTo` reads `isDirty()` later, once this has run, so the click
+	 * did the right thing while the label said otherwise. A control that
+	 * announces what it does is this feature's only promise.
+	 *
+	 * Running on every exit path, not just the one that renders a sortable
+	 * list, is also what gives the breadcrumb a label on the empty-folder and
+	 * everything-unorderable screens — the screens where finding the way back
+	 * out matters most. `refreshRowActionsDisabled` is a no-op there (no
+	 * rows), which is why this can be one unconditional call.
+	 */
+	private finishRender(): void {
+		this.initialOrder = this.collectOrderedEntries();
+		this.afterOrderChanged();
+	}
+
+	/**
+	 * Tears down everything the current render put on screen, without
+	 * touching `this.closed` — the one difference from `onClose`, which calls
+	 * this and then also sets that flag. Kept as a single function so the two
+	 * teardown paths (closing the modal outright vs. clearing the screen to
+	 * draw a new level) can never drift apart.
+	 */
+	private resetContent(): void {
 		this.sortable?.destroy();
 		this.sortable = null;
 		this.listEl = null;
 		this.entryByRowEl.clear();
 		this.rowActionsByRowEl.clear();
+		this.childFolderByName.clear();
+		this.navControls = [];
 		this.unorderableEntries = [];
+		this.initialOrder = [];
 		this.contentEl.empty();
+	}
+
+	/**
+	 * Whether the `render()` call identified by `token` should stop acting —
+	 * see `renderToken`'s doc comment for why a render can go stale mid-await.
+	 */
+	private isStale(token: number): boolean {
+		return this.closed || token !== this.renderToken;
+	}
+
+	/**
+	 * True when the on-screen order has changed since this level's `render()`
+	 * finished. This has to mean "the user changed something", not "the file
+	 * on disk would change if saved now" — a folder with no sortspec.md that
+	 * the user merely looked at while passing through must not get one
+	 * written just because navigating away triggers a save-if-dirty.
+	 * Comparing against `initialOrder` (fixed at render time) is what keeps
+	 * that distinction.
+	 */
+	private isDirty(): boolean {
+		return !isSameOrder(this.collectOrderedEntries(), this.initialOrder);
+	}
+
+	/**
+	 * Everything that needs to happen after the on-screen order might have
+	 * changed: which move-to-top/bottom buttons are disabled, and every
+	 * navigation control's label, since `navigationLabel` depends on
+	 * `isDirty()` and dirtiness just changed underneath it.
+	 */
+	private afterOrderChanged(): void {
+		this.refreshRowActionsDisabled();
+		this.refreshNavigationLabels();
+	}
+
+	/**
+	 * Navigates the whole modal to `target`: saves first if the current level
+	 * has unsaved changes, then tears down and re-renders at the new level.
+	 * Guarded by `busy` so a click here (or on the footer Save button) cannot
+	 * land while a previous navigation or save is still in flight.
+	 */
+	private async navigateTo(target: TFolder): Promise<void> {
+		if (this.busy) return;
+		this.busy = true;
+		try {
+			// A folder can be deleted between render and click. Obsidian mutates
+			// a TFolder in place on rename (path and name both), so an identity
+			// match here still succeeds for a renamed folder — which is what we
+			// want; only a folder that is actually gone fails it.
+			if (this.app.vault.getFolderByPath(target.path) !== target) {
+				// Reported, but deliberately *not* followed by a redraw of this
+				// level: these rows may hold an arrangement the user has
+				// dragged and not yet saved, and rebuilding them from disk
+				// would throw that away to fix nothing — what changed was the
+				// target, not here. The now-dead row stays on screen, which is
+				// consistent with the rest of the dialog: it never tracks vault
+				// changes live at any other point either.
+				new Notice('That folder is no longer there.');
+				return;
+			}
+			if (this.isDirty()) {
+				const outcome = await this.save();
+				// blocked / failed: notices are already up, and entering now
+				// would discard what the user arranged. Stay on this level.
+				if (outcome === 'blocked' || outcome === 'failed') return;
+				// A successful save awaits custom-sort's refresh, which is
+				// easily long enough for the user to have closed the dialog
+				// underneath us. `renderToken` only protects the awaits
+				// *inside* render(); nothing stops us calling it in the first
+				// place, and doing so would rebuild a whole level into a
+				// closed modal's detached contentEl, listeners and all.
+				if (this.closed) return;
+			}
+			this.folder = target;
+			this.resetContent();
+			await this.render();
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	/** Vault root first, `this.folder` last. */
+	private folderChain(): TFolder[] {
+		const chain: TFolder[] = [];
+		let current: TFolder | null = this.folder;
+		while (current !== null) {
+			chain.unshift(current);
+			current = current.parent;
+		}
+		return chain;
+	}
+
+	/**
+	 * The breadcrumb trail (M8c), a stepped vertical hierarchy replacing the
+	 * single horizontal line of M8b: one folder per rendered line, each
+	 * indented one step past the one above, so every level gets essentially
+	 * the full modal width instead of several names fighting over one line —
+	 * the horizontal version had no good answer for a long ancestor sitting
+	 * next to a long current folder. Rendered unconditionally, including for
+	 * the vault root itself — a one-line trail is still "you are here".
+	 */
+	private renderBreadcrumbs(): void {
+		const container = this.contentEl.createDiv({ cls: 'eoe-breadcrumb' });
+		const chain = this.folderChain();
+		const segments = breadcrumbSegments(chain.length, MAX_VISIBLE_CRUMBS);
+
+		segments.forEach((segment, position) => {
+			// `position` is the *rendered* position, not the folder's real depth
+			// in the vault — after a collapse the fourth line is still indented
+			// four steps, not six. That's what keeps the indent bounded
+			// regardless of how deep the actual folder nesting goes; it's also
+			// why the depth classes below are a small fixed set rather than one
+			// per possible vault depth.
+			const row = container.createDiv({ cls: ['eoe-breadcrumb-row', `eoe-breadcrumb-depth-${position}`] });
+			if (position > 0) {
+				row.createSpan({ cls: 'eoe-breadcrumb-tee', text: '└', attr: { 'aria-hidden': 'true' } });
+			}
+			this.renderBreadcrumbSegment(row, chain, segment);
+		});
+	}
+
+	/**
+	 * One position in the trail. Split out of `renderBreadcrumbs` because each
+	 * of the three kinds — a clickable ancestor, the collapsed ellipsis, and
+	 * the current folder — has its own element type and click behavior, and
+	 * inlining all three into one loop body was harder to follow than naming
+	 * them.
+	 */
+	private renderBreadcrumbSegment(row: HTMLElement, chain: TFolder[], segment: BreadcrumbSegment): void {
+		if (segment.kind === 'ellipsis') {
+			const ellipsis = row.createSpan({ cls: 'eoe-breadcrumb-ellipsis', text: '…' });
+			const hiddenNames = segment.hiddenIndices
+				.map((index) => chain[index])
+				.filter((f): f is TFolder => f !== undefined)
+				.map((f) => folderShortName(f.name, f.isRoot(), this.app.vault.getName()));
+			setTooltip(ellipsis, hiddenNames.join(' › '));
+			return;
+		}
+
+		const f = chain[segment.index];
+		if (f === undefined) return; // chain and segments are built from the same length; defensive only
+		const targetLabel = folderShortName(f.name, f.isRoot(), this.app.vault.getName());
+		const isCurrent = segment.index === chain.length - 1;
+
+		if (isCurrent) {
+			// Not a button, not in `navControls`: navigating to where you
+			// already are would re-read from disk and silently discard
+			// unsaved rows.
+			row.createSpan({ cls: 'eoe-breadcrumb-current', text: targetLabel });
+			return;
+		}
+
+		// The label lives in its own inner span rather than as the button's own
+		// text — see the `.eoe-breadcrumb-crumb` / `.eoe-breadcrumb-label` rules
+		// in styles.css for why a <button> can't truncate its own text with an
+		// ellipsis no matter what's set on the button itself.
+		const button = row.createEl('button', { cls: 'eoe-breadcrumb-crumb', attr: { type: 'button' } });
+		button.createSpan({ cls: 'eoe-breadcrumb-label', text: targetLabel });
+		button.addEventListener('click', () => void this.navigateTo(f));
+		this.navControls.push({ button, targetLabel });
 	}
 
 	/**
@@ -318,20 +646,33 @@ export class OrderModal extends Modal {
 	}
 
 	/**
-	 * Renders one row. A row with a `disabledReason` gets no drag handle at
-	 * all — not just a non-functional one — since these rows never sit in a
-	 * `Sortable`-managed container and dragging them would do nothing; a grip
-	 * that does nothing is the same false promise the disabled styling used
-	 * to make on its own.
+	 * Renders one row.
+	 *
+	 * `sortable` gates every control that changes a row's *position* — the
+	 * grip and the move buttons — and it is false in two cases: the
+	 * unorderable region, whose rows never sit in a `Sortable`-managed
+	 * container, and a folder holding a single item, where there is no second
+	 * row to move past. A grip that does nothing is the same false promise
+	 * the disabled styling used to make on its own.
+	 *
+	 * The "enter" control is deliberately gated on none of that, because
+	 * entering is navigation, not ordering. Whether this plugin can express a
+	 * folder's own name in its *parent's* spec says nothing about whether its
+	 * children can be ordered — and they always can, since a folder's spec is
+	 * written with `target-folder: .`, which never mentions the folder's name
+	 * at all. Tying the two together is what left a folder you could see but
+	 * could not open.
 	 */
-	private renderRow(container: HTMLElement, row: OrderRow): void {
+	private renderRow(container: HTMLElement, row: OrderRow, sortable: boolean): void {
 		const rowEl = container.createDiv({ cls: 'eoe-row' });
 		this.entryByRowEl.set(rowEl, row.entry);
 
 		if (row.disabledReason !== undefined) {
 			rowEl.addClass('eoe-row-disabled');
 			setTooltip(rowEl, row.disabledReason);
-		} else {
+		}
+
+		if (sortable) {
 			const handle = rowEl.createDiv({ cls: 'eoe-row-handle' });
 			setIcon(handle, ICON_GRIP);
 			setTooltip(handle, 'Drag to reorder');
@@ -342,19 +683,32 @@ export class OrderModal extends Modal {
 
 		rowEl.createSpan({ cls: 'eoe-row-name', text: row.entry.name });
 
-		// Same condition as the grip above, for the same reason: an
-		// unorderable row has no position to alter, so it gets neither a way
-		// to drag it nor a way to nudge it — offering either would be a
-		// control that visibly does nothing.
-		if (row.disabledReason === undefined) {
-			this.renderRowActions(rowEl);
+		// Created for every row, even one that ends up holding only the
+		// "enter" control (or nothing at all): it is what keeps the row's
+		// right-hand edge aligned with its neighbours'.
+		const actions = rowEl.createDiv({ cls: 'eoe-row-actions' });
+		if (sortable) {
+			this.renderRowActions(rowEl, actions);
+		}
+
+		// Any folder row still present among this folder's live children gets
+		// a way to drill into it — see `childFolderByName`, rebuilt at the top
+		// of `render()`.
+		if (row.entry.kind === 'folder') {
+			const childFolder = this.childFolderByName.get(row.entry.name);
+			if (childFolder !== undefined) {
+				this.renderEnterButton(actions, childFolder);
+			}
+		}
+
+		if (sortable) {
 			rowEl.setAttribute('tabindex', '0');
 			rowEl.addEventListener('keydown', (evt) => this.onRowKeyDown(evt, rowEl));
 
 			// Focus the row explicitly rather than relying on a click landing
 			// on a `tabindex` element focusing it by default. SortableJS runs
 			// its own pointer handling over this same container in fallback
-			// mode (see `forceFallback` in `onOpen`), and anything that calls
+			// mode (see `forceFallback` in `render`), and anything that calls
 			// preventDefault on the pointer-down that starts a gesture also
 			// cancels the default focus — leaving the keyboard shortcuts with
 			// nothing focused to act on, which is exactly how they were first
@@ -374,12 +728,14 @@ export class OrderModal extends Modal {
 	 * The move-to-top/move-to-bottom button pair appended to a sortable row.
 	 * Rendered unconditionally rather than only on `:hover`: this modal's
 	 * drag path already has to support touch via SortableJS's fallback mode
-	 * (see the `forceFallback` comment in `onOpen`), and touch has no hover
+	 * (see the `forceFallback` comment in `render`), and touch has no hover
 	 * state at all — a hover-only affordance would simply not exist there.
+	 *
+	 * `actions` is created by `renderRow` and passed in rather than created
+	 * here, because a row can need that group without needing this pair — a
+	 * non-sortable row still hosts the "enter" control in it.
 	 */
-	private renderRowActions(rowEl: HTMLElement): void {
-		const actions = rowEl.createDiv({ cls: 'eoe-row-actions' });
-
+	private renderRowActions(rowEl: HTMLElement, actions: HTMLElement): void {
 		const top = actions.createEl('button', { cls: 'clickable-icon eoe-row-action', attr: { type: 'button' } });
 		setIcon(top, ICON_MOVE_TOP);
 		setTooltip(top, MOVE_TOP_LABEL);
@@ -393,6 +749,20 @@ export class OrderModal extends Modal {
 		bottom.addEventListener('click', () => this.moveRow(rowEl, 'bottom'));
 
 		this.rowActionsByRowEl.set(rowEl, { top, bottom });
+	}
+
+	/**
+	 * The per-row "enter subfolder" control (M8). No SortableJS `filter`
+	 * option is needed to keep this from starting a drag: dragging is already
+	 * restricted to `.eoe-row-handle` (the `handle` option in `render`), and
+	 * this button isn't part of it.
+	 */
+	private renderEnterButton(actions: HTMLElement, childFolder: TFolder): void {
+		const targetLabel = folderShortName(childFolder.name, childFolder.isRoot(), this.app.vault.getName());
+		const button = actions.createEl('button', { cls: 'clickable-icon eoe-row-action eoe-row-enter', attr: { type: 'button' } });
+		setIcon(button, ICON_ENTER);
+		button.addEventListener('click', () => void this.navigateTo(childFolder));
+		this.navControls.push({ button, targetLabel });
 	}
 
 	/**
@@ -465,7 +835,7 @@ export class OrderModal extends Modal {
 		// a top/bottom jump can easily carry the row outside the visible slice.
 		rowEl.scrollIntoView({ block: 'nearest' });
 
-		this.refreshRowActionsDisabled();
+		this.afterOrderChanged();
 	}
 
 	/**
@@ -485,6 +855,21 @@ export class OrderModal extends Modal {
 			actions.top.disabled = index === 0;
 			actions.bottom.disabled = index === rows.length - 1;
 		});
+	}
+
+	/**
+	 * Keeps every navigation control's tooltip and accessible name in sync
+	 * with whether activating it right now would save first — same
+	 * `setTooltip` + `aria-label` pairing as the move-to-top/bottom buttons
+	 * above, and the same reason: `setTooltip` only gives a hover hint, not
+	 * an accessible name.
+	 */
+	private refreshNavigationLabels(): void {
+		for (const control of this.navControls) {
+			const label = navigationLabel(this.isDirty(), control.targetLabel);
+			setTooltip(control.button, label);
+			control.button.setAttribute('aria-label', label);
+		}
 	}
 
 	/**
@@ -514,17 +899,30 @@ export class OrderModal extends Modal {
 			.setButtonText('Save')
 			.setCta()
 			.onClick(() => {
-				if (this.saving) return;
-				this.saving = true;
+				if (this.busy) return;
+				this.busy = true;
 				saveButton.setDisabled(true);
-				void this.save().finally(() => {
-					this.saving = false;
-					saveButton.setDisabled(false);
-				});
+				void this.save()
+					.then((outcome) => {
+						// 'blocked'/'failed': a notice is already up, and the
+						// order the user arranged is still on screen to retry.
+						if (outcome === 'saved' || outcome === 'unchanged') this.close();
+					})
+					.finally(() => {
+						this.busy = false;
+						saveButton.setDisabled(false);
+					});
 			});
 	}
 
-	private async save(): Promise<void> {
+	/**
+	 * Writes the on-screen order to `this.folder`'s sortspec.md. Does not
+	 * close the modal itself — the footer Save button and `navigateTo` each
+	 * need to react to the outcome differently (the former closes on success,
+	 * the latter needs the modal to stay open so it can then switch levels),
+	 * so that decision is left to the caller.
+	 */
+	private async save(): Promise<SaveOutcome> {
 		const orderedEntries = this.collectOrderedEntries();
 
 		let result: MutationResult;
@@ -536,30 +934,27 @@ export class OrderModal extends Modal {
 		} catch (err) {
 			if (err instanceof FrontMatterError) {
 				new Notice(`Could not save the explorer order: ${describeFrontMatterError(err.code)}.`);
-				return;
+				return 'failed';
 			}
 			console.error('[explorer-order-editor] failed to save explorer order', err);
 			new Notice('Could not save the explorer order: an unexpected error occurred.');
-			return;
+			return 'failed';
 		}
 
 		switch (result.status) {
 			case 'blocked':
 				this.reportBlocked(result.diagnostics);
-				return;
+				return 'blocked';
 			case 'unchanged':
 				new Notice('Explorer order unchanged.');
-				this.close();
-				return;
+				return 'unchanged';
 			case 'replaced':
 			case 'appended':
 				await this.reportSaved(result.diagnostics);
-				this.close();
-				return;
+				return 'saved';
 			case 'removed':
 				// Save only ever upserts; unreachable from this modal.
-				this.close();
-				return;
+				return 'saved';
 		}
 	}
 
