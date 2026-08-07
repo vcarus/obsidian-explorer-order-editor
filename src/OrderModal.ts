@@ -887,8 +887,15 @@ export class OrderModal extends Modal {
 	 * an accessible name.
 	 */
 	private refreshNavigationLabels(): void {
+		// Hoisted out of the loop: `isDirty` walks every row in the list, and
+		// there is one control per folder row plus one per breadcrumb level —
+		// so leaving it inside made a single keystroke in a 62-item folder do
+		// roughly sixty full passes over sixty rows. The answer is the same
+		// for every control by construction; it describes the list, not the
+		// control.
+		const dirty = this.isDirty();
 		for (const control of this.navControls) {
-			const label = navigationLabel(this.isDirty(), control.targetLabel);
+			const label = navigationLabel(dirty, control.targetLabel);
 			setTooltip(control.button, label);
 			control.button.setAttribute('aria-label', label);
 		}
