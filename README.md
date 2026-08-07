@@ -166,27 +166,17 @@ without it nothing you do here has a visible effect.
 
 ## Installation
 
-This plugin isn't in Obsidian's community plugin directory yet, so install it
-with [BRAT](https://github.com/TfTHacker/obsidian42-brat), which installs
-plugins straight from a GitHub repository and keeps them updated.
+In Obsidian, open **Settings → Community plugins → Browse**, search for
+**Explorer Order Editor**, then install and enable it.
 
-1. In Obsidian, open **Settings → Community plugins**, browse for **BRAT**,
-   then install and enable it.
-2. Open the command palette and run **BRAT: Plugins: Add a beta plugin for
-   testing (with or without version)**.
-3. Paste this repository's address:
-   `https://github.com/vcarus/obsidian-explorer-order-editor`
-   Leave the version empty to track the latest release.
-4. BRAT downloads and enables the plugin. It checks for updates on startup,
-   and you can update on demand with **BRAT: Plugins: Check for updates to
-   all beta plugins and UPDATE**.
-5. Install and enable
-   [Custom File Explorer sorting](https://obsidian.md/plugins?id=custom-sort)
-   from the community plugin directory as well — required, see above.
+Install
+[Custom File Explorer sorting](https://obsidian.md/plugins?id=custom-sort)
+from the same list as well. It is required: without it nothing you set here
+has a visible effect — see above.
 
-Once the plugin is in the community directory, you can remove it from BRAT
-with **BRAT: Plugins: Remove a graduated plugin from BRAT (keep installed)**
-and let Obsidian handle updates instead.
+To track pre-release builds instead, point
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) at
+`https://github.com/vcarus/obsidian-explorer-order-editor`.
 
 ## Contributing
 
