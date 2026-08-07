@@ -30,8 +30,24 @@ folder its own order. This also means ordering the vault root only
 rearranges top-level items. There is nothing to cascade — a manual order is
 a list of specific names, and those names don't exist in the folders below.
 
+Because an order covers one folder, arranging a whole tree means visiting
+each folder in turn — so the dialog lets you walk the tree without closing
+it. Every folder row has a **›** button that opens that folder, and the path
+shown at the top steps back out again: each level of it is clickable, so
+getting from four levels deep back to the vault root is one click rather than
+four. Nothing is saved behind your back. If you have dragged rows, the
+control you are about to click says **Save and open "…"** and does exactly
+that; if you have not touched anything, opening a folder writes nothing at
+all — passing through a folder on your way somewhere else never leaves a
+`sortspec.md` behind in it.
+
 The dialog works on mobile as well as desktop; drag a row by its grip
-handle, using a long press on touch.
+handle, using a long press on touch. Dragging is not the only way to move a
+row: each one carries buttons that send it straight to the top or bottom,
+and on desktop `Alt`+`↑`/`Alt`+`↓` nudge the focused row a step at a time
+while `Alt`+`Shift`+`↑`/`Alt`+`Shift`+`↓` send it to either end. In a folder
+with dozens of items, dragging a row the full length of the list is the part
+that stops being practical first.
 
 Renaming an item keeps its position. A saved order is a list of names, so a
 rename would otherwise leave the old name behind and the new one unlisted —
@@ -252,6 +268,9 @@ Obsidian.
 src/types.ts         Entry / EntryKind — the vocabulary shared by the pure layer and the UI.
 src/sortspec.ts      Pure: parse/serialize/upsert/remove the sorting-spec value, plus name encoding and decoding.
 src/frontmatter.ts   Pure: locating and splicing the sorting-spec key within a file's front matter.
+src/rowMove.ts       Pure: the index arithmetic behind the dialog's move-to-top/bottom buttons and shortcuts.
+src/navigation.ts    Pure: the judgments behind walking the tree in the dialog — whether anything has been
+                     dragged since the level was drawn, and which levels of a deep path stay visible.
 src/sortspecFile.ts  The only module importing `obsidian` for data access: TFolder to entries, reading and
                      writing sortspec.md, triggering custom-sort.
 src/orderSync.ts     Keeps a saved order in step with the vault's rename and delete events.
@@ -260,9 +279,10 @@ src/settings.ts      The settings tab.
 src/main.ts          Plugin entry point: commands, the context menu, lifecycle.
 ```
 
-`types.ts`, `sortspec.ts` and `frontmatter.ts` have no dependency on the
-`obsidian` package (front matter parsing is injected as a parameter), so
-they're covered by the `vitest` unit tests in `test/`; `sortspecFile.ts`,
+`types.ts`, `sortspec.ts`, `frontmatter.ts`, `rowMove.ts` and `navigation.ts`
+have no dependency on the `obsidian` package (front matter parsing is
+injected as a parameter), so they're covered by the `vitest` unit tests in
+`test/`; `sortspecFile.ts`,
 `orderSync.ts`, `OrderModal.ts`, and `main.ts` are exercised by hand in the
 test vault. Logic those four need is pushed down into the pure modules
 wherever it can be, precisely so it can be tested.
