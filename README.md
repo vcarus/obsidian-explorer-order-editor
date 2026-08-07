@@ -122,11 +122,14 @@ without it nothing you do here has a visible effect.
 - **Automatically refresh after saving** (on by default) — re-run
   `custom-sort`'s refresh command after a save or a clear. When off, a
   notice tells you to run that command yourself.
-- **Hide sortspec.md in the file explorer** (off by default) — ask
+- **Hide sortspec.md in the file explorer** (on by default) — ask
   `custom-sort` to hide `sortspec.md` from folders where you've saved an
-  order, using its own item-hide syntax. Toggling this applies immediately
-  across the vault, in both directions: every section this plugin wrote is
-  updated, and sections you wrote by hand are left alone.
+  order, using its own item-hide syntax, so ordering twenty folders doesn't
+  put twenty files into your tree. Only the file explorer is affected;
+  search, the quick switcher and the graph still show the file. Turn this off
+  to see it in place. Toggling applies immediately across the vault, in both
+  directions: every section this plugin wrote is updated, and sections you
+  wrote by hand are left alone.
 
 ## Known limitations
 

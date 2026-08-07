@@ -33,13 +33,24 @@ export interface ExplorerOrderEditorSettings {
 	 * re-encodes each section from scratch, which incidentally drops any
 	 * stale entries left over from before `entriesFor` excluded
 	 * `sortspec.md` from the orderable list.
+	 *
+	 * Defaults to on. `sortspec.md` is a byproduct of using this plugin, not
+	 * something the user wrote, and ordering twenty folders otherwise drops
+	 * twenty files into the tree they never asked for — in a tool people
+	 * choose partly for keeping their vault tidy. The argument the other way
+	 * is real but weaker: hiding a file that holds the user's own
+	 * configuration makes it harder to find when something looks wrong. That
+	 * is answered by the setting being right here, and by the file being
+	 * documented prominently rather than treated as internal. Note the hide
+	 * only covers the file explorer — search, the quick switcher and the
+	 * graph still show it, so nothing is truly out of reach.
 	 */
 	readonly hideSortspec: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExplorerOrderEditorSettings = {
 	autoRefresh: true,
-	hideSortspec: false,
+	hideSortspec: true,
 };
 
 /**
