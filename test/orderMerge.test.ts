@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { targetIndexFor } from '../src/rowMove';
 import { mergeStoredOrder, parseSortingSpec, readFolderOrder, renameEntryInOrder, upsertFolderOrder } from '../src/sortspec';
 import { entryNameForFileName, fallbackEntryOrder, type Entry } from '../src/types';
 
@@ -268,5 +269,79 @@ describe('entryNameForFileName', () => {
 
 	it('the .md match is case-sensitive, mirroring TFile.extension', () => {
 		expect(entryNameForFileName('A.MD')).toBe('A.MD');
+	});
+});
+
+describe('targetIndexFor', () => {
+	// [a, b, c, d, e] — index 2 ('c') is neither edge, so every move direction
+	// has somewhere to go.
+	const count = 5;
+	const middle = 2;
+
+	it('up: one position earlier', () => {
+		expect(targetIndexFor('up', middle, count)).toBe(1);
+	});
+
+	it('down: one position later', () => {
+		expect(targetIndexFor('down', middle, count)).toBe(3);
+	});
+
+	it('top: index 0', () => {
+		expect(targetIndexFor('top', middle, count)).toBe(0);
+	});
+
+	it('bottom: the last index', () => {
+		expect(targetIndexFor('bottom', middle, count)).toBe(count - 1);
+	});
+
+	it('up at index 0 -> null, already at the top', () => {
+		expect(targetIndexFor('up', 0, count)).toBeNull();
+	});
+
+	it('top at index 0 -> null, already there', () => {
+		expect(targetIndexFor('top', 0, count)).toBeNull();
+	});
+
+	it('down at the last index -> null, already at the bottom', () => {
+		expect(targetIndexFor('down', count - 1, count)).toBeNull();
+	});
+
+	it('bottom at the last index -> null, already there', () => {
+		expect(targetIndexFor('bottom', count - 1, count)).toBeNull();
+	});
+
+	it('a single row (count 1): every move is a no-op', () => {
+		expect(targetIndexFor('up', 0, 1)).toBeNull();
+		expect(targetIndexFor('down', 0, 1)).toBeNull();
+		expect(targetIndexFor('top', 0, 1)).toBeNull();
+		expect(targetIndexFor('bottom', 0, 1)).toBeNull();
+	});
+
+	it('no rows at all (count 0): every move is a no-op', () => {
+		expect(targetIndexFor('up', 0, 0)).toBeNull();
+		expect(targetIndexFor('down', 0, 0)).toBeNull();
+		expect(targetIndexFor('top', 0, 0)).toBeNull();
+		expect(targetIndexFor('bottom', 0, 0)).toBeNull();
+	});
+
+	it('an out-of-range index (negative or >= count) never throws, always null', () => {
+		expect(targetIndexFor('up', -1, count)).toBeNull();
+		expect(targetIndexFor('down', -1, count)).toBeNull();
+		expect(targetIndexFor('top', count, count)).toBeNull();
+		expect(targetIndexFor('bottom', count, count)).toBeNull();
+	});
+
+	// count 2 is the smallest case where a move actually goes somewhere, and
+	// where 'down'/'top' collapse to the same destination pairs (there's only
+	// one other slot) — worth asserting both agree rather than assuming it
+	// from the count-5 cases above.
+	it('count 2, index 0 (already at the top): down and bottom agree (both land on index 1)', () => {
+		expect(targetIndexFor('down', 0, 2)).toBe(1);
+		expect(targetIndexFor('bottom', 0, 2)).toBe(1);
+	});
+
+	it('count 2, index 1 (already at the bottom): up and top agree (both land on index 0)', () => {
+		expect(targetIndexFor('up', 1, 2)).toBe(0);
+		expect(targetIndexFor('top', 1, 2)).toBe(0);
 	});
 });

@@ -1,6 +1,7 @@
-import { App, ButtonComponent, Modal, Notice, setIcon, setTooltip, TFolder } from 'obsidian';
+import { App, ButtonComponent, Modal, Notice, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
 import Sortable from 'sortablejs';
 import { FrontMatterError, type FrontMatterErrorCode } from './frontmatter';
+import { targetIndexFor, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
 import {
 	buildNameIndex,
@@ -28,6 +29,64 @@ const ICON_FOLDER = 'lucide-folder';
 const ICON_FILE = 'lucide-file-text';
 const ICON_GRIP = 'lucide-grip-vertical';
 const ICON_WARNING = 'lucide-triangle-alert';
+const ICON_MOVE_TOP = 'lucide-chevrons-up';
+const ICON_MOVE_BOTTOM = 'lucide-chevrons-down';
+
+/**
+ * Renders one of this modal's shortcuts the way the running platform writes
+ * it: macOS uses modifier symbols, matching how Obsidian's own hotkey
+ * settings display them, and every other platform spells the modifiers out.
+ * Arrow glyphs are used everywhere — shorter than "Up"/"Down" and they read
+ * the same on every platform.
+ */
+const shortcut = (withShift: boolean, arrow: '↑' | '↓'): string =>
+	Platform.isMacOS ? `⌥${withShift ? '⇧' : ''}${arrow}` : `Alt+${withShift ? 'Shift+' : ''}${arrow}`;
+
+// Shown as both the button tooltip and its `aria-label`, so a keyboard-only
+// or screen-reader user can discover the shortcut without ever hovering.
+//
+// On mobile the shortcut is left out rather than named: there is no modifier
+// key to press, so advertising one would describe something the reader cannot
+// do. The buttons themselves are the mobile route, which is also why they are
+// rendered unconditionally instead of on hover.
+const MOVE_TOP_LABEL = Platform.isMobile ? 'Move to top' : `Move to top (${shortcut(true, '↑')})`;
+const MOVE_BOTTOM_LABEL = Platform.isMobile ? 'Move to bottom' : `Move to bottom (${shortcut(true, '↓')})`;
+
+/**
+ * A run of hint text, or one shortcut to render as a key cap. Split this way
+ * because the shortcuts have to be visually bounded: written inline as bare
+ * glyphs, `⌥↑/⌥↓` reads as one long symbol rather than two alternatives —
+ * adding spaces only softens that, whereas a box around each one states where
+ * one key combination ends and the next begins.
+ */
+type HintPart = { readonly text: string } | { readonly key: string };
+
+/**
+ * One entry per rendered line. Lines are separate array entries rather than
+ * one string with a newline in it because a line break inside text content
+ * collapses to a space in HTML — the split has to exist in the markup, so it
+ * has to exist here too.
+ *
+ * Mobile gets a single line with no key caps: with no modifier key to press
+ * there is no shortcut to name.
+ */
+const HINT_LINES: readonly (readonly HintPart[])[] = Platform.isMobile
+	? [[{ text: 'Long-press the handle to drag a row, or use the buttons to send it to the top or bottom.' }]]
+	: [
+			[
+				{ text: 'Drag by the handle, or click a row and press ' },
+				{ key: shortcut(false, '↑') },
+				{ text: ' or ' },
+				{ key: shortcut(false, '↓') },
+				{ text: ' to move it.' },
+			],
+			[
+				{ key: shortcut(true, '↑') },
+				{ text: ' or ' },
+				{ key: shortcut(true, '↓') },
+				{ text: ' sends it to the top or bottom.' },
+			],
+		];
 
 /**
  * One row in the reorder list. `entry` is the immutable identity (name +
@@ -49,6 +108,13 @@ export class OrderModal extends Modal {
 	private listEl: HTMLElement | null = null;
 	private sortable: Sortable | null = null;
 	private readonly entryByRowEl = new Map<HTMLElement, Entry>();
+	/**
+	 * The move-to-top/move-to-bottom buttons for each sortable row, keyed the
+	 * same way `entryByRowEl` is. Needed so `refreshRowActionsDisabled` can
+	 * flip `.disabled` on exactly the two buttons that belong to the row now
+	 * at each end, without re-querying the DOM for them on every move.
+	 */
+	private readonly rowActionsByRowEl = new Map<HTMLElement, { readonly top: HTMLButtonElement; readonly bottom: HTMLButtonElement }>();
 	/**
 	 * Entries that can't be represented in custom-sort's syntax, in the order
 	 * they're rendered in the (non-sortable) second region. Not draggable, so
@@ -117,6 +183,11 @@ export class OrderModal extends Modal {
 			for (const row of orderableRows) {
 				this.renderRow(listEl, row);
 			}
+			// First/last are now known (they're just the first/last rows just
+			// rendered) — set their buttons' disabled state before the modal is
+			// ever shown, rather than leaving both enabled until some later move
+			// happens to refresh them.
+			this.refreshRowActionsDisabled();
 
 			this.sortable = new Sortable(listEl, {
 				// Obsidian mobile is a WebView where native HTML5 drag events are
@@ -146,7 +217,30 @@ export class OrderModal extends Modal {
 				ghostClass: 'eoe-row-ghost',
 				chosenClass: 'eoe-row-chosen',
 				dragClass: 'eoe-row-drag',
+				// A drag can carry a row to or away from either end of the list
+				// just as much as a button click or keyboard move can — without
+				// this, dropping the last row at the top would leave the old
+				// first row's "move to top" button stuck enabled and the dropped
+				// row's own buttons stuck disabled until some unrelated move
+				// happened to refresh them.
+				onEnd: () => this.refreshRowActionsDisabled(),
 			});
+
+			// The shortcuts are otherwise undiscoverable: the buttons name them
+			// in their tooltips, but only on hover, and a keyboard user is the
+			// one person who never hovers. Placed after the list so it reads as
+			// a footnote to it rather than competing with the rows themselves.
+			const hint = this.contentEl.createDiv({ cls: 'eoe-hint' });
+			for (const parts of HINT_LINES) {
+				const lineEl = hint.createDiv({ cls: 'eoe-hint-line' });
+				for (const part of parts) {
+					if ('key' in part) {
+						lineEl.createEl('kbd', { cls: 'eoe-kbd', text: part.key });
+					} else {
+						lineEl.appendText(part.text);
+					}
+				}
+			}
 		}
 
 		if (unorderableRows.length > 0) {
@@ -171,6 +265,7 @@ export class OrderModal extends Modal {
 		this.sortable = null;
 		this.listEl = null;
 		this.entryByRowEl.clear();
+		this.rowActionsByRowEl.clear();
 		this.unorderableEntries = [];
 		this.contentEl.empty();
 	}
@@ -246,6 +341,165 @@ export class OrderModal extends Modal {
 		setIcon(icon, row.entry.kind === 'folder' ? ICON_FOLDER : ICON_FILE);
 
 		rowEl.createSpan({ cls: 'eoe-row-name', text: row.entry.name });
+
+		// Same condition as the grip above, for the same reason: an
+		// unorderable row has no position to alter, so it gets neither a way
+		// to drag it nor a way to nudge it — offering either would be a
+		// control that visibly does nothing.
+		if (row.disabledReason === undefined) {
+			this.renderRowActions(rowEl);
+			rowEl.setAttribute('tabindex', '0');
+			rowEl.addEventListener('keydown', (evt) => this.onRowKeyDown(evt, rowEl));
+
+			// Focus the row explicitly rather than relying on a click landing
+			// on a `tabindex` element focusing it by default. SortableJS runs
+			// its own pointer handling over this same container in fallback
+			// mode (see `forceFallback` in `onOpen`), and anything that calls
+			// preventDefault on the pointer-down that starts a gesture also
+			// cancels the default focus — leaving the keyboard shortcuts with
+			// nothing focused to act on, which is exactly how they were first
+			// reported as "not working". Focusing here does not interfere with
+			// a drag: Sortable tracks the gesture from its own listeners, not
+			// from what happens to hold focus.
+			rowEl.addEventListener('mousedown', (evt) => {
+				// A click on one of the action buttons must leave focus on that
+				// button, so it can be pressed repeatedly with Enter.
+				if (evt.target instanceof HTMLElement && evt.target.closest('.eoe-row-actions') !== null) return;
+				rowEl.focus();
+			});
+		}
+	}
+
+	/**
+	 * The move-to-top/move-to-bottom button pair appended to a sortable row.
+	 * Rendered unconditionally rather than only on `:hover`: this modal's
+	 * drag path already has to support touch via SortableJS's fallback mode
+	 * (see the `forceFallback` comment in `onOpen`), and touch has no hover
+	 * state at all — a hover-only affordance would simply not exist there.
+	 */
+	private renderRowActions(rowEl: HTMLElement): void {
+		const actions = rowEl.createDiv({ cls: 'eoe-row-actions' });
+
+		const top = actions.createEl('button', { cls: 'clickable-icon eoe-row-action', attr: { type: 'button' } });
+		setIcon(top, ICON_MOVE_TOP);
+		setTooltip(top, MOVE_TOP_LABEL);
+		top.setAttribute('aria-label', MOVE_TOP_LABEL); // setTooltip only shows a hover hint; it does not also give the button an accessible name
+		top.addEventListener('click', () => this.moveRow(rowEl, 'top'));
+
+		const bottom = actions.createEl('button', { cls: 'clickable-icon eoe-row-action', attr: { type: 'button' } });
+		setIcon(bottom, ICON_MOVE_BOTTOM);
+		setTooltip(bottom, MOVE_BOTTOM_LABEL);
+		bottom.setAttribute('aria-label', MOVE_BOTTOM_LABEL);
+		bottom.addEventListener('click', () => this.moveRow(rowEl, 'bottom'));
+
+		this.rowActionsByRowEl.set(rowEl, { top, bottom });
+	}
+
+	/**
+	 * `ArrowUp`/`ArrowDown` alone move *focus* to the neighboring row —
+	 * ordinary list-navigation behavior. Repurposing the bare arrow keys to
+	 * move the row itself would leave a keyboard user with no way to simply
+	 * browse a long list (`bigfolder` has 62 rows) without also reordering
+	 * it on every keystroke. `Alt+Arrow` nudges the row one step;
+	 * `Alt+Shift+Arrow` jumps it to the relevant edge, mirroring the button
+	 * pair. Every other key (including plain `Shift+Arrow`, which has no
+	 * assigned meaning here) is left untouched.
+	 */
+	private onRowKeyDown(evt: KeyboardEvent, rowEl: HTMLElement): void {
+		if (evt.key !== 'ArrowUp' && evt.key !== 'ArrowDown') return;
+		// Every branch below consumes this keypress; without preventDefault
+		// the modal's content area scrolls out from under the row list as a
+		// side effect of the arrow key, on top of whatever we do here.
+		evt.preventDefault();
+
+		const isUp = evt.key === 'ArrowUp';
+		if (evt.altKey && evt.shiftKey) {
+			this.moveRow(rowEl, isUp ? 'top' : 'bottom');
+		} else if (evt.altKey) {
+			this.moveRow(rowEl, isUp ? 'up' : 'down');
+		} else {
+			this.focusAdjacentRow(rowEl, isUp ? -1 : 1);
+		}
+	}
+
+	/** Moves focus by one row in `delta`'s direction; a no-op at either end of the list, where there is no neighbor to focus. */
+	private focusAdjacentRow(rowEl: HTMLElement, delta: -1 | 1): void {
+		const rows = this.sortableRows();
+		const index = rows.indexOf(rowEl);
+		if (index === -1) return;
+		rows[index + delta]?.focus();
+	}
+
+	/**
+	 * Moves `rowEl` to the position `move` implies, then restores focus and
+	 * scroll position and refreshes the boundary buttons. The one place both
+	 * the button clicks and the keyboard shortcuts end up, so the two
+	 * trigger paths can never drift into moving things differently.
+	 */
+	private moveRow(rowEl: HTMLElement, move: RowMove): void {
+		const listEl = this.listEl;
+		if (listEl === null) return;
+
+		const rows = this.sortableRows();
+		const index = rows.indexOf(rowEl);
+		const target = targetIndexFor(move, index, rows.length);
+		if (target === null) return; // already at the edge `move` would go to (or rowEl isn't in the list at all) — nothing to do
+
+		// `listEl.children[target]` is read only *after* `remove()`. `target`
+		// is a position among the *remaining* `rows.length - 1` elements once
+		// `rowEl` is out, so reading it beforehand would be off by one for
+		// any move that crosses `rowEl`'s old slot. Doing it in this order is
+		// what lets the same two lines handle all four move kinds with no
+		// per-direction branch — see rowMove.ts's contract doc for the four
+		// worked examples this is checked against (e.g. index 3 of 5 moving
+		// 'up' needs target 2; index 0 of 5 moving 'bottom' needs target 4).
+		rowEl.remove();
+		listEl.insertBefore(rowEl, listEl.children[target] ?? null);
+
+		// remove() unconditionally blurs the focused element. Without
+		// restoring focus here, the first Alt+ArrowDown a keyboard user
+		// presses would silently drop focus to <body>, and every further
+		// arrow key would do nothing — nothing would be left listening.
+		rowEl.focus();
+		// The list is capped at 60vh and scrolls (`bigfolder` has 62 rows), so
+		// a top/bottom jump can easily carry the row outside the visible slice.
+		rowEl.scrollIntoView({ block: 'nearest' });
+
+		this.refreshRowActionsDisabled();
+	}
+
+	/**
+	 * Disables each row's "move to top"/"move to bottom" button exactly when
+	 * that row is already at the relevant end of the list; every other
+	 * button is enabled. Recomputed from live DOM order — on every move,
+	 * not incrementally — because a SortableJS drag can change which row is
+	 * first or last without going through `moveRow` at all, so there is no
+	 * single choke point to update the two affected rows' buttons in place
+	 * even if that looked cheaper.
+	 */
+	private refreshRowActionsDisabled(): void {
+		const rows = this.sortableRows();
+		rows.forEach((rowEl, index) => {
+			const actions = this.rowActionsByRowEl.get(rowEl);
+			if (actions === undefined) return; // every orderable row gets an entry in renderRowActions; nothing to do if one is ever missing
+			actions.top.disabled = index === 0;
+			actions.bottom.disabled = index === rows.length - 1;
+		});
+	}
+
+	/**
+	 * `listEl.children` narrowed to `HTMLElement[]`. Every row is built with
+	 * `createDiv`, so nothing else can ever be a child of `listEl` — the
+	 * `instanceOf` check exists only because `HTMLCollection` is typed
+	 * element-agnostic (`Element`, not `HTMLElement`), not because a
+	 * non-`HTMLElement` child is actually expected. Shared by every method
+	 * above that needs "the rows, in on-screen order" so the DOM-reading
+	 * logic exists in exactly one place.
+	 */
+	private sortableRows(): HTMLElement[] {
+		const listEl = this.listEl;
+		if (listEl === null) return [];
+		return Array.from(listEl.children).filter((child): child is HTMLElement => child.instanceOf(HTMLElement));
 	}
 
 	/** `canSave` is false when every entry is unorderable — nothing dragged into an order, so nothing to offer saving. */

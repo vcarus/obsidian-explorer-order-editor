@@ -50,6 +50,21 @@
 	background-color: var(--background-modifier-hover);
 }
 
+/* Focus doubles as "the row the keyboard shortcuts will act on", so it has to
+   be visible whenever it exists — including after a mouse click, which is why
+   this is on :focus and not only :focus-visible. Browsers deliberately hide
+   the ring for pointer focus, which left the whole keyboard path invisible:
+   nothing on screen changed when a row was clicked, so there was no way to
+   tell a row was selected, or which one.
+
+   An outline rather than a border (the treatment .eoe-row-chosen uses) so the
+   indicator costs no layout: a 2px border would shift the row's contents by
+   2px every time focus moved. */
+.eoe-row[tabindex]:focus {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: -2px;
+}
+
 .eoe-row-handle {
 	display: flex;
 	flex-shrink: 0;
@@ -85,6 +100,69 @@
 .eoe-row-disabled {
 	opacity: 0.5;
 	cursor: not-allowed;
+}
+
+/* Move-to-top/move-to-bottom buttons. flex-shrink: 0 keeps them from being
+   squeezed by .eoe-row-name's flex: 1 1 auto — without it a long name would
+   shrink the actions first, the opposite of the ellipsis truncation
+   .eoe-row-name already relies on to stay in bounds instead. */
+.eoe-row-actions {
+	display: flex;
+	flex-shrink: 0;
+	gap: var(--size-2-1);
+}
+
+/* clickable-icon (Obsidian's own class, applied alongside this one) already
+   supplies icon sizing, hover/active states and cursor — this rule only adds
+   what's specific to sitting inside a row action group: the disabled state,
+   which clickable-icon has no opinion on. */
+.eoe-row-action:disabled {
+	opacity: 0.35;
+	cursor: not-allowed;
+}
+
+/* clickable-icon's hover highlight implies "you can act on this", which a
+   disabled button can't — the same reason the unorderable rows below suppress
+   theirs. Obsidian paints it on :hover alone, without a :not(:disabled)
+   guard, so it has to be undone here. */
+.eoe-row-action:disabled:hover {
+	background-color: transparent;
+	box-shadow: none;
+}
+
+/* Footnote under the sortable list naming the keyboard shortcuts. Muted,
+   smaller and italic so it reads as an aside rather than as another row. One
+   child element per sentence: a newline inside text content collapses to a
+   space in HTML, so the line break has to come from the markup. */
+.eoe-hint {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-2-1);
+	margin-top: var(--size-4-2);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-style: italic;
+}
+
+/* Key caps inside the hint. Bounded rather than written as bare glyphs
+   because `⌥↑/⌥↓` inline reads as one long symbol instead of two
+   alternatives.
+
+   font-style: normal undoes the surrounding italic — a slanted key cap reads
+   as a typo rather than as a key. font-family: inherit overrides the
+   browser's monospace default for <kbd>, in which the modifier symbols sit on
+   inconsistent widths and look ragged next to the arrow. nowrap so a cap can
+   never be split across a line break. */
+.eoe-kbd {
+	padding: 0 var(--size-2-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+	font-family: inherit;
+	font-size: inherit;
+	font-style: normal;
+	white-space: nowrap;
 }
 
 /* Unorderable rows aren't managed by SortableJS and have no drag handle, so
