@@ -204,7 +204,14 @@ export function specTargets(spec: ParsedSpec, key: string): boolean {
 // Name encoding
 // ---------------------------------------------------------------------------
 
-export type UnencodableReason = 'empty' | 'whitespace' | 'newline' | 'wildcard' | 'backslash' | 'reserved-token';
+export type UnencodableReason =
+	| 'empty'
+	| 'whitespace'
+	| 'newline'
+	| 'wildcard'
+	| 'backslash'
+	| 'reserved-token'
+	| 'group-attribute';
 
 export type EncodeEntryResult =
 	| { readonly ok: true; readonly line: string }
@@ -284,6 +291,21 @@ const GROUP_TYPE_PREFIX_TOKENS: readonly string[] = [
 const PRIORITY_PREFIX_TOKENS: readonly string[] = ['/!', '/!!', '/!!!'];
 const COMBINE_PREFIX_TOKENS: readonly string[] = ['/+'];
 
+// This table and LINE_ATTRIBUTE_LEXEMES below deliberately overlap (both
+// list `target-folder:`, `::::`, `order-asc:`, `order-desc:`, `sorting:`,
+// `<`, `>`, `\<`, `\>`). They come from two different sources of truth and
+// are kept as two separate constants on purpose rather than merged into one:
+// this one is *our* accumulated table of "things `encodeEntry`/`parseEntryLine`
+// need to treat as an instruction, not a name" (built up across several
+// rounds — see the `with-metadata:`/`bookmarked:`/`with-icon:`/`/--hide:`
+// entries below, none of which are in custom-sort's `ro` map at all).
+// LINE_ATTRIBUTE_LEXEMES is a verbatim transcription of custom-sort's own
+// `ro` map — a narrower, differently-matched set (case-insensitive prefix,
+// not case-sensitive exact-prefix) that exists purely so `needsTypePrefix`
+// can be checked against custom-sort's actual data instead of our reading of
+// it. Merging them would obscure which entries are "ours" vs "transcribed",
+// and would force one matching rule (case-sensitive or -insensitive) onto
+// lexemes that only need the other.
 const ATTRIBUTE_LEXEMES: readonly string[] = [
 	'target-folder:',
 	'::::',
@@ -309,6 +331,143 @@ const ATTRIBUTE_LEXEMES: readonly string[] = [
 	// `/--hide:` is the *entire* first token is caught by `RESERVED_TOKENS`
 	// before this list is even consulted.
 	'/--hide:',
+];
+
+// Of the lexemes in ATTRIBUTE_LEXEMES above, these 3 are a different and more
+// dangerous class. custom-sort's `consumeParsedSortingGroupSpec` (bundled
+// `main.js`, this method starts at char offset ~32583) does its `startsWith`
+// check against the *group body* — the text remaining after a group-type
+// prefix (ours or the author's own) has already been stripped off — not
+// against the raw line. Traced from the bundled source (names below are
+// exactly as in `main.js`, since they're object properties and survive
+// minification unmangled):
+//
+//   if (arraySpec.length === 1) {
+//     let i = arraySpec[0];                  // <- already past the group-type prefix
+//     if (i === "...")                     return { type: 1, ... };  // catch-all; moot here, `...` is already rejected earlier
+//     if (i.startsWith("with-metadata:"))  return { type: 6, withMetadataFieldName: ... };
+//     else if (i.startsWith("bookmarked:")) return { type: 7, ... };
+//     else if (i.startsWith("with-icon:"))  return { type: 8, iconName: ... };
+//     else                                  return { type: 2, exactText: i, ... };  // literal name
+//   }
+//
+// Injecting `/folders `/`/:files ` does nothing to neutralize these three:
+// that prefix is consumed *before* this switch runs, so `i` ends up as
+// exactly the entry's own name either way. `/:files with-metadata: x` still
+// hands `i = "with-metadata: x"` to this check, which still matches the
+// first branch, so the line still becomes a `type: 6` metadata-match group —
+// it never falls through to the `type: 2` literal-name match `encodeEntry`
+// is counting on to make the prefix trick work.
+//
+// The failure has two layers, the second worse than the first (reproduced in
+// testvault, `xss-test/with-metadata: x.md`):
+//   1. The entry's own line is consumed as a match *rule*, not a name — so
+//      the file/folder itself is unlisted and sorts last, same as any other
+//      unrepresentable name.
+//   2. Unlike a merely-dropped name, this line stays *active*: it is now a
+//      live metadata/bookmark/icon-matching group for the rest of the
+//      section. Any sibling that happens to satisfy it (e.g. another file in
+//      the same folder with an `x` front-matter field) gets pulled into this
+//      group's position — silently mis-sorting a file that was never named
+//      in the spec at all.
+//
+// Contrast with the rest of ATTRIBUTE_LEXEMES (`target-folder:`, `::::`,
+// `order-asc:`, `order-desc:`, `sorting:`, `<`, `>`, `/--hide:`): those are
+// recognized as line-level or folder-level attributes in an earlier parsing
+// pass, before a line is ever handed to `consumeParsedSortingGroupSpec` as a
+// group body. Once our prefix routes the line into group-body parsing, they
+// are just characters as far as this switch is concerned, and land on the
+// `type: 2` literal-name branch like any ordinary name — prefixing them is
+// genuinely safe. Verified against testvault: `xss-test/order-desc:
+// a-z.md` and `xss-test/<img src=x onerror=alert(1)>.md` both sort correctly
+// today with the injected `/:files ` prefix; those two names are this
+// change's control group and must keep working.
+const GROUP_BODY_LEXEMES: readonly string[] = ['with-metadata:', 'bookmarked:', 'with-icon:'];
+
+// A verbatim transcription of custom-sort's own line-attribute table — its
+// `ro` object (bundled `main.js`, built at char offset ~21144 as
+// `ro = {...yt, ...St, ...Vn}` from three smaller maps: `yt` contributes
+// `<`, `\<`, `>`, `\>`, `order-asc:`, `order-desc:`, `sorting:`; `St`
+// contributes the same four symbols plus the *no-colon* forms `order-asc`,
+// `order-desc`, `asc`, `desc`; `Vn` contributes `target-folder:` and `::::`).
+// Confirmed by reading the bundled source directly, not from memory.
+//
+// `ro` feeds exactly two checks in the main per-line parse loop (the loop
+// itself sits at offset ~36099: for each non-blank, non-`//` line, it tries
+// `parseAttribute` first, and only if that returns null does it try
+// `checkForRiskyAttrSyntaxError`):
+//
+//   parseAttribute(line)                          // offset ~27853
+//     r = line.trimStart()
+//     n = r.indexOf(" ")                          // first space in the trimmed line
+//     if (n === -1) return null                   // no space anywhere -> give up
+//     word = r.slice(0, n).toLowerCase()           // the whole first token, lowercased
+//     if (ro[word]) { ...consume the line as an attribute (valid or not)... }
+//
+//   checkForRiskyAttrSyntaxError(line)             // right after parseAttribute, same region
+//     whole = line.trimStart().toLowerCase()
+//     for (key of Object.keys(ro))
+//       if (whole.startsWith(key)) { ...report a parse problem, consume the line... }
+//
+// The two use different match rules — parseAttribute wants the lowercased
+// *first whitespace-delimited token* to equal a key exactly (and only even
+// looks if the line has a space at all); checkForRiskyAttrSyntaxError wants
+// the lowercased *whole line* to merely start with a key, no word boundary
+// required. But parseAttribute's condition always implies
+// checkForRiskyAttrSyntaxError's: if the first token equals a key of length
+// L, the line necessarily has a space at index L, so the line's first L
+// characters *are* that key — precisely what checkForRiskyAttrSyntaxError
+// also tests, as a plain string-prefix check that doesn't care what comes
+// after. So checkForRiskyAttrSyntaxError's match set is a strict superset of
+// parseAttribute's, and running both back-to-back in the real parser catches
+// nothing more than "lowercase the line, then check startsWith against every
+// `ro` key" would catch by itself. That single test is exactly what
+// `needsTypePrefix` mirrors below — we don't need to reproduce the
+// two-function split, only its union.
+//
+// Consequence is bad either way we can't tell apart from the name alone: a
+// name that lands in parseAttribute's exact-match branch either parses as a
+// valid attribute (the file/folder's own line is silently consumed as a rule,
+// never listed as an item) or fails value validation and calls `problem()`;
+// a name merely caught by checkForRiskyAttrSyntaxError's prefix match always
+// calls `problem()`. Any `problem()` call here suspends the *entire* plugin
+// (`this.settings.suspended = true` + `saveSettings()`, offset ~72365) — see
+// CLAUDE.md's "无法表达的名字" section. So both outcomes are treated as
+// equally unsafe; there's no such thing as "detecting the safe case and
+// skipping the prefix" here, because adding the prefix is itself what makes
+// the line safe (see below).
+//
+// The fix — prefixing works, unlike the GROUP_BODY_LEXEMES case above —
+// because `parseAttribute`/`checkForRiskyAttrSyntaxError` run in an entirely
+// separate, earlier pass over the *raw, unprefixed* line straight from the
+// file (the main loop above), before `parseSortingGroupSpec`'s own
+// group-type-prefix stripping ever runs. Once our `/folders `/`/:files `
+// prefix is on the line, it's simply what `ro`'s keys are compared against
+// at column 0 — the entry's own name has been pushed past where either check
+// looks, and never reaches them at all. Contrast this with
+// GROUP_BODY_LEXEMES, whose corresponding check runs *after* a prefix
+// (ours or the author's own) has already been stripped off, so prefixing
+// there gains nothing.
+//
+// `\<` and `\>` are kept here for a byte-for-byte-faithful transcription of
+// `ro` even though neither can actually be reached through this path in
+// practice: any name containing a literal backslash is already rejected by
+// `encodeEntry`'s earlier `reason: 'backslash'` check, so `needsTypePrefix`
+// is never even called for such a name.
+const LINE_ATTRIBUTE_LEXEMES: readonly string[] = [
+	'<',
+	'\\<',
+	'>',
+	'\\>',
+	'order-asc:',
+	'order-desc:',
+	'sorting:',
+	'order-asc',
+	'order-desc',
+	'asc',
+	'desc',
+	'target-folder:',
+	'::::',
 ];
 
 /**
@@ -403,9 +562,20 @@ function needsTypePrefix(entry: Entry, index: NameIndex): boolean {
 	const kinds = index.get(name);
 	if (kinds !== undefined && kinds.size > 1) return true;
 
-	// 2. Starts with an attribute lexeme.
+	// 2a. Starts with one of our own attribute lexemes, case-sensitively.
 	for (const lexeme of ATTRIBUTE_LEXEMES) {
 		if (name.startsWith(lexeme)) return true;
+	}
+
+	// 2b. Case-insensitively starts with one of the 13 lexemes custom-sort's
+	// own line-attribute matchers key on (see LINE_ATTRIBUTE_LEXEMES for the
+	// full derivation and why case-insensitive startsWith is the right — and
+	// only necessary — test). Lowercase once, not per lexeme: this loop runs
+	// per sibling entry per save, and re-lowercasing `name` 13 times each call
+	// would be pure waste.
+	const lowerName = name.toLowerCase();
+	for (const lexeme of LINE_ATTRIBUTE_LEXEMES) {
+		if (lowerName.startsWith(lexeme)) return true;
 	}
 
 	// 3. Conservative catch-all.
@@ -433,6 +603,21 @@ export function encodeEntry(entry: Entry, index: NameIndex): EncodeEntryResult {
 	// skip the entry rather than guess.
 	const firstToken = name.split(/\s/)[0] ?? '';
 	if (RESERVED_TOKENS.has(firstToken)) return { ok: false, reason: 'reserved-token' };
+
+	// A name starting with one of GROUP_BODY_LEXEMES is equally unrescuable,
+	// for a different reason: custom-sort's `startsWith` check there runs
+	// against the group body itself (see the comment on that constant), so
+	// our prefix never even gets a chance to be misinterpreted — it's simply
+	// invisible to this check. Checked with `startsWith`, not "first
+	// whitespace-delimited token", to mirror custom-sort's own `i.startsWith(...)`
+	// exactly: `with-metadata:x` (no space before more text) still matches,
+	// while `with-metadataFOO` (no colon) does not. Ordered after the
+	// `RESERVED_TOKENS` check above only so the diagnostic reason a caller
+	// sees is deterministic; the two sets don't overlap (none of these three
+	// lexemes is itself a reserved token).
+	for (const lexeme of GROUP_BODY_LEXEMES) {
+		if (name.startsWith(lexeme)) return { ok: false, reason: 'group-attribute' };
+	}
 
 	const line = needsTypePrefix(entry, index)
 		? `${entry.kind === 'folder' ? '/folders ' : '/:files '}${name}`
@@ -658,6 +843,21 @@ interface ParsedEntryLine {
  * anything indented (belongs to a custom-sort group, not this folder's own
  * list), and anything containing `...` (wildcard, unevaluable, and never
  * something `encodeEntry` would have written).
+ *
+ * Known asymmetry, left as-is: matching here is case-sensitive (`ATTRIBUTE_LEXEMES`,
+ * checked with plain `startsWith`), while `needsTypePrefix` additionally
+ * treats a case-insensitive prefix match against `LINE_ATTRIBUTE_LEXEMES` as
+ * needing a type prefix on the *write* side (see that constant's comment).
+ * That's fine for round-tripping our own output: everything `encodeEntry`
+ * writes for a name in that danger zone is prefixed, so this function never
+ * needs to recognize the bare, unprefixed, differently-cased form — the
+ * prefix is what it actually sees, and `FOLDER_PREFIXES`/`FILE_PREFIXES`
+ * strip it same as any other prefixed line. Making this function
+ * case-insensitive too would be a *different* change: it would alter how a
+ * foreign, hand-written line gets classified (e.g. a hand-authored `Desc
+ * something` line, never touched by `encodeEntry`, would newly decode as
+ * `null` instead of a literal name), which is not something this fix
+ * touches.
  */
 function parseEntryLine(line: string): ParsedEntryLine | null {
 	if (line.length === 0) return null;

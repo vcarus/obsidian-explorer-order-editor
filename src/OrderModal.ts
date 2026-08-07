@@ -425,6 +425,8 @@ function describeUnencodableCause(reason: UnencodableReason): string {
 			return 'a backslash';
 		case 'reserved-token':
 			return 'a leading symbol reserved by the sorting syntax';
+		case 'group-attribute':
+			return 'a leading phrase the sorting syntax treats as a matching rule';
 	}
 }
 
@@ -442,6 +444,8 @@ function describeUnencodableReason(reason: UnencodableReason): string {
 			return 'contains a backslash';
 		case 'reserved-token':
 			return 'starts with a symbol sequence reserved by the sorting syntax';
+		case 'group-attribute':
+			return 'starts with a phrase the sorting syntax treats as a matching rule instead of a name';
 	}
 }
 

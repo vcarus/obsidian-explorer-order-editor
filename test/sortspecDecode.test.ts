@@ -124,9 +124,14 @@ describe('round trip: readFolderOrder(upsertFolderOrder(...)) === entries', () =
 		// below ("reserved-token names are never written..."). It doesn't
 		// belong in this corpus list any more, since every entry here is
 		// expected to round-trip losslessly.
+		// 'with-metadata: x' used to be in this list; it no longer belongs here
+		// for the same reason reserved-token names were pulled out above --
+		// GROUP_BODY_LEXEMES ('with-metadata:', 'bookmarked:', 'with-icon:') are
+		// unrepresentable too (see src/sortspec.ts and the dedicated coverage
+		// in test/sortspec.test.ts), so there's nothing for them to round-trip.
 		[
 			'names starting with attribute lexemes',
-			[file('target-folder: x'), file('::::x'), file('<x'), file('>x'), file('with-metadata: x'), file('sorting: x')],
+			[file('target-folder: x'), file('::::x'), file('<x'), file('>x'), file('sorting: x')],
 		],
 		['catch-all-first-char names', [folder('%Report'), file('--dashes'), file('/slash-first')]],
 		['a bare name with no collision, of each kind', [folder('Foo'), file('Bar')]],
@@ -199,7 +204,8 @@ describe('round trip holds across the full encodeEntry test matrix from sortspec
 		'target-folder: x',
 		'::::x',
 		'<x',
-		'with-metadata: x',
+		// 'with-metadata: x' deliberately excluded -- no longer representable,
+		// see the note above the 'names starting with attribute lexemes' corpus.
 		'%Report',
 		'//comment',
 		'--x',
@@ -260,6 +266,49 @@ describe('round trip holds across the full encodeEntry test matrix from sortspec
 		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
 		expect(written.diagnostics).toEqual([{ kind: 'unrepresentable-entry', name, reason: 'reserved-token' }]);
 		expect(readFolderOrder(written.spec, '.', entries)).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// LINE_ATTRIBUTE_LEXEMES round trip: names that only became representable --
+// with a forced prefix -- once needsTypePrefix started matching
+// custom-sort's own `ro` line-attribute map case-insensitively (see
+// src/sortspec.ts). Unlike GROUP_BODY_LEXEMES, prefixing genuinely rescues
+// every one of these, so each must round-trip exactly like any other
+// prefixed name: this is the real acceptance criterion for the fix, the same
+// way the corpora above are for encodeEntry's existing behavior.
+// ---------------------------------------------------------------------------
+
+describe("round trip: names colliding with custom-sort's ro map, case-insensitively or via a no-colon key", () => {
+	const names: readonly string[] = [
+		'desc x',
+		'Desc x',
+		'DESC x',
+		'asc x',
+		'order-asc x',
+		'order-desc x',
+		'Order-Desc: x',
+		'SORTING: x',
+		'Target-Folder: x',
+		'description',
+		'descent',
+		'ascending notes',
+		'Ascii art',
+		'describe',
+	];
+
+	it.each(names.map((n, i) => [i, n] as const))('file entry %i: %s', (_i, name) => {
+		const entries: readonly Entry[] = [file(name)];
+		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
+		expect(written.diagnostics).toEqual([]);
+		expect(readFolderOrder(written.spec, '.', entries)).toEqual(entries);
+	});
+
+	it.each(names.map((n, i) => [i, n] as const))('folder entry %i: %s', (_i, name) => {
+		const entries: readonly Entry[] = [folder(name)];
+		const written = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
+		expect(written.diagnostics).toEqual([]);
+		expect(readFolderOrder(written.spec, '.', entries)).toEqual(entries);
 	});
 });
 

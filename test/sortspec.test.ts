@@ -6,6 +6,7 @@ import {
 	hasAuthoredSection,
 	normalizeTarget,
 	parseSortingSpec,
+	readFolderOrder,
 	removeFolderOrder,
 	serializeSortingSpec,
 	specTargets,
@@ -205,7 +206,10 @@ const otherCases: EncodeCase[] = [
 	{ label: 'attribute lexeme target-folder:', name: 'target-folder: x', expected: { ok: true, line: '/:files target-folder: x' } },
 	{ label: 'attribute lexeme ::::', name: '::::x', expected: { ok: true, line: '/:files ::::x' } },
 	{ label: 'attribute lexeme <', name: '<x', expected: { ok: true, line: '/:files <x' } },
-	{ label: 'attribute lexeme with-metadata:', name: 'with-metadata: x', expected: { ok: true, line: '/:files with-metadata: x' } },
+	// with-metadata:/bookmarked:/with-icon: are NOT safe to prefix, unlike the
+	// other attribute lexemes below — see the GROUP_BODY_LEXEMES describe
+	// block for the dedicated coverage of why. This case used to assert the
+	// buggy `{ ok: true, line: '/:files with-metadata: x' }` expectation.
 	{ label: 'catch-all %Report', name: '%Report', expected: { ok: true, line: '/:files %Report' } },
 	{ label: 'catch-all //comment shape', name: '//comment', expected: { ok: true, line: '/:files //comment' } },
 	{ label: 'catch-all --double-dash', name: '--x', expected: { ok: true, line: '/:files --x' } },
@@ -244,6 +248,215 @@ describe('upsertFolderOrder never emits the buggy "/:files --% hidden" line for 
 	});
 });
 
+// GROUP_BODY_LEXEMES ('with-metadata:', 'bookmarked:', 'with-icon:') regression
+// coverage. Unlike the rest of ATTRIBUTE_LEXEMES, custom-sort's `startsWith`
+// check for these three runs against the *group body*, i.e. exactly the text
+// our own prefix leaves behind — so, unlike `target-folder:`/`order-desc:`/`<`
+// above, prefixing does not help at all. See the comment on
+// GROUP_BODY_LEXEMES in src/sortspec.ts for the full mechanism, traced from
+// custom-sort's bundled source.
+describe('encodeEntry: GROUP_BODY_LEXEMES — prefixing cannot rescue these', () => {
+	it.each(['with-metadata:', 'bookmarked:', 'with-icon:'])('%s alone is rejected as group-attribute', (lexeme) => {
+		expect(encodeEntry(file(`${lexeme} x`), emptyIndex)).toEqual({ ok: false, reason: 'group-attribute' });
+	});
+
+	it.each(['with-metadata:', 'bookmarked:', 'with-icon:'])(
+		'%s is rejected for a folder too, regardless of entry kind',
+		(lexeme) => {
+			expect(encodeEntry(folder(`${lexeme} x`), emptyIndex)).toEqual({ ok: false, reason: 'group-attribute' });
+		},
+	);
+
+	// The core of the defect: a same-named sibling of the other kind is
+	// exactly the situation that would otherwise force `needsTypePrefix` to
+	// add the `/folders `/`/:files ` prefix — and that prefix is precisely
+	// what does NOT save these three names. Confirms the rejection happens
+	// before prefixing is even considered, not that prefixing merely "isn't
+	// needed" for these.
+	it.each(['with-metadata:', 'bookmarked:', 'with-icon:'])(
+		'%s is still rejected even with a same-named sibling of the other kind',
+		(lexeme) => {
+			const name = `${lexeme} x`;
+			const idx = buildNameIndex([file(name), folder(name)]);
+			expect(encodeEntry(file(name), idx)).toEqual({ ok: false, reason: 'group-attribute' });
+			expect(encodeEntry(folder(name), idx)).toEqual({ ok: false, reason: 'group-attribute' });
+		},
+	);
+
+	it('matches custom-sort\'s own startsWith, not "first space-delimited word"', () => {
+		// No space before more text: custom-sort's `i.startsWith("with-metadata:")`
+		// still matches "with-metadata:x", so this must still be rejected.
+		expect(encodeEntry(file('with-metadata:x'), emptyIndex)).toEqual({ ok: false, reason: 'group-attribute' });
+	});
+
+	it('a name merely starting with the same letters but missing the lexeme is safe', () => {
+		expect(encodeEntry(file('with-metadataFOO'), emptyIndex)).toEqual({ ok: true, line: 'with-metadataFOO' });
+		expect(encodeEntry(file('bookmarkedX'), emptyIndex)).toEqual({ ok: true, line: 'bookmarkedX' });
+	});
+});
+
+// Control group: these three names are confirmed working today in testvault
+// with the injected `/:files ` prefix (custom-sort recognizes them as
+// line-level attributes *before* group-body parsing, so the prefix routes
+// them safely into a literal-name match). Regressing any of these back to
+// "unrepresentable" would be a new bug introduced by this change, not a fix.
+describe('encodeEntry: attribute lexemes outside GROUP_BODY_LEXEMES remain safe to prefix', () => {
+	it('order-desc: a-z', () => {
+		expect(encodeEntry(file('order-desc: a-z'), emptyIndex)).toEqual({ ok: true, line: '/:files order-desc: a-z' });
+	});
+
+	it('target-folder: evil', () => {
+		expect(encodeEntry(file('target-folder: evil'), emptyIndex)).toEqual({ ok: true, line: '/:files target-folder: evil' });
+	});
+
+	it('<img src=x onerror=alert(1)>', () => {
+		expect(encodeEntry(file('<img src=x onerror=alert(1)>'), emptyIndex)).toEqual({
+			ok: true,
+			line: '/:files <img src=x onerror=alert(1)>',
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// LINE_ATTRIBUTE_LEXEMES — mirrors custom-sort's own `ro` line-attribute map.
+// A bare, unprefixed line whose text (lowercased) starts with one of these 13
+// keys is misread as an attribute line before custom-sort ever gets to group
+// parsing -- see LINE_ATTRIBUTE_LEXEMES in src/sortspec.ts for the full
+// mechanism, traced from the bundled source. Unlike GROUP_BODY_LEXEMES,
+// prefixing genuinely rescues every one of these; none belongs in
+// UnencodableReason.
+// ---------------------------------------------------------------------------
+
+// The 13 keys transcribed directly from custom-sort's bundled `ro` object,
+// each tried here as a literal name. Some are tested bare, some with " x"
+// appended so the case reads as a plausible real name (nobody names a file
+// literally "sorting:", but "sorting: my notes" is the same hazard). The two
+// backslash keys ("\<", "\>") can never actually reach needsTypePrefix --
+// `encodeEntry` rejects any name containing "\" with reason 'backslash'
+// first -- so they get their own assertion below instead of a "gets
+// prefixed" expectation.
+const roKeyCases: EncodeCase[] = [
+	{ label: 'ro key "<"', name: '<x', expected: { ok: true, line: '/:files <x' } },
+	{ label: 'ro key ">"', name: '>x', expected: { ok: true, line: '/:files >x' } },
+	{ label: 'ro key "order-asc:"', name: 'order-asc: x', expected: { ok: true, line: '/:files order-asc: x' } },
+	{ label: 'ro key "order-desc:"', name: 'order-desc: x', expected: { ok: true, line: '/:files order-desc: x' } },
+	{ label: 'ro key "sorting:"', name: 'sorting: x', expected: { ok: true, line: '/:files sorting: x' } },
+	{ label: 'ro key "order-asc" (no colon)', name: 'order-asc x', expected: { ok: true, line: '/:files order-asc x' } },
+	{ label: 'ro key "order-desc" (no colon)', name: 'order-desc x', expected: { ok: true, line: '/:files order-desc x' } },
+	{ label: 'ro key "asc" (no colon)', name: 'asc x', expected: { ok: true, line: '/:files asc x' } },
+	{ label: 'ro key "desc" (no colon)', name: 'desc x', expected: { ok: true, line: '/:files desc x' } },
+	{ label: 'ro key "target-folder:"', name: 'target-folder: x', expected: { ok: true, line: '/:files target-folder: x' } },
+	{ label: 'ro key "::::"', name: ':::: x', expected: { ok: true, line: '/:files :::: x' } },
+];
+
+describe.each(roKeyCases)('encodeEntry: $label', ({ name, expected }) => {
+	it('gets the disambiguating prefix', () => {
+		expect(encodeEntry(file(name), emptyIndex)).toEqual(expected);
+	});
+});
+
+describe('encodeEntry: the two backslash ro keys ("\\<", "\\>") never reach needsTypePrefix at all', () => {
+	it.each(['\\<x', '\\>x'])('%s is rejected as backslash, not prefixed', (name) => {
+		expect(encodeEntry(file(name), emptyIndex)).toEqual({ ok: false, reason: 'backslash' });
+	});
+});
+
+describe('encodeEntry: LINE_ATTRIBUTE_LEXEMES kind-aware prefix', () => {
+	it('a folder gets /folders, not /:files', () => {
+		expect(encodeEntry(folder('desc x'), emptyIndex)).toEqual({ ok: true, line: '/folders desc x' });
+	});
+});
+
+describe('encodeEntry: LINE_ATTRIBUTE_LEXEMES matching is case-insensitive (this is the bug being fixed)', () => {
+	it.each([
+		['Desc x', '/:files Desc x'],
+		['DESC x', '/:files DESC x'],
+		['Order-Desc: x', '/:files Order-Desc: x'],
+		['SORTING: x', '/:files SORTING: x'],
+		['Target-Folder: x', '/:files Target-Folder: x'],
+	])('%s gets prefixed', (name, line) => {
+		expect(encodeEntry(file(name), emptyIndex)).toEqual({ ok: true, line });
+	});
+});
+
+// The most dangerous face of this bug: checkForRiskyAttrSyntaxError matches
+// by *prefix*, not whole word, so completely ordinary file names that merely
+// start with the same letters as a ro key were being written bare and then
+// misread by custom-sort as attribute lines. "desc" (no trailing space at
+// all) is included because checkForRiskyAttrSyntaxError never requires a
+// space after the match -- only parseAttribute does, and parseAttribute
+// isn't the relevant check here (see LINE_ATTRIBUTE_LEXEMES's comment on why
+// the union of the two collapses to a plain prefix test).
+describe('encodeEntry: LINE_ATTRIBUTE_LEXEMES matches by prefix, not whole word -- ordinary names collide', () => {
+	it.each(['description', 'descent', 'ascending notes', 'Ascii art', 'describe', 'desc', 'sorting: x'])(
+		'%s gets the disambiguating prefix even though it is an ordinary name, not an attribute',
+		(name) => {
+			expect(encodeEntry(file(name), emptyIndex)).toEqual({ ok: true, line: `/:files ${name}` });
+		},
+	);
+});
+
+// Names that merely resemble a ro key (same starting letters, wrong length,
+// or diverge before the key ends) must NOT be over-prefixed -- that would be
+// its own regression (unnecessary noise in every affected user's sortspec.md).
+describe('encodeEntry: names that only resemble a ro key stay bare, unprefixed', () => {
+	it.each(['ordering', 'note', 'as', 'de', 'sort notes', 'Foo', 'Bar'])('%s stays a bare line', (name) => {
+		expect(encodeEntry(file(name), emptyIndex)).toEqual({ ok: true, line: name });
+	});
+});
+
+describe('upsertFolderOrder: LINE_ATTRIBUTE_LEXEMES-colliding names save cleanly, prefixed, with no diagnostics', () => {
+	it('a mixed batch round-trips through a save with zero diagnostics', () => {
+		const entries = [file('desc x'), file('Ascii art'), folder('order-desc x'), file('description')];
+		const result = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
+		expect(result.diagnostics).toEqual([]);
+		expect(serializeSortingSpec(result.spec)).toBe(
+			[
+				'target-folder: .',
+				'// explorer-order-editor',
+				'/:files desc x',
+				'/:files Ascii art',
+				'/folders order-desc x',
+				'/:files description',
+			].join('\n'),
+		);
+	});
+});
+
+describe('upsertFolderOrder: GROUP_BODY_LEXEMES names are skipped with a diagnostic, not written', () => {
+	it('produces an unrepresentable-entry diagnostic with reason group-attribute and omits the line', () => {
+		const entries = [file('Good1'), file('with-metadata: x'), folder('bookmarked: y'), file('Good2')];
+		const result = upsertFolderOrder(parseSortingSpec('', '/'), '.', entries);
+		expect(result.status).toBe('appended');
+		expect(result.diagnostics).toEqual([
+			{ kind: 'unrepresentable-entry', name: 'with-metadata: x', reason: 'group-attribute' },
+			{ kind: 'unrepresentable-entry', name: 'bookmarked: y', reason: 'group-attribute' },
+		]);
+		const serialized = serializeSortingSpec(result.spec);
+		expect(serialized).toBe('target-folder: .\n// explorer-order-editor\nGood1\nGood2');
+		expect(serialized).not.toContain('with-metadata');
+		expect(serialized).not.toContain('bookmarked');
+	});
+});
+
+describe('self-heal: a previously-written GROUP_BODY_LEXEMES line is read back, then dropped on the next save', () => {
+	it('readFolderOrder still decodes the pre-existing bad line (parseEntryLine is unchanged) ...', () => {
+		const spec = parseSortingSpec('target-folder: .\n// explorer-order-editor\nGood1\n/:files with-metadata: x', '/');
+		const decoded = readFolderOrder(spec, '.', [file('Good1'), file('with-metadata: x')]);
+		expect(decoded).toEqual([file('Good1'), file('with-metadata: x')]);
+	});
+
+	it('... but the next upsertFolderOrder using that decoded order drops it, with a diagnostic, instead of re-writing it', () => {
+		const spec = parseSortingSpec('target-folder: .\n// explorer-order-editor\nGood1\n/:files with-metadata: x', '/');
+		const decoded = readFolderOrder(spec, '.', [file('Good1'), file('with-metadata: x')]);
+		if (decoded === null) throw new Error('expected a decoded order');
+		const result = upsertFolderOrder(spec, '.', decoded);
+		expect(result.status).toBe('replaced');
+		expect(result.diagnostics).toEqual([{ kind: 'unrepresentable-entry', name: 'with-metadata: x', reason: 'group-attribute' }]);
+		expect(serializeSortingSpec(result.spec)).toBe('target-folder: .\n// explorer-order-editor\nGood1');
+	});
+});
+
 describe('encodeEntry output re-parses as an instruction and survives trim()', () => {
 	const representative = [
 		// Not "/" or "/:files" bare — those are now unrepresentable (see
@@ -258,6 +471,11 @@ describe('encodeEntry output re-parses as an instruction and survives trim()', (
 		'%Report',
 		'//comment',
 		'Meeting notes',
+		// LINE_ATTRIBUTE_LEXEMES coverage: a no-colon ro key ("desc") and a
+		// case-insensitive match that ATTRIBUTE_LEXEMES alone wouldn't have
+		// caught (see the dedicated describe blocks above for the full story).
+		'desc x',
+		'SORTING: x',
 	];
 
 	it.each(representative)('%s', (name) => {
