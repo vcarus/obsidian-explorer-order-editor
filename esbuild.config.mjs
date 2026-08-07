@@ -25,6 +25,29 @@ const copyAssets = () => {
 	}
 };
 
+/**
+ * Parses styles.css and reports any syntax problem, returning how many it
+ * found.
+ *
+ * Nothing else in the toolchain looks at CSS at all: eslint, tsc and vitest
+ * all passed cleanly on a styles.css whose comment had a stray `*​/` in the
+ * middle of it. A CSS parser recovers from that by discarding everything up
+ * to the next block — which silently deleted a whole rule — and the only
+ * thing that caught it was a screenshot of the running plugin.
+ *
+ * esbuild does parse CSS, but treats syntax errors in a stylesheet passed as
+ * an entry point as *warnings* and still exits 0, so the failure has to be
+ * raised by hand here.
+ */
+const validateStyles = async () => {
+	const result = await esbuild.build({ entryPoints: ['styles.css'], write: false, logLevel: 'silent' });
+	if (result.warnings.length > 0) {
+		const formatted = await esbuild.formatMessages(result.warnings, { kind: 'warning', color: true, terminalWidth: 100 });
+		process.stderr.write(`styles.css failed to parse:\n${formatted.join('')}`);
+	}
+	return result.warnings.length;
+};
+
 /** @type {import('esbuild').Plugin} */
 const copyToVaultPlugin = {
 	name: 'copy-to-vault',
@@ -70,9 +93,17 @@ const context = await esbuild.context({
 
 if (prod) {
 	await context.rebuild();
-	process.exit(0);
+	// After the bundle, so a CSS problem can't mask a real TypeScript failure,
+	// but still fatal: styles.css ships in the release exactly as written.
+	process.exit((await validateStyles()) > 0 ? 1 : 0);
 } else {
 	await context.watch();
+
+	// Reported but never fatal in dev — killing the watch over a stylesheet
+	// that is mid-edit would be worse than the broken rule it is complaining
+	// about. Hot Reload still picks the file up either way; this only makes
+	// sure a mistake is on screen the moment it is saved.
+	await validateStyles();
 
 	// esbuild only rebuilds when something in the *module graph* changes, and
 	// neither styles.css nor manifest.json is imported by any TypeScript file.
@@ -83,6 +114,8 @@ if (prod) {
 	// replacing the file (the new file has a new inode, which a per-file watch
 	// would stop hearing from).
 	watch('.', (_event, filename) => {
-		if (filename !== null && assets.includes(filename)) copyAssets();
+		if (filename === null || !assets.includes(filename)) return;
+		copyAssets();
+		if (filename === 'styles.css') void validateStyles();
 	});
 }
