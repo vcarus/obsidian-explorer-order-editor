@@ -5,6 +5,8 @@ and notes inside a folder, without renaming files and without storing the
 order somewhere that sync setups excluding `.obsidian/` (Dropbox, for
 example) would drop.
 
+![Right-clicking the file explorer, dragging the vault's top-level folders into a chosen order, and saving — after which the file explorer shows that order instead of the alphabetical one](docs/images/reorder.gif)
+
 ## What it does
 
 Right-click a folder in the file explorer and choose **Set explorer order**
@@ -40,6 +42,8 @@ control you are about to click says **Save and open "…"** and does exactly
 that; if you have not touched anything, opening a folder writes nothing at
 all — passing through a folder on your way somewhere else never leaves a
 `sortspec.md` behind in it.
+
+![Opening a subfolder from inside the dialog: the path at the top gains a level, and the folder's own contents are listed ready to arrange](docs/images/subfolders.gif)
 
 The dialog works on mobile as well as desktop; drag a row by its grip
 handle, using a long press on touch. Dragging is not the only way to move a
