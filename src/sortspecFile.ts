@@ -370,6 +370,18 @@ export interface HideSettingSyncResult {
 	readonly changed: number;
 	/** Files that threw and were left alone. */
 	readonly failed: number;
+	/**
+	 * A metadata-cache wait armed at the moment of the last successful write,
+	 * or `null` if nothing was written. The caller awaits this before asking
+	 * custom-sort to re-read, so it reads a cache that has caught up.
+	 *
+	 * Armed in here rather than by the caller afterwards for the reason
+	 * `awaitMetadataSettled` documents: the listener has to exist before the
+	 * write it is waiting on. A caller that starts waiting once the pass is
+	 * over is waiting for an event that already fired, and gets the full
+	 * timeout instead.
+	 */
+	readonly settled: Promise<void> | null;
 }
 
 /**
@@ -408,7 +420,9 @@ export interface HideSettingSyncResult {
  * `failed` and is left untouched; it does not abort the rest of the pass.
  * Does not trigger custom-sort's refresh — that stays the caller's
  * responsibility (as with every other mutation here), since only the caller
- * knows whether the "auto-refresh" setting is on.
+ * knows whether the "auto-refresh" setting is on. It does arm the wait that
+ * refresh needs (`HideSettingSyncResult.settled`), because only this
+ * function is present at the moment of the write.
  */
 export async function syncHideSetting(app: App, hide: boolean): Promise<HideSettingSyncResult> {
 	const files = app.vault.getAllLoadedFiles().filter((f): f is TFile => f instanceof TFile && f.name === SORTSPEC_FILENAME);
@@ -417,6 +431,7 @@ export async function syncHideSetting(app: App, hide: boolean): Promise<HideSett
 	let scanned = 0;
 	let changed = 0;
 	let failed = 0;
+	let settled: Promise<void> | null = null;
 
 	for (const file of files) {
 		const folder = file.parent;
@@ -443,6 +458,11 @@ export async function syncHideSetting(app: App, hide: boolean): Promise<HideSett
 
 			if (result.status === 'replaced' || result.status === 'appended') {
 				changed++;
+				// `file` is the sortspec.md just rewritten, so this is a wait
+				// that can actually be satisfied. Each write replaces the
+				// previous promise; the superseded ones resolve on their own
+				// and clean up their own listeners.
+				settled = awaitMetadataSettled(app, file);
 			}
 		} catch (err) {
 			failed++;
@@ -450,5 +470,5 @@ export async function syncHideSetting(app: App, hide: boolean): Promise<HideSett
 		}
 	}
 
-	return { scanned, changed, failed };
+	return { scanned, changed, failed, settled };
 }

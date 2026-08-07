@@ -5,13 +5,7 @@
  * plugin would write happily to a file custom-sort never looks at.
  */
 import { App, Notice, Plugin, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
-import {
-	isCustomSortAvailable,
-	refreshCustomSort,
-	SORTSPEC_FILENAME,
-	syncHideSetting,
-	type HideSettingSyncResult,
-} from './sortspecFile';
+import { isCustomSortAvailable, syncHideSetting, triggerCustomSortRefresh, type HideSettingSyncResult } from './sortspecFile';
 
 export interface ExplorerOrderEditorSettings {
 	/**
@@ -190,10 +184,13 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 
 		if (result.changed === 0 || !this.plugin.settings.autoRefresh) return;
 
-		const anchor = this.app.vault.getFiles().find((f) => f.name === SORTSPEC_FILENAME);
-		if (anchor === undefined) return; // shouldn't happen: result.changed > 0 implies at least one still exists
-		const refreshResult = await refreshCustomSort(this.app, anchor);
-		if (refreshResult === 'missing') {
+		// `settled` was armed at the last write inside the pass. It used to be
+		// a wait on whichever sortspec.md the vault happened to list first —
+		// a file the pass may never have touched, so no metadata event was
+		// ever coming for it and every toggle burned the full timeout before
+		// refreshing. It also meant enumerating the vault a second time.
+		if (result.settled !== null) await result.settled;
+		if (triggerCustomSortRefresh(this.app) === 'missing') {
 			new Notice('Install the custom file explorer sorting plugin to see the change in the file explorer.');
 		}
 	}
