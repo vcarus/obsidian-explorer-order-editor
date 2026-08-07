@@ -174,6 +174,12 @@ Install
 from the same list as well. It is required: without it nothing you set here
 has a visible effect — see above.
 
+From 0.5.0 onward this plugin needs **Obsidian 1.13 or newer**, which is what
+lets its settings be declared to Obsidian rather than drawn by hand — that is
+the form Obsidian's own settings search can read. On an older Obsidian you are
+offered 0.4.2 instead, which is complete and fully working; you simply stop
+receiving updates until you update the app.
+
 To track pre-release builds instead, point
 [BRAT](https://github.com/TfTHacker/obsidian42-brat) at
 `https://github.com/vcarus/obsidian-explorer-order-editor`.

@@ -4,7 +4,7 @@
  * rename the file this plugin writes would produce a silent no-op — the
  * plugin would write happily to a file custom-sort never looks at.
  */
-import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, Plugin, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
 import {
 	isCustomSortAvailable,
 	refreshCustomSort,
@@ -71,60 +71,103 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
+	/**
+	 * True while `syncHideSetting` is walking the vault. Backs the hide
+	 * toggle's `disabled`, which the declarative API re-evaluates on each
+	 * render — so flipping this and calling `update()` is how a second click
+	 * is kept from starting an overlapping vault-wide pass. The imperative
+	 * version disabled the toggle object directly; there is no toggle object
+	 * to reach for here, and there does not need to be.
+	 */
+	private syncing = false;
 
-		// Both settings below are about talking to custom-sort, and neither has
-		// any visible effect without it, so its status belongs above them
-		// rather than buried in a note at the bottom.
+	/**
+	 * Declared rather than rendered, so Obsidian can put these settings in its
+	 * own settings search (1.13+). `display()` is deliberately absent: the
+	 * base class only falls back to it when this returns nothing, and
+	 * supporting both would mean two descriptions of three settings that have
+	 * to agree forever.
+	 */
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		// Rebuilt on every render, so this reflects custom-sort being enabled
+		// or disabled while the tab is open.
 		const available = isCustomSortAvailable(this.app);
-		new Setting(containerEl)
-			.setName('Custom file explorer sorting')
-			.setDesc(
-				available
+
+		return [
+			// Both settings below are about talking to custom-sort, and neither
+			// has any visible effect without it, so its status belongs above
+			// them rather than buried in a note at the bottom.
+			//
+			// Rendered imperatively only because the status is the one row
+			// whose *styling* carries meaning — a missing dependency is a real
+			// warning, not a neutral line — and a definition has no way to ask
+			// for a class. Name and description are still declared above the
+			// callback so they reach the settings search.
+			{
+				name: 'Custom file explorer sorting',
+				desc: available
 					? 'Detected. Orders you save here will be applied to the file explorer.'
 					: 'Not detected. Orders are still saved to sortspec.md correctly, but the file explorer will keep sorting alphabetically until this plugin is installed and enabled.',
-			)
-			.setClass(available ? 'eoe-dependency-ok' : 'eoe-dependency-missing');
-
-		new Setting(containerEl)
-			.setName('Automatically refresh after saving')
-			.setDesc(
-				'Re-run the custom file explorer sorting plugin\'s refresh command after saving or clearing an order, so the file explorer updates right away. When off, run that command yourself instead.',
-			)
-			.addToggle((toggle) =>
-				toggle.setValue(this.plugin.settings.autoRefresh).onChange(async (value) => {
-					this.plugin.settings = { ...this.plugin.settings, autoRefresh: value };
-					await this.plugin.saveSettings();
-				}),
-			);
-
-		new Setting(containerEl)
-			.setName('Hide sortspec.md in the file explorer')
-			.setDesc(
-				'Ask the custom file explorer sorting plugin to hide sortspec.md from folders where you save an order. ' +
+				render: (setting) => {
+					setting.setClass(available ? 'eoe-dependency-ok' : 'eoe-dependency-missing');
+				},
+			},
+			{
+				name: 'Automatically refresh after saving',
+				desc: "Re-run the custom file explorer sorting plugin's refresh command after saving or clearing an order, so the file explorer updates right away. When off, run that command yourself instead.",
+				control: { type: 'toggle', key: 'autoRefresh' },
+			},
+			{
+				name: 'Hide sortspec.md in the file explorer',
+				desc:
+					'Ask the custom file explorer sorting plugin to hide sortspec.md from folders where you save an order. ' +
 					'Applies immediately to every such folder in the vault, in both directions — this also tidies each ' +
 					"rewritten folder's section, dropping any stale sortspec.md entry left over from an older version of this plugin.",
-			)
-			.addToggle((toggle) =>
-				toggle.setValue(this.plugin.settings.hideSortspec).onChange(async (value) => {
-					// Disabled for the whole handler, not just the sync call: a
-					// second click while `saveSettings`/`syncHideSetting` is still
-					// in flight for the first must not fire a second, overlapping
-					// vault-wide pass.
-					toggle.setDisabled(true);
-					try {
-						this.plugin.settings = { ...this.plugin.settings, hideSortspec: value };
-						await this.plugin.saveSettings();
+				control: { type: 'toggle', key: 'hideSortspec', disabled: () => this.syncing },
+			},
+		];
+	}
 
-						const result = await syncHideSetting(this.app, value);
-						await this.reportSync(result);
-					} finally {
-						toggle.setDisabled(false);
-					}
-				}),
-			);
+	getControlValue(key: string): unknown {
+		switch (key) {
+			case 'autoRefresh':
+				return this.plugin.settings.autoRefresh;
+			case 'hideSortspec':
+				return this.plugin.settings.hideSortspec;
+			default:
+				return undefined;
+		}
+	}
+
+	async setControlValue(key: string, value: unknown): Promise<void> {
+		// The signature is `unknown` for every control type the API supports;
+		// both of ours are toggles, so anything else means we were handed a
+		// key we never declared.
+		if (typeof value !== 'boolean') return;
+
+		if (key === 'autoRefresh') {
+			this.plugin.settings = { ...this.plugin.settings, autoRefresh: value };
+			await this.plugin.saveSettings();
+			return;
+		}
+
+		if (key !== 'hideSortspec') return;
+
+		// Guarded for the whole handler, not just the sync call: a second
+		// click while `saveSettings`/`syncHideSetting` is still in flight for
+		// the first must not fire a second, overlapping vault-wide pass.
+		this.syncing = true;
+		this.update();
+		try {
+			this.plugin.settings = { ...this.plugin.settings, hideSortspec: value };
+			await this.plugin.saveSettings();
+
+			const result = await syncHideSetting(this.app, value);
+			await this.reportSync(result);
+		} finally {
+			this.syncing = false;
+			this.update();
+		}
 	}
 
 	/**
