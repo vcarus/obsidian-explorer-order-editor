@@ -858,6 +858,19 @@ interface ParsedEntryLine {
  * something` line, never touched by `encodeEntry`, would newly decode as
  * `null` instead of a literal name), which is not something this fix
  * touches.
+ *
+ * And it is not a latent bug either — traced, not assumed. Misclassifying a
+ * foreign attribute line as a name yields a *phantom* entry in
+ * `readFolderOrder`'s result, and every one of its three callers
+ * (`OrderModal.onOpen`, `syncHideSetting`, `orderSync`'s rename and
+ * reconcile paths) immediately passes that result through `mergeStoredOrder`
+ * against the folder's live children, which drops any entry no file or folder
+ * actually has that name. So a phantom can never reach a write. The foreign
+ * attribute line itself is lost either way, because replacing a foreign
+ * section rebuilds its body from scratch — that is pre-existing, deliberate,
+ * and already reported to the user as "Replaced a hand-written section".
+ * Don't "fix" this without first finding a caller that skips
+ * `mergeStoredOrder`.
  */
 function parseEntryLine(line: string): ParsedEntryLine | null {
 	if (line.length === 0) return null;

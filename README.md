@@ -8,17 +8,20 @@ example) would drop.
 ## What it does
 
 Right-click a folder in the file explorer and choose **Set explorer order**
-(or run the **Set explorer order for vault root** command for the vault root,
-which has no right-click menu of its own) to open a dialog listing that
-folder's direct children. Drag them into the order you want and hit **Save**.
-The order is written into a `sortspec.md` file inside that same folder.
+to open a dialog listing that folder's direct children. Drag them into the
+order you want and hit **Save**. The order is written into a `sortspec.md`
+file inside that same folder.
+
+For the vault root, right-click empty space in the file explorer — below the
+last item — and the same entries appear. There are also **Set explorer order
+for vault root** and **Clear explorer order for vault root** commands, which
+is the route to use if you'd rather bind a hotkey, or on a layout with no
+empty space left to click.
 
 **Clear explorer order** in the same context menu undoes this — it appears
 only when there is a saved order to remove. It deletes what this plugin
 wrote for that folder, cleaning up the now-unneeded `sorting-spec` key, the
-front matter block, or the whole file, as each becomes empty. The vault root
-has its own **Clear explorer order for vault root** command, for the same
-reason the root needs a command to set an order in the first place.
+front matter block, or the whole file, as each becomes empty.
 
 An order applies to **one folder only**. It does not cascade into
 subfolders: ordering `Projects` rearranges the items directly inside it,
@@ -29,6 +32,21 @@ a list of specific names, and those names don't exist in the folders below.
 
 The dialog works on mobile as well as desktop; drag a row by its grip
 handle, using a long press on touch.
+
+Renaming an item keeps its position. A saved order is a list of names, so a
+rename would otherwise leave the old name behind and the new one unlisted —
+and anything unlisted sorts to the end, so the item you renamed would quietly
+drop to the bottom of its folder. Instead the saved order is rewritten to
+match, in place. Deleting an item, or moving it out of the folder, removes it
+from the order the same way. Moving an item *into* a folder does not insert it
+into that folder's order: there's no way to know where you'd want it, so it
+joins everything else that order doesn't mention, at the end.
+
+Expect a brief flicker on rename: the file explorer redraws before this
+plugin has updated `sortspec.md`, so the renamed item sits at the bottom for
+roughly half a second and then returns to its place. Obsidian reports a rename
+only after the fact, and `custom-sort` re-sorts only when asked, so that gap
+can't be closed — only kept short.
 
 ## The dependency on Custom File Explorer sorting
 
@@ -137,12 +155,32 @@ without it nothing you do here has a visible effect.
   which it rejects outright — and unlike a single unrepresentable item, that
   specific failure suspends the whole plugin, dropping every folder's order
   in the vault. So those names are skipped instead of guessed at.
+  Names beginning with `with-metadata:`, `bookmarked:` or `with-icon:` are
+  skipped for a related reason: `custom-sort` reads those as instructions to
+  match items *by* a metadata field, a bookmark, or an icon, and it looks for
+  them after stripping any prefix, so a prefix can't mark them as literal
+  names. Writing one would not only lose that item's position but turn its
+  line into a live matching rule capable of dragging an unrelated file into
+  that spot.
 - `custom-sort` also reads a folder note (`FolderName/FolderName.md`, if one
   exists) as a sorting spec for that same folder. If that note has its own
   `sorting-spec` targeting the folder it lives in, it's a second,
   independent source of truth that this plugin cannot reconcile — the
   dialog detects and warns about this, but does not edit the folder note.
+- A rename can only be followed while this plugin is running. One made on
+  another device, or with Obsidian closed, arrives as an already-renamed file,
+  and that item loses its position — it sorts to the end until you drag it
+  back. The stale name is dropped from `sortspec.md` the next time that
+  folder's order is saved.
 - There is no multi-select drag; reordering is one row at a time.
+- The order the dialog suggests for a folder with no saved order — folders
+  first, then files, each by name with digit runs compared as numbers —
+  approximates the file explorer rather than matching it. Obsidian exposes
+  neither the explorer's current visual order nor its sort setting, so if
+  you've set the explorer to anything other than name A→Z, the dialog's
+  starting order will differ from what you see in the tree. It's a starting
+  point to drag from; once saved, the order is explicit and identical
+  everywhere.
 - The filename `sortspec.md` is fixed; there is no setting to rename it.
   `custom-sort` always reads that specific filename, so making it
   configurable here would risk silently writing a file `custom-sort` never
@@ -216,15 +254,18 @@ src/sortspec.ts      Pure: parse/serialize/upsert/remove the sorting-spec value,
 src/frontmatter.ts   Pure: locating and splicing the sorting-spec key within a file's front matter.
 src/sortspecFile.ts  The only module importing `obsidian` for data access: TFolder to entries, reading and
                      writing sortspec.md, triggering custom-sort.
+src/orderSync.ts     Keeps a saved order in step with the vault's rename and delete events.
 src/OrderModal.ts    The drag-and-drop dialog.
 src/settings.ts      The settings tab.
 src/main.ts          Plugin entry point: commands, the context menu, lifecycle.
 ```
 
-`sortspec.ts` and `frontmatter.ts` have no dependency on the `obsidian`
-package (front matter parsing is injected as a parameter), so they're
-covered by the `vitest` unit tests in `test/`; `sortspecFile.ts`,
-`OrderModal.ts`, and `main.ts` are exercised by hand in the test vault.
+`types.ts`, `sortspec.ts` and `frontmatter.ts` have no dependency on the
+`obsidian` package (front matter parsing is injected as a parameter), so
+they're covered by the `vitest` unit tests in `test/`; `sortspecFile.ts`,
+`orderSync.ts`, `OrderModal.ts`, and `main.ts` are exercised by hand in the
+test vault. Logic those four need is pushed down into the pure modules
+wherever it can be, precisely so it can be tested.
 
 Writes never go through `app.fileManager.processFrontMatter` — it
 re-serializes the entire YAML block, which can strip comments and hard-wrap

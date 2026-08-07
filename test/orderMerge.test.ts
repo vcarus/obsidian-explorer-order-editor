@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { mergeStoredOrder, parseSortingSpec, readFolderOrder, renameEntryInOrder, upsertFolderOrder } from '../src/sortspec';
-import { entryNameForFileName, type Entry } from '../src/types';
+import { entryNameForFileName, fallbackEntryOrder, type Entry } from '../src/types';
 
 const file = (name: string): Entry => ({ name, kind: 'file' });
 const folder = (name: string): Entry => ({ name, kind: 'folder' });
@@ -207,6 +207,41 @@ describe('renaming an entry that had no line at all', () => {
 		const after = [file('--% hidden'), file('normal note'), file('welcome')];
 		const reconciled = upsertFolderOrder(upserted.spec, '.', mergeStoredOrder(stored, after));
 		expect(reconciled.status).toBe('unchanged');
+	});
+});
+
+describe('fallbackEntryOrder', () => {
+	it('puts every folder before every file, whatever the names are', () => {
+		const ordered = fallbackEntryOrder([file('aaa'), folder('zzz'), file('bbb'), folder('yyy')]);
+		expect(ordered).toEqual([folder('yyy'), folder('zzz'), file('aaa'), file('bbb')]);
+	});
+
+	it('compares runs of digits as numbers, not character by character', () => {
+		// The reason `numeric: true` is passed: plain localeCompare puts "10"
+		// before "2", which disagrees with the file explorer for any folder
+		// using numbered names.
+		expect(fallbackEntryOrder([file('10'), file('2'), file('1')])).toEqual([file('1'), file('2'), file('10')]);
+		expect(fallbackEntryOrder([file('note-10'), file('note-2')])).toEqual([file('note-2'), file('note-10')]);
+		expect(fallbackEntryOrder([folder('20 archive'), folder('3 inbox')])).toEqual([folder('3 inbox'), folder('20 archive')]);
+	});
+
+	it('orders names without digits the ordinary way', () => {
+		expect(fallbackEntryOrder([file('cherry'), file('apple'), file('banana')])).toEqual([
+			file('apple'),
+			file('banana'),
+			file('cherry'),
+		]);
+	});
+
+	it('does not mutate the input array', () => {
+		const input = [file('b'), file('a')];
+		const snapshot = [...input];
+		fallbackEntryOrder(input);
+		expect(input).toEqual(snapshot);
+	});
+
+	it('an empty folder produces an empty order', () => {
+		expect(fallbackEntryOrder([])).toEqual([]);
 	});
 });
 

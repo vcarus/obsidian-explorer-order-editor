@@ -26,7 +26,7 @@ import {
 	type MutationResult,
 	type ParsedSpec,
 } from './sortspec';
-import type { Entry } from './types';
+import { fallbackEntryOrder, type Entry } from './types';
 
 declare module 'obsidian' {
 	interface App {
@@ -45,12 +45,15 @@ const METADATA_WAIT_TIMEOUT_MS = 1000;
 const yamlDeps: FrontMatterDeps = { parseYaml };
 
 /**
- * Derives this folder's rows in the fallback order: folders before files,
- * each group alphabetical by display name (there's no public API for "the
- * file explorer's current visual order", so this approximates it). `.md`
+ * Derives this folder's rows, in `fallbackEntryOrder` — see it for what that
+ * order is and where it knowingly diverges from the file explorer. `.md`
  * files use their basename (no extension); every other file uses its full
  * name including the extension; folders use the folder name — the exact
  * strings custom-sort matches against (see `types.ts`).
+ *
+ * Only the name derivation lives here, because only it needs a `TFile`; the
+ * ordering itself is pure and unit-tested in `types.ts` rather than trapped
+ * behind this function's `obsidian` import.
  *
  * `sortspec.md` itself is never offered: it's the file this plugin manages,
  * and listing it invites ordering the thing that describes the order.
@@ -58,12 +61,11 @@ const yamlDeps: FrontMatterDeps = { parseYaml };
  * the end by default.
  */
 export function entriesFor(folder: TFolder): readonly Entry[] {
-	const folderEntries: Entry[] = [];
-	const fileEntries: Entry[] = [];
+	const entries: Entry[] = [];
 
 	for (const child of folder.children) {
 		if (child instanceof TFolder) {
-			folderEntries.push({ name: child.name, kind: 'folder' });
+			entries.push({ name: child.name, kind: 'folder' });
 		} else if (child instanceof TFile) {
 			if (child.name === SORTSPEC_FILENAME) continue;
 			// Deliberately Obsidian's own `extension`/`basename` rather than
@@ -77,14 +79,11 @@ export function entriesFor(folder: TFolder): readonly Entry[] {
 			// that has no TFile to ask — reconstructing the *former* name from
 			// a rename event's `oldPath` — and says so.
 			const name = child.extension === 'md' ? child.basename : child.name;
-			fileEntries.push({ name, kind: 'file' });
+			entries.push({ name, kind: 'file' });
 		}
 	}
 
-	folderEntries.sort((a, b) => a.name.localeCompare(b.name));
-	fileEntries.sort((a, b) => a.name.localeCompare(b.name));
-
-	return [...folderEntries, ...fileEntries];
+	return fallbackEntryOrder(entries);
 }
 
 /**

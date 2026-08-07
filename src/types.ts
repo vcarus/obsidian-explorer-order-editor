@@ -42,3 +42,37 @@ export interface Entry {
 export function entryNameForFileName(fileName: string): string {
 	return fileName.endsWith('.md') ? fileName.slice(0, -'.md'.length) : fileName;
 }
+
+/**
+ * The order rows appear in when a folder has no saved order yet — folders
+ * before files, each group by name. It also decides where entries the saved
+ * order doesn't mention get appended (see `mergeStoredOrder`).
+ *
+ * `numeric: true` so runs of digits compare as numbers: without it `10`
+ * sorts before `2`, which disagrees with the file explorer for any folder
+ * using numbered names and makes the dialog's suggested order look wrong
+ * before the user has touched anything.
+ *
+ * This can only ever approximate the explorer, and deliberately stops here:
+ *
+ * - There is no public API for the explorer's current visual order, and its
+ *   sort setting (name A→Z / Z→A / by modified time) is not readable either,
+ *   so a user who picked anything but A→Z sees a dialog that disagrees. The
+ *   alternative — reaching into the file explorer view for its `sortOrder` —
+ *   is the monkey-patching this plugin exists to avoid.
+ * - No locale is passed, so the collation is the runtime's default. Two
+ *   devices with different system locales can suggest different orders for
+ *   the same CJK names. Pinning a locale would trade that for being wrong
+ *   the same way everywhere, which is not obviously better; and it only
+ *   affects the *suggestion*, since a saved order is explicit line-by-line
+ *   in sortspec.md and renders identically everywhere.
+ *
+ * Pure and dependency-free so it can be unit-tested: `entriesFor`, its only
+ * caller, imports obsidian and cannot be.
+ */
+export function fallbackEntryOrder(entries: readonly Entry[]): Entry[] {
+	return [...entries].sort((a, b) => {
+		if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+		return a.name.localeCompare(b.name, undefined, { numeric: true });
+	});
+}
