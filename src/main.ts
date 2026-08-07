@@ -1,5 +1,6 @@
 import { Notice, Plugin, TFolder } from 'obsidian';
 import { OrderModal } from './OrderModal';
+import { registerOrderSync } from './orderSync';
 import { DEFAULT_SETTINGS, ExplorerOrderEditorSettingTab, type ExplorerOrderEditorSettings } from './settings';
 import {
 	clearFolderOrder,
@@ -32,6 +33,12 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 				10000,
 			);
 		});
+
+		// A separate onLayoutReady call, not folded into the one above: that one
+		// is about detecting custom-sort, this one is about avoiding the
+		// vault's startup indexing flood of rename-like events. Two unrelated
+		// reasons to defer shouldn't share one callback.
+		this.app.workspace.onLayoutReady(() => registerOrderSync(this));
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {

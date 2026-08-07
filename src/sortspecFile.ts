@@ -66,6 +66,16 @@ export function entriesFor(folder: TFolder): readonly Entry[] {
 			folderEntries.push({ name: child.name, kind: 'folder' });
 		} else if (child instanceof TFile) {
 			if (child.name === SORTSPEC_FILENAME) continue;
+			// Deliberately Obsidian's own `extension`/`basename` rather than
+			// `entryNameForFileName`, even though the two agree on every name
+			// either of us has been able to construct: custom-sort derives the
+			// names it matches against from these same two TFile fields, so
+			// reading them is what makes our output agree with it *by
+			// definition*, whatever Obsidian's exact rule for `extension`
+			// turns out to be (the API docs don't say whether it is
+			// lower-cased). `entryNameForFileName` exists for the one place
+			// that has no TFile to ask — reconstructing the *former* name from
+			// a rename event's `oldPath` — and says so.
 			const name = child.extension === 'md' ? child.basename : child.name;
 			fileEntries.push({ name, kind: 'file' });
 		}

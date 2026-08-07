@@ -803,3 +803,48 @@ export function mergeStoredOrder(stored: readonly Entry[] | null, siblings: read
 	}
 	return merged;
 }
+
+/**
+ * In-place-position rename: swaps `from` for `to` wherever `from` sits in
+ * `order`, without disturbing anything else's position. This is what
+ * `mergeStoredOrder` alone cannot do — it matches purely on (kind, name), so
+ * a renamed file looks to it like two unrelated entries: the old name it can
+ * no longer find among live siblings (dropped) and the new name it's never
+ * heard of (appended at the end). Feeding `renameEntryInOrder`'s result into
+ * `mergeStoredOrder` instead is what lets a rename preserve position; the
+ * companion "combined with mergeStoredOrder" test in orderMerge.test.ts pins
+ * exactly this, with a plain merge as the control showing the drop-to-end
+ * defect this function exists to avoid.
+ *
+ * Returns `null` when `from` isn't in `order` at all (matched by exact
+ * (kind, name), same identity rule as `mergeStoredOrder`'s `entryKey`) — the
+ * caller's signal to skip writing anything, rather than rewrite a section
+ * with no actual change. This also makes the function naturally idempotent:
+ * apply it once and `from` is gone from the order (replaced by `to`), so
+ * applying the "same" rename again finds nothing to do and returns `null`.
+ *
+ * If `to` already occurs elsewhere in `order` (e.g. a file was renamed to a
+ * name matching some other stale entry that's still listed), that other
+ * occurrence is deleted rather than left as a duplicate — the position `to`
+ * ends up at is the one `from` occupied, not the one the pre-existing
+ * duplicate occupied. Duplicates aren't something `upsertFolderOrder` would
+ * ever have written itself, but nothing stops a stored order from
+ * accumulating one across enough renames if this weren't deduped here.
+ */
+export function renameEntryInOrder(order: readonly Entry[], from: Entry, to: Entry): readonly Entry[] | null {
+	const fromKey = entryKey(from);
+	const fromIndex = order.findIndex((entry) => entryKey(entry) === fromKey);
+	if (fromIndex === -1) return null;
+
+	const toKey = entryKey(to);
+	const result: Entry[] = [];
+	order.forEach((entry, index) => {
+		if (index === fromIndex) {
+			result.push(to);
+			return;
+		}
+		if (entryKey(entry) === toKey) return; // pre-existing duplicate of `to` elsewhere: drop it, keep the renamed slot's position
+		result.push(entry);
+	});
+	return result;
+}
