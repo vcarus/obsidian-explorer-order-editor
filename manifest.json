@@ -3,8 +3,8 @@
 	"name": "Explorer Order Editor",
 	"version": "0.4.1",
 	"minAppVersion": "1.7.2",
-	"description": "Set a manual order for folders and notes by dragging them in a dialog, and save the result to sortspec.md.",
+	"description": "Drag folders and notes into a manual order, saved as plain text inside your vault. Requires the Custom File Explorer sorting plugin to display it.",
 	"author": "vcarus",
-	"authorUrl": "https://github.com/vcarus/obsidian-explorer-order-editor",
+	"authorUrl": "https://github.com/vcarus",
 	"isDesktopOnly": false
 }
