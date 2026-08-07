@@ -15,13 +15,14 @@ import {
 	type UnencodableReason,
 } from './sortspec';
 import {
+	awaitMetadataSettled,
 	entriesFor,
 	folderNoteConflict,
 	readStoredOrder,
-	refreshCustomSort,
 	SORTSPEC_FILENAME,
 	sortspecPathFor,
 	targetKeyFor,
+	triggerCustomSortRefresh,
 	updateFolderSpec,
 } from './sortspecFile';
 import type { Entry } from './types';
@@ -172,6 +173,18 @@ export class OrderModal extends Modal {
 	 */
 	private busy = false;
 	/**
+	 * The metadata-cache wait armed by the most recent successful save, held
+	 * until the modal closes and `flushRefresh` turns it into custom-sort's
+	 * one refresh for the whole session.
+	 *
+	 * The one piece of state `resetContent` must *not* clear: everything else
+	 * there belongs to a single level, whereas this deliberately survives
+	 * every level switch — that is the entire mechanism. A later save simply
+	 * replaces it; the superseded promise resolves on its own and cleans up
+	 * its own listener.
+	 */
+	private pendingRefresh: Promise<void> | null = null;
+	/**
 	 * Bumped at the start of every `render()`; a render checks its own token
 	 * against this field after each `await` and bails out if they no longer
 	 * match. Without this, navigating to a new level while a previous
@@ -211,7 +224,16 @@ export class OrderModal extends Modal {
 
 	onClose(): void {
 		this.closed = true;
+		// Read before resetContent, which deliberately leaves this field alone
+		// (it has to outlive every level switch) — this is the only place it
+		// is consumed and cleared.
+		const pending = this.pendingRefresh;
+		this.pendingRefresh = null;
 		this.resetContent();
+		// Deliberately not awaited: onClose is synchronous, and nothing here
+		// touches the modal — it reads the command registry and may show a
+		// notice, both of which are fine once the dialog is gone.
+		if (pending !== null) void this.flushRefresh(pending);
 	}
 
 	/**
@@ -950,7 +972,7 @@ export class OrderModal extends Modal {
 				return 'unchanged';
 			case 'replaced':
 			case 'appended':
-				await this.reportSaved(result.diagnostics);
+				this.reportSaved(result.diagnostics);
 				return 'saved';
 			case 'removed':
 				// Save only ever upserts; unreachable from this modal.
@@ -987,7 +1009,11 @@ export class OrderModal extends Modal {
 		new Notice('Could not save the explorer order.');
 	}
 
-	private async reportSaved(diagnostics: readonly Diagnostic[]): Promise<void> {
+	/**
+	 * Per-save feedback, and the point where the refresh is *armed* rather
+	 * than performed — see `pendingRefresh` and `flushRefresh`.
+	 */
+	private reportSaved(diagnostics: readonly Diagnostic[]): void {
 		const skipped = diagnostics.filter(
 			(d): d is Extract<Diagnostic, { kind: 'unrepresentable-entry' }> => d.kind === 'unrepresentable-entry',
 		);
@@ -1002,15 +1028,34 @@ export class OrderModal extends Modal {
 		}
 		new Notice(message);
 
+		const file = this.app.vault.getFileByPath(sortspecPathFor(this.folder));
+		if (file === null) return; // shouldn't happen right after a successful write
+		// Start waiting for the metadata cache now, while the write that will
+		// settle it has just happened. The wait is only awaited at close; see
+		// `awaitMetadataSettled` for why it cannot be started there instead.
+		this.pendingRefresh = awaitMetadataSettled(this.app, file);
+	}
+
+	/**
+	 * The one refresh a whole dialog session is worth, run after the modal
+	 * has closed.
+	 *
+	 * custom-sort's refresh command re-sorts the vault, and this dialog now
+	 * saves once per folder visited — walking five levels deep used to mean
+	 * five whole-vault re-sorts, each preceded by its own wait for the
+	 * metadata cache, with the file explorer hidden behind the modal the
+	 * entire time. Four of those five were work nobody could see the result
+	 * of. Batching costs nothing in correctness: every save still lands on
+	 * disk immediately and atomically: only the *display* of it is deferred,
+	 * to the moment there is something to display it on.
+	 */
+	private async flushRefresh(settled: Promise<void>): Promise<void> {
 		if (!this.settings.autoRefresh) {
 			new Notice('Automatic refresh is off. Run the custom file explorer sorting plugin\'s refresh command to see the change.');
 			return;
 		}
-
-		const file = this.app.vault.getFileByPath(sortspecPathFor(this.folder));
-		if (file === null) return; // shouldn't happen right after a successful write
-		const refreshResult = await refreshCustomSort(this.app, file);
-		if (refreshResult === 'missing') {
+		await settled;
+		if (triggerCustomSortRefresh(this.app) === 'missing') {
 			new Notice('Install the custom file explorer sorting plugin to see the new order in the file explorer.');
 		}
 	}

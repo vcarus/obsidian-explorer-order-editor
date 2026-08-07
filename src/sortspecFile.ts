@@ -329,13 +329,38 @@ export function isCustomSortAvailable(app: App): boolean {
 	return CUSTOM_SORT_COMMAND_ID in app.commands.commands;
 }
 
-export async function refreshCustomSort(app: App, file: TFile): Promise<'triggered' | 'missing'> {
-	await waitForMetadataChange(app, file, METADATA_WAIT_TIMEOUT_MS);
+/**
+ * Resolves once `metadataCache` has caught up with `file` (or the timeout
+ * elapses, so a missed event can't hang the caller).
+ *
+ * Exported separately from the trigger below for callers that write now but
+ * refresh later — the reorder dialog batches one refresh for a whole
+ * session of saves. `waitForMetadataChange` registers its listener when it
+ * is called, so starting the wait at *refresh* time would be too late: the
+ * event fired back when the file was written, nothing would arrive, and the
+ * full timeout would be burned every time. Started at write time it has
+ * normally already resolved by the time anyone awaits it.
+ */
+export function awaitMetadataSettled(app: App, file: TFile): Promise<void> {
+	return waitForMetadataChange(app, file, METADATA_WAIT_TIMEOUT_MS);
+}
+
+/**
+ * Runs custom-sort's refresh command, or reports that it isn't there.
+ * Assumes the metadata cache is already current — see `awaitMetadataSettled`.
+ */
+export function triggerCustomSortRefresh(app: App): 'triggered' | 'missing' {
 	if (!isCustomSortAvailable(app)) {
 		return 'missing';
 	}
 	app.commands.executeCommandById(CUSTOM_SORT_COMMAND_ID);
 	return 'triggered';
+}
+
+/** Wait, then trigger — for callers that write and refresh in one go. */
+export async function refreshCustomSort(app: App, file: TFile): Promise<'triggered' | 'missing'> {
+	await awaitMetadataSettled(app, file);
+	return triggerCustomSortRefresh(app);
 }
 
 export interface HideSettingSyncResult {
