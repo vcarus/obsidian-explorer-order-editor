@@ -1,30 +1,39 @@
 import { Notice, Plugin, TFolder } from 'obsidian';
 import { installExplorerSort } from './explorerSort';
+import { folderIndexKey, IndexFileStore, requestFileExplorerResort } from './indexFile';
 import { OrderModal } from './OrderModal';
 import { registerOrderSync } from './orderSync';
+import { removeOrder } from './orderIndex';
 import { DEFAULT_SETTINGS, ExplorerOrderEditorSettingTab, type ExplorerOrderEditorSettings } from './settings';
-import {
-	clearFolderOrder,
-	folderHasClearableOrder,
-	refreshCustomSort,
-	sortspecPathFor,
-} from './sortspecFile';
+
+/**
+ * The shape `loadData()` can return from a pre-M10b install: `hideSortspec`
+ * instead of today's `hideIndexFile`. Read once, in `loadSettings`, as a
+ * fallback so an existing install keeps whatever choice it made rather than
+ * silently reverting to the default the moment the key gets renamed.
+ */
+interface LegacySettingsShape {
+	readonly hideSortspec?: boolean;
+}
 
 export default class ExplorerOrderEditorPlugin extends Plugin {
 	settings: ExplorerOrderEditorSettings = DEFAULT_SETTINGS;
+	store!: IndexFileStore;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+
+		this.store = new IndexFileStore(this);
+		// Must be awaited before the file explorer can render: `store.get` is
+		// synchronous (`getSortedFolderItems` is), so if the index isn't in
+		// memory yet by the time the explorer first paints, folders render in
+		// default order and then visibly snap once this resolves.
+		await this.store.load();
+
 		this.addSettingTab(new ExplorerOrderEditorSettingTab(this.app, this));
 
 		// Deferred to onLayoutReady to sit out the vault's startup indexing
 		// flood of rename-like events.
-		//
-		// Earlier versions had a third onLayoutReady call here, showing a
-		// Notice when custom-sort was absent: saved orders were written
-		// correctly but nothing in the file explorer would change. That was
-		// true then and is not now — with nothing else installed, the patch
-		// below renders the order itself, so there is nothing to warn about.
 		this.app.workspace.onLayoutReady(() => registerOrderSync(this));
 
 		// A separate onLayoutReady call, for an unrelated reason: the file
@@ -47,22 +56,21 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 						.setIcon('lucide-arrow-up-down')
 						.setSection('action')
 						.onClick(() => {
-							new OrderModal(this.app, file, this.settings).open();
+							new OrderModal(this.app, file, this.settings, this.store).open();
 						});
 				});
 
 				// Only offered when there is actually something of ours to
-				// remove — a folder with no saved order (or only a
-				// hand-written, non-authored section) gets no menu item at
+				// remove — a folder with no saved order gets no menu item at
 				// all, rather than one that clicks through to "nothing to
 				// clear".
-				if (folderHasClearableOrder(this.app, file)) {
+				if (this.store.get(folderIndexKey(file)) !== undefined) {
 					menu.addItem((item) => {
 						item.setTitle('Clear explorer order')
 							.setIcon('lucide-list-x')
 							.setSection('action')
 							.onClick(() => {
-								void this.clearOrderFor(file);
+								this.clearOrderFor(file);
 							});
 					});
 				}
@@ -73,7 +81,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			id: 'set-order-for-vault-root',
 			name: 'Set explorer order for vault root',
 			callback: () => {
-				new OrderModal(this.app, this.app.vault.getRoot(), this.settings).open();
+				new OrderModal(this.app, this.app.vault.getRoot(), this.settings, this.store).open();
 			},
 		});
 
@@ -84,54 +92,53 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			// palette when the vault root has no saved order to clear.
 			checkCallback: (checking) => {
 				const root = this.app.vault.getRoot();
-				if (!folderHasClearableOrder(this.app, root)) return false;
+				if (this.store.get(folderIndexKey(root)) === undefined) return false;
 				if (!checking) {
-					void this.clearOrderFor(root);
+					this.clearOrderFor(root);
 				}
 				return true;
 			},
 		});
 	}
 
+	onunload(): void {
+		// Best-effort: performs any write `IndexFileStore`'s debounce hasn't
+		// flushed yet, so disabling/reloading the plugin right after a save
+		// can't drop it. Not awaited — `onunload` isn't guaranteed to be
+		// awaited by Obsidian either — but the write is already scheduled
+		// synchronously by `update()`, so this only affects *when* it lands,
+		// not whether it's attempted.
+		void this.store.flush();
+	}
+
 	private async loadSettings(): Promise<void> {
-		const data = (await this.loadData()) as Partial<ExplorerOrderEditorSettings> | null;
-		this.settings = { ...DEFAULT_SETTINGS, ...data };
+		const data = (await this.loadData()) as (Partial<ExplorerOrderEditorSettings> & LegacySettingsShape) | null;
+		const hideIndexFile = data?.hideIndexFile ?? data?.hideSortspec ?? DEFAULT_SETTINGS.hideIndexFile;
+		this.settings = { ...DEFAULT_SETTINGS, ...data, hideIndexFile };
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 	}
 
-	private async clearOrderFor(folder: TFolder): Promise<void> {
-		// Captured before the mutation: clearing can trash the file (once
-		// everything in it is gone), so it may no longer resolve via
-		// getFileByPath afterward. refreshCustomSort only ever reads `.path`
-		// off this object — it never dereferences it through the vault again
-		// — so the pre-clear reference stays good for that even once the
-		// file itself is gone, and the refresh still has to run in that case:
-		// custom-sort's own cached copy of this folder's (now-removed) order
-		// otherwise stays in effect until some unrelated refresh happens to
-		// flush it.
-		const fileBeforeClear = this.app.vault.getFileByPath(sortspecPathFor(folder));
-
-		let result;
-		try {
-			result = await clearFolderOrder(this.app, folder);
-		} catch (err) {
-			console.error('[explorer-order-editor] failed to clear explorer order', err);
-			new Notice('Could not clear the explorer order: an unexpected error occurred.');
-			return;
-		}
-
-		if (result.status !== 'removed') {
-			// folderHasClearableOrder gates both entry points on this same
-			// condition, so this is only reachable if the folder changed
+	private clearOrderFor(folder: TFolder): void {
+		const key = folderIndexKey(folder);
+		if (this.store.get(key) === undefined) {
+			// The menu item and command are both gated on this same condition,
+			// so this is only reachable if the folder's stored order changed
 			// between the check and the click — report rather than pretend
 			// success.
 			new Notice('Nothing to clear for this folder.');
 			return;
 		}
 
+		// Checked, not assumed: `update` refuses while the order note is
+		// unparseable, and claiming "cleared" over a refusal would be a plain
+		// lie about the user's data.
+		if (!this.store.update((index) => removeOrder(index, key))) {
+			new Notice(`Could not clear: the order note ${this.store.unusableReason() ?? 'could not be written'}. Fix it and try again.`);
+			return;
+		}
 		new Notice('Explorer order cleared.');
 
 		if (!this.settings.autoRefresh) {
@@ -139,12 +146,10 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			return;
 		}
 
-		if (fileBeforeClear === null) return; // shouldn't happen — folderHasClearableOrder already confirmed a file existed
-		const refreshResult = await refreshCustomSort(this.app, fileBeforeClear);
-		if (refreshResult === 'missing') {
-			// Neither renderer could be reached: no custom-sort, and no file
-			// explorer view to ask for a redraw either. The change is saved
-			// regardless — only the redraw is missing.
+		if (!requestFileExplorerResort(this.app)) {
+			// No file explorer leaf to ask — genuinely rare, but still
+			// reported so a change that silently isn't visible anywhere isn't
+			// mistaken for one that is.
 			new Notice('Saved. The file explorer will show this when you next open it.');
 		}
 	}

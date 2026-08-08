@@ -6,28 +6,6 @@
 	text-align: center;
 }
 
-.eoe-warning {
-	display: flex;
-	align-items: flex-start;
-	gap: var(--size-4-2);
-	padding: var(--size-4-2);
-	margin-bottom: var(--size-4-2);
-	border-radius: var(--radius-s);
-	background-color: var(--background-secondary);
-	border-left: 2px solid var(--text-warning);
-}
-
-.eoe-warning-icon {
-	display: flex;
-	flex-shrink: 0;
-	margin-top: 2px;
-	color: var(--text-warning);
-}
-
-.eoe-warning-text {
-	color: var(--text-muted);
-}
-
 /* Breadcrumb trail (M8c): a stepped vertical hierarchy, one folder per line,
    each indented one step past the one above — replacing M8b's single
    horizontal line, which had no good answer for a long ancestor sitting next
@@ -280,11 +258,6 @@
 	text-overflow: ellipsis;
 }
 
-.eoe-row-disabled {
-	opacity: 0.5;
-	cursor: not-allowed;
-}
-
 /* Move-to-top/move-to-bottom buttons. flex-shrink: 0 keeps them from being
    squeezed by .eoe-row-name's flex: 1 1 auto — without it a long name would
    shrink the actions first, the opposite of the ellipsis truncation
@@ -358,13 +331,6 @@
 	white-space: nowrap;
 }
 
-/* Unorderable rows aren't managed by SortableJS and have no drag handle, so
-   the hover highlight (which implies "you can act on this") is misleading —
-   suppress it back to the row's resting background. */
-.eoe-unorderable-list .eoe-row:hover {
-	background-color: var(--background-secondary);
-}
-
 /* SortableJS-driven states. The library manages the dynamic drag geometry
    itself (inline transforms while dragging); these classes only supply the
    static visual treatment for each state. */
@@ -384,23 +350,6 @@
 	box-shadow: var(--shadow-s);
 }
 
-/* The unorderable region: a short explanation followed by a static list of
-   entries custom-sort's syntax can't express. Not SortableJS-managed —
-   these rows can never be dragged, so there is nothing to configure here
-   beyond layout. A rule above the note visually separates it from the
-   sortable list above it; when there is no sortable list (every entry is
-   unorderable), the note is the first thing in the modal and needs no such
-   separator. */
-.eoe-unorderable-note {
-	margin-top: var(--size-4-4);
-	color: var(--text-muted);
-}
-
-.eoe-list + .eoe-unorderable-note {
-	padding-top: var(--size-4-3);
-	border-top: 1px solid var(--background-modifier-border);
-}
-
 /* The lone row shown when a folder holds exactly one item. Not SortableJS-
    managed and never scrollable — there is exactly one row — so this only
    supplies the same spacing the sortable list has above it, keeping that
@@ -410,20 +359,11 @@
 }
 
 /* Nothing about that row can be dragged or nudged, so the hover highlight —
-   which implies "you can act on this" — would be misleading, exactly as it
-   is for the unorderable rows below. The "enter" control it may carry is a
-   button with its own hover state, so nothing is lost. */
+   which implies "you can act on this" — would be misleading. The "enter"
+   control it may carry is a button with its own hover state, so nothing is
+   lost. */
 .eoe-static-list .eoe-row:hover {
 	background-color: var(--background-secondary);
-}
-
-.eoe-unorderable-list {
-	display: flex;
-	flex-direction: column;
-	gap: var(--size-2-1);
-	max-height: 30vh;
-	margin-top: var(--size-4-2);
-	overflow-y: auto;
 }
 
 .eoe-footer {

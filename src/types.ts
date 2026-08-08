@@ -1,10 +1,14 @@
 /**
- * Shared vocabulary between the pure sortspec layer and the UI.
+ * Shared vocabulary between the pure layers (`orderIndex.ts`, and — until
+ * M10c removes them — `sortspec.ts`/`frontmatter.ts`) and the UI.
  *
- * `name` is the exact string custom-sort matches against, already resolved:
- * `.md` files use their basename (no extension), every other file uses its
- * full name including the extension, and folders use the folder name.
- * Resolving that is `sortspecFile.ts`'s job — nothing downstream re-derives it.
+ * `name` is the exact child name as it appears in the vault: full name,
+ * extension included, for files and folders alike. That is what the index
+ * (`orderIndex.ts`) stores, and it is what makes a `Notes` folder and a
+ * `Notes.md` note distinguishable without a separate `kind` field on the
+ * stored data itself — the filesystem already guarantees full names are
+ * unique within a folder. `kind` still lives on `Entry`: the UI uses it for
+ * icons and for grouping (folders before files) in `fallbackEntryOrder`.
  */
 export type EntryKind = 'file' | 'folder';
 
@@ -14,39 +18,25 @@ export interface Entry {
 }
 
 /**
- * Derives `Entry.name` from a *file* name that exists only as a string:
- * `.md` files use their basename, every other file keeps its full name
- * including the extension.
+ * What a row in the reorder dialog should *show* for `entry`, as opposed to
+ * what gets stored: strips a trailing `.md` from a file's name, so a note
+ * called "Design.md" reads as "Design" — matching how the rest of Obsidian's
+ * UI (the file explorer, the quick switcher) displays note titles. Storage
+ * (`Entry.name`, and every key/value the index holds) always keeps the full
+ * name; only a rendered label goes through this.
  *
- * Used in exactly one place — reconstructing the name a renamed file used to
- * have, from a rename event's `oldPath`. That is the only case with no
- * `TFile` to ask, because the object handed to the event already carries the
- * *new* name. Everywhere a `TFile` exists (`entriesFor`, and the new-name
- * side of a rename) reads Obsidian's own `extension`/`basename` instead, and
- * says why: custom-sort matches on names derived from those same two fields,
- * so reading them is what keeps our output in agreement with it by
- * definition. This function can only ever be a faithful re-implementation of
- * that rule, so it is kept off the path that decides what gets written.
- *
- * Consequence of that asymmetry, and the reason it is the safe direction: if
- * Obsidian's `extension` turns out to differ from a plain case-sensitive
- * `.md` suffix (the API docs don't say whether it is lower-cased), the old
- * name reconstructed here won't match what was stored, `renameEntryInOrder`
- * returns null, and the rename is simply not followed — that one entry loses
- * its position, exactly as it did before this feature existed. The reverse
- * arrangement would instead write a name custom-sort doesn't recognize.
- *
- * Folders never go through this — a folder's `Entry.name` is always just its
- * own name, with no extension logic at all.
+ * Folders are never touched — a folder named e.g. "Notes.old" keeps that
+ * name verbatim, since a folder has no extension to strip in the first
+ * place.
  */
-export function entryNameForFileName(fileName: string): string {
-	return fileName.endsWith('.md') ? fileName.slice(0, -'.md'.length) : fileName;
+export function displayLabel(entry: Entry): string {
+	return entry.kind === 'file' && entry.name.endsWith('.md') ? entry.name.slice(0, -'.md'.length) : entry.name;
 }
 
 /**
  * The order rows appear in when a folder has no saved order yet — folders
  * before files, each group by name. It also decides where entries the saved
- * order doesn't mention get appended (see `mergeStoredOrder`).
+ * order doesn't mention get appended (see `mergeOrder` in `orderIndex.ts`).
  *
  * `numeric: true` so runs of digits compare as numbers: without it `10`
  * sorts before `2`, which disagrees with the file explorer for any folder
@@ -64,8 +54,8 @@ export function entryNameForFileName(fileName: string): string {
  *   devices with different system locales can suggest different orders for
  *   the same CJK names. Pinning a locale would trade that for being wrong
  *   the same way everywhere, which is not obviously better; and it only
- *   affects the *suggestion*, since a saved order is explicit line-by-line
- *   in sortspec.md and renders identically everywhere.
+ *   affects the *suggestion*, since a saved order is explicit and renders
+ *   identically everywhere it's read.
  *
  * Pure and dependency-free so it can be unit-tested: `entriesFor`, its only
  * caller, imports obsidian and cannot be.

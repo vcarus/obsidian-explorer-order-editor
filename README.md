@@ -7,18 +7,17 @@ example) would drop.
 
 ![Right-clicking the file explorer, dragging the vault's top-level folders into a chosen order, and saving — after which the file explorer shows that order instead of the alphabetical one](docs/images/reorder.gif)
 
-> Works on its own — no companion plugin needed. If you already use
-> [Custom File Explorer sorting](https://obsidian.md/plugins?id=custom-sort),
-> this plugin writes a spec it understands and leaves the rendering to it.
-> See [below](#rendering-and-custom-file-explorer-sorting).
+> Works on its own. The order lives in one plain-text note inside your
+> vault, so it syncs with your notes, diffs in version control, and can be
+> read and edited by hand. See [below](#how-the-order-is-stored).
 
 ## What it does
 
 Right-click a folder and choose **Set explorer order** to get a dialog
 listing its direct children; drag them into the order you want and **Save**.
-The order is written to a `sortspec.md` inside that same folder. **Clear
-explorer order**, in the same menu, removes it again — it only appears when
-there is something of this plugin's to remove.
+The order is recorded in the plugin's order note. **Clear explorer order**,
+in the same menu, removes it again — it only appears when that folder
+actually has an order to remove.
 
 For the vault root, right-click empty space below the last item in the file
 explorer. There are also **Set explorer order for vault root** and **Clear
@@ -49,141 +48,106 @@ desktop `Alt`+`↑`/`Alt`+`↓` nudge the focused row a step at a time while
 `Alt`+`Shift`+`↑`/`Alt`+`Shift`+`↓` send it to either end.
 
 Renaming an item keeps its position, and deleting it — or moving it out of
-the folder — drops it from the order. Expect a brief flicker on rename: the
-file explorer redraws before `sortspec.md` has been updated, so the renamed
-item sits at the bottom for about half a second and then returns. Moving an
-item *into* a folder does not insert it into that folder's order: there is no
-way to know where you would want it, so it joins everything else the order
-doesn't mention, at the end.
+the folder — drops it from the order. Moving an item *into* a folder does not
+insert it into that folder's order: there is no way to know where you would
+want it, so it joins everything else the order doesn't mention, at the
+end.
 
-## Rendering, and Custom File Explorer sorting
+## How it renders
 
-This plugin renders the saved order in the file explorer itself, so nothing
-else needs to be installed. It does that by wrapping the file explorer's
-internal `getSortedFolderItems` — the same method
-[Custom File Explorer sorting](https://github.com/SebastianMC/obsidian-custom-sort)
-(`custom-sort`) wraps for the same purpose. Names the stored order doesn't
-mention keep whatever position Obsidian's own sort setting gives them, so a
-folder you have ordered still respects your choice of name, modified time or
-anything else for everything you didn't place by hand.
+This plugin renders the saved order in the file explorer itself; nothing else
+needs to be installed. It does that by wrapping the file explorer's internal
+`getSortedFolderItems`. Names the stored order doesn't mention keep whatever
+position Obsidian's own sort setting gives them, so a folder you have ordered
+still respects your choice of name, modified time or anything else for
+everything you didn't place by hand.
 
-That method is not part of Obsidian's public API, so the wrapper is written
-to fail quietly: on any unexpected result it hands back the file explorer's
-own ordering untouched. The worst case is that a saved order stops being
-applied, never a broken file tree.
+Only folders that actually have a saved order are touched; every other folder
+is passed straight through. That method is not part of Obsidian's public API,
+so the wrapper is written to fail quietly: on any unexpected result it hands
+back the file explorer's own ordering untouched. The worst case is that a
+saved order stops being applied, never a broken file tree.
 
-If `custom-sort` is installed and enabled, this plugin detects it and stays
-out of the way completely — that plugin does the rendering, and the two can
-never disagree about a folder. Nothing about what gets written changes
-either way, because what gets written is a spec `custom-sort` reads. That is
-deliberate: the order stays plain text your vault owns, it keeps working if
-you ever remove this plugin and keep `custom-sort`, and `custom-sort` covers
-kinds of sorting this plugin does not try to offer.
-
-After a save or a clear, the file explorer is asked to redraw right away —
-`custom-sort`'s refresh command when it is present, the explorer's own
-re-sort when it isn't. That can be turned off in settings.
+After a save or a clear, the file explorer is asked to redraw right away.
+That can be turned off in settings.
 
 ## How the order is stored
 
-Each folder's order lives in a `sortspec.md` file inside that same folder
-(the vault root's is just `sortspec.md` at the top level), under a
-`sorting-spec` front matter key that `custom-sort` reads:
+Every order in the vault lives in one note — `explorer-order.md` at the vault
+root by default — in a fenced `json` block, one folder per line:
 
-```yaml
----
-sorting-spec: |
-  target-folder: .
-  // explorer-order-editor
-  Meeting notes
-  Requirements
-  Subproject
-  Archive
----
+```json
+{
+  "Projects/Alpha": ["Design.md", "Notes", "TODO.md"],
+  "Projects/Beta": ["b.md", "a.md"]
+}
 ```
 
-It is plain text in your own vault, so it syncs like any other note and
-survives this plugin being uninstalled. A few things worth knowing:
+It is a plain note in your own vault, so it syncs like any other note, diffs
+in version control, and can be read or edited by hand. A few things worth
+knowing:
 
-- Notes are listed without their `.md` extension; every other file keeps its
-  extension; folders use their plain name.
-- Anything in the folder that isn't listed sorts to the end — you don't have
-  to list everything, only what you want to pin.
-- The `// explorer-order-editor` marker identifies a section this plugin
-  wrote. **Clear explorer order** can only ever delete a marked section, so
-  it cannot remove configuration you wrote by hand. Saving is less
-  conservative: it replaces a hand-written section for the same folder, and
-  the notice afterwards tells you it did.
-- If a section covers this folder *together with others* (a multi-folder
-  `target-folder:`), saving is refused outright rather than rewriting it,
-  since editing it here would silently change those other folders too.
-- Only the `sorting-spec` key and the file's own existence are ever touched.
-  Other front matter keys, and any body text, are left byte-for-byte alone.
+- Names are exactly as they appear in the vault, extensions included. Any
+  name can be stored, whatever characters it contains.
+- Anything in a folder that isn't listed sorts to the end — you don't have to
+  list everything, only what you want to pin.
+- One line per folder is deliberate: a three-way merge in git resolves
+  conflicts per folder rather than on the whole file.
+- Only the contents of that one fenced block are ever rewritten. Any prose you
+  add around it, and any other block, is left byte-for-byte alone.
+- If the block cannot be parsed, the plugin says so and **refuses to write**
+  until you fix it, rather than overwriting a file it could not read.
+
+If you used a version before 1.0, your orders are in per-folder `sortspec.md`
+files. The settings tab grows two rows while any of those still exist:
+**Import orders from sortspec.md files** copies them all into the order note
+in one pass — only sections this plugin wrote, skipping folders that already
+have an order, safe to run twice — and deletes nothing. Once you have checked
+the result, **Delete imported sortspec.md files** removes the old ones, and
+only for folders whose order actually made it into the note. Both rows
+disappear once no sortspec.md is left, so a vault that started on 1.0 never
+sees them.
 
 ## Settings
-
-The settings tab opens with a status row showing whether `custom-sort` was
-detected, and therefore which of the two is rendering your order. Either
-answer is fine; it is there so you know which one to look at if something
-seems off.
 
 - **Automatically refresh after saving** (on by default) — update the file
   explorer as soon as an order is saved or cleared. When off, the change is
   still written immediately and shows up at the explorer's next refresh.
-- **Hide sortspec.md in the file explorer** (on by default) — hide
-  `sortspec.md` from folders where you've saved an order, so ordering twenty
-  folders doesn't put twenty files into your tree. Both renderers honour
-  this: the setting writes `custom-sort`'s own item-hide syntax, and this
-  plugin's own rendering applies it too. Only the file explorer is affected;
-  search, the quick switcher and the graph still show the file. Turn this off
-  to see it in place. Toggling applies immediately across the vault, in both
-  directions: every section this plugin wrote is updated, and sections you
-  wrote by hand are left alone.
+- **Hide the order note in the file explorer** (on by default) — keep
+  `explorer-order.md` out of the tree, since it is a byproduct of using the
+  plugin rather than something you wrote. Only the file explorer is affected;
+  search, the quick switcher and the graph still show it. Turn this off to see
+  it in place.
 
 ## Known limitations
 
-- A few names cannot be expressed in `custom-sort`'s syntax, which has no
-  escape mechanism: names containing `...`, names with leading or trailing
-  whitespace, and names whose first word is one of its reserved tokens
-  (`%`, `/folders`, `--%`, `with-metadata:` and their relatives). The dialog
-  lists these separately, below the orderable rows, each with a tooltip
-  saying why; they aren't draggable, and like anything unlisted they sort to
-  the end. Everything else still saves, and the notice afterwards names what
-  was skipped. Names that merely *start* with such a token as part of a
-  longer word — `%Report`, `--dashes` — are fine.
-- `custom-sort` also reads a folder note (`FolderName/FolderName.md`, if one
-  exists) as a sorting spec for that same folder. If that note has its own
-  `sorting-spec` targeting the folder it lives in, it's a second,
-  independent source of truth this plugin cannot reconcile — the dialog
-  warns about it, but never edits the folder note.
-- A rename can only be followed while this plugin is running. One made on
-  another device, or with Obsidian closed, arrives as an already-renamed
-  file, and that item loses its position — it sorts to the end until you drag
-  it back. The stale name is dropped the next time that folder is saved.
+- An order is keyed by folder path, so a folder renamed or moved **while this
+  plugin isn't running** — on another device, or with the plugin disabled —
+  leaves its order under a path nothing lives at any more. Renames made while
+  it is running are followed automatically. Orders for folders that no longer
+  exist are deliberately kept rather than pruned at startup, since a missing
+  folder is just as likely to be sync lag as a real deletion.
+- Every order lives in one file, so two devices reordering different folders
+  at the same time can produce a sync conflict on that file, where the old
+  per-folder layout could not. The one-line-per-folder format is what keeps a
+  git merge resolving cleanly; Obsidian Sync will leave a conflict copy.
 - There is no multi-select drag; reordering is one row at a time.
 - The order the dialog suggests for a folder with no saved order — folders
   first, then files, each by name with digit runs compared as numbers —
-  approximates the file explorer rather than matching it. The dialog reads
-  the folder from the vault rather than from the explorer, so if you've set
-  the explorer to anything other than name A→Z, the dialog's starting order
-  will differ from what you see in the tree. It's a starting point to drag
-  from; once saved, the order is explicit and identical everywhere. (The
-  rendered result does follow your sort setting for anything you didn't
-  place by hand — this is only about the dialog's initial suggestion.)
-- The filename `sortspec.md` is fixed. `custom-sort` always reads that
-  specific name, so making it configurable would risk silently writing a file
-  it never looks at.
+  approximates the file explorer rather than matching it. The dialog reads the
+  folder from the vault rather than from the explorer, so if you've set the
+  explorer to anything other than name A→Z, the dialog's starting order will
+  differ from what you see in the tree. It's a starting point to drag from;
+  once saved, the order is explicit and identical everywhere. (The rendered
+  result does follow your sort setting for anything you didn't place by hand —
+  this is only about the dialog's initial suggestion.)
 
 ## Installation
 
 In Obsidian, open **Settings → Community plugins → Browse**, search for
 **Explorer Order Editor**, then install and enable it.
 
-That is the whole installation. If you also want the automatic and
-rule-based sorting that
-[Custom File Explorer sorting](https://obsidian.md/plugins?id=custom-sort)
-offers, install it from the same list; this plugin will detect it and hand
-the rendering over — see above.
+That is the whole installation — no companion plugin, no configuration.
 
 From 0.5.0 onward this plugin needs **Obsidian 1.13 or newer**, which is what
 lets its settings be declared to Obsidian rather than drawn by hand — that is
@@ -206,7 +170,10 @@ MIT — see [LICENSE](./LICENSE).
 
 This plugin is not a fork of, and contains no code from,
 [Custom File Explorer sorting](https://github.com/SebastianMC/obsidian-custom-sort)
-(GPL-3.0). It is an independent implementation that writes a configuration
-file in the format that plugin reads, and asks it to refresh through a
-command registered with Obsidian. The two are separate programs that
-communicate through a data file; no linking is involved.
+(GPL-3.0). Versions before 1.0 wrote a configuration file in the format that
+plugin reads; the two were separate programs communicating through a data
+file, with no linking involved. Since 1.0 there is no interoperation at all,
+and the only remaining trace is factual: its published build was read to
+confirm which file explorer method to wrap and what a patch remover must do
+to coexist with another patch. Both are documented where they are relied on,
+in `src/explorerSort.ts` and `src/patch.ts`.

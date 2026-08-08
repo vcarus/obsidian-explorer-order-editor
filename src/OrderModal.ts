@@ -1,36 +1,16 @@
-import { App, ButtonComponent, Modal, Notice, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
+import { App, ButtonComponent, Modal, Notice, normalizePath, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
 import Sortable from 'sortablejs';
-import { FrontMatterError, type FrontMatterErrorCode } from './frontmatter';
+import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
+import { mergeOrder, setOrder } from './orderIndex';
 import { targetIndexFor, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
-import {
-	buildNameIndex,
-	encodeEntry,
-	mergeStoredOrder,
-	upsertFolderOrder,
-	type Diagnostic,
-	type MutationResult,
-	type NameIndex,
-	type UnencodableReason,
-} from './sortspec';
-import {
-	awaitMetadataSettled,
-	entriesFor,
-	folderNoteConflict,
-	readStoredOrder,
-	SORTSPEC_FILENAME,
-	sortspecPathFor,
-	targetKeyFor,
-	triggerCustomSortRefresh,
-	updateFolderSpec,
-} from './sortspecFile';
-import type { Entry } from './types';
+import { entriesFor } from './sortspecFile';
+import { displayLabel, type Entry } from './types';
 
 const ICON_FOLDER = 'lucide-folder';
 const ICON_FILE = 'lucide-file-text';
 const ICON_GRIP = 'lucide-grip-vertical';
-const ICON_WARNING = 'lucide-triangle-alert';
 const ICON_MOVE_TOP = 'lucide-chevrons-up';
 const ICON_MOVE_BOTTOM = 'lucide-chevrons-down';
 /** The per-row "enter subfolder" control (M8). */
@@ -106,18 +86,10 @@ const HINT_LINES: readonly (readonly HintPart[])[] = Platform.isMobile
 
 /**
  * One row in the reorder list. `entry` is the immutable identity (name +
- * kind) that gets handed to the sortspec layer on save; everything else
- * here is UI-only bookkeeping.
+ * kind) that gets handed to `orderIndex.ts` on save.
  */
 interface OrderRow {
 	readonly entry: Entry;
-	/**
-	 * Reason this entry can't be expressed in sorting-spec syntax, if any. A
-	 * defined value routes the row into the non-sortable "unorderable"
-	 * region (greyed out, no drag handle) and surfaces this text as a
-	 * tooltip; `undefined` keeps it in the draggable list.
-	 */
-	readonly disabledReason?: string;
 }
 
 /**
@@ -140,13 +112,6 @@ export class OrderModal extends Modal {
 	 * at each end, without re-querying the DOM for them on every move.
 	 */
 	private readonly rowActionsByRowEl = new Map<HTMLElement, { readonly top: HTMLButtonElement; readonly bottom: HTMLButtonElement }>();
-	/**
-	 * Entries that can't be represented in custom-sort's syntax, in the order
-	 * they're rendered in the (non-sortable) second region. Not draggable, so
-	 * `collectOrderedEntries` can't recover them from DOM order the way it
-	 * does for `listEl`'s children — this is their fixed contribution instead.
-	 */
-	private unorderableEntries: readonly Entry[] = [];
 	/**
 	 * This level's child folders, keyed by name, rebuilt at the top of every
 	 * `render()`. Folder names are unique within a folder, so name is an
@@ -173,34 +138,23 @@ export class OrderModal extends Modal {
 	 */
 	private busy = false;
 	/**
-	 * The metadata-cache wait armed by the most recent successful save, held
-	 * until the modal closes and `flushRefresh` turns it into custom-sort's
-	 * one refresh for the whole session.
+	 * Set by the most recent successful (changed) save, held until the modal
+	 * closes and `flushRefresh` turns it into one file-explorer redraw for
+	 * the whole session.
 	 *
 	 * The one piece of state `resetContent` must *not* clear: everything else
 	 * there belongs to a single level, whereas this deliberately survives
-	 * every level switch — that is the entire mechanism. A later save simply
-	 * replaces it; the superseded promise resolves on its own and cleans up
-	 * its own listener.
+	 * every level switch — that is the entire mechanism. Since M10b there is
+	 * no metadata cache to wait for (the index is ours, already updated in
+	 * memory the moment `save()` returns), so this is a plain boolean rather
+	 * than an armed promise.
 	 */
-	private pendingRefresh: Promise<void> | null = null;
-	/**
-	 * Bumped at the start of every `render()`; a render checks its own token
-	 * against this field after each `await` and bails out if they no longer
-	 * match. Without this, navigating to a new level while a previous
-	 * `render()` is still awaiting `folderNoteConflict`/`readStoredOrder`
-	 * would let that stale render finish by appending the *old* folder's rows
-	 * onto the *new* folder's already-drawn screen — `resetContent`/`render`
-	 * for the new level runs first (navigation awaits the whole switch), but
-	 * the old call is still suspended on the event loop and has no way to
-	 * know it's obsolete without checking.
-	 */
-	private renderToken = 0;
+	private pendingRefresh = false;
 	/**
 	 * What `collectOrderedEntries()` returned right after this level's
 	 * `render()` finished — i.e. exactly what a save would write at that
 	 * moment. `isDirty` compares the live order against this, not against
-	 * "what's on disk right now": a folder with no sortspec.md that the user
+	 * "what's stored right now": a folder with no stored order that the user
 	 * only looked at (drilled through on the way to a subfolder, then came
 	 * back up) must not get one written just because navigating triggers a
 	 * save-if-dirty. Reset to `[]` by `resetContent` and set again at the end
@@ -213,6 +167,7 @@ export class OrderModal extends Modal {
 		app: App,
 		folder: TFolder,
 		private readonly settings: ExplorerOrderEditorSettings,
+		private readonly store: IndexFileStore,
 	) {
 		super(app);
 		this.folder = folder;
@@ -227,13 +182,10 @@ export class OrderModal extends Modal {
 		// Read before resetContent, which deliberately leaves this field alone
 		// (it has to outlive every level switch) — this is the only place it
 		// is consumed and cleared.
-		const pending = this.pendingRefresh;
-		this.pendingRefresh = null;
+		const needsRefresh = this.pendingRefresh;
+		this.pendingRefresh = false;
 		this.resetContent();
-		// Deliberately not awaited: onClose is synchronous, and nothing here
-		// touches the modal — it reads the command registry and may show a
-		// notice, both of which are fine once the dialog is gone.
-		if (pending !== null) void this.flushRefresh(pending);
+		if (needsRefresh) this.flushRefresh();
 	}
 
 	/**
@@ -244,8 +196,6 @@ export class OrderModal extends Modal {
 	 * was just written.
 	 */
 	private async render(): Promise<void> {
-		const token = ++this.renderToken;
-
 		// Sentence case, and deliberately the same wording as the file-menu item
 		// that opens this modal. The path itself now lives in the breadcrumb
 		// trail below, which is why this no longer needs to vary per folder.
@@ -259,19 +209,12 @@ export class OrderModal extends Modal {
 		}
 
 		// The breadcrumb trail, rendered before anything else below —
-		// including the folder-note warning and the `siblings.length <= 1`
-		// early return — so that even an empty or fully-unorderable subfolder
-		// still has a way back out, rather than being a dead end only
-		// reachable by navigating into it in the first place.
+		// including the `siblings.length <= 1` early return — so that even
+		// an empty subfolder still has a way back out, rather than being a
+		// dead end only reachable by navigating into it in the first place.
 		this.renderBreadcrumbs();
 
-		const hasFolderNoteConflict = await folderNoteConflict(this.app, this.folder);
-		if (this.isStale(token)) return; // the modal was closed, or a newer render started, while the read was in flight
-		if (hasFolderNoteConflict) {
-			this.renderFolderNoteWarning();
-		}
-
-		const siblings = entriesFor(this.folder);
+		const siblings = entriesFor(this.folder, normalizePath(this.settings.indexPath));
 		const soleEntry = siblings.length === 1 ? siblings[0] : undefined;
 		if (siblings.length === 0 || soleEntry !== undefined) {
 			if (soleEntry === undefined) {
@@ -304,7 +247,7 @@ export class OrderModal extends Modal {
 			// than only opening one directly — it needs a Cancel button (and,
 			// via the breadcrumb rendered above, a way back up) same as every
 			// other screen. Never a Save button: with no order to express,
-			// saving would write a sortspec.md that says nothing.
+			// saving would write a no-op entry to the index.
 			this.renderFooter(false);
 			this.finishRender();
 			return;
@@ -313,32 +256,25 @@ export class OrderModal extends Modal {
 		// Restore whatever order is already stored for this folder, merged
 		// against what's actually here now. Without this, reopening the modal
 		// on an already-ordered folder would show alphabetical order and
-		// saving would silently destroy the existing order.
-		const stored = await readStoredOrder(this.app, this.folder, siblings);
-		if (this.isStale(token)) return; // the modal was closed, or a newer render started, while the read was in flight
-		const orderedEntries = mergeStoredOrder(stored, siblings);
+		// saving would silently destroy the existing order. `store.get` is a
+		// synchronous in-memory lookup — no read, no staleness to guard
+		// against the way the old (async) `readStoredOrder` needed.
+		const stored = this.store.get(folderIndexKey(this.folder));
+		const siblingByName = new Map(siblings.map((entry) => [entry.name, entry]));
+		const orderedEntries: Entry[] = mergeOrder(
+			stored,
+			siblings.map((entry) => entry.name),
+		)
+			.map((name) => siblingByName.get(name))
+			.filter((entry): entry is Entry => entry !== undefined);
 
-		const index = buildNameIndex(siblings);
-		const rows: OrderRow[] = orderedEntries.map((entry) => ({
-			entry,
-			disabledReason: this.computeDisabledReason(entry, index),
-		}));
+		const rows: OrderRow[] = orderedEntries.map((entry) => ({ entry }));
 
-		// Split into two regions: only entries `encodeEntry` can actually
-		// represent get a sortable, draggable row — dragging an entry that
-		// can never be written to the spec (or dropping one below such an
-		// entry) would imply an ordering this plugin cannot deliver. See
-		// `collectOrderedEntries` for how the unorderable ones still make it
-		// into the saved result despite living outside the sortable list.
-		const orderableRows = rows.filter((row) => row.disabledReason === undefined);
-		const unorderableRows = rows.filter((row) => row.disabledReason !== undefined);
-		this.unorderableEntries = unorderableRows.map((row) => row.entry);
-
-		if (orderableRows.length > 0) {
+		if (rows.length > 0) {
 			const listEl = this.contentEl.createDiv({ cls: 'eoe-list' });
 			this.listEl = listEl;
 
-			for (const row of orderableRows) {
+			for (const row of rows) {
 				this.renderRow(listEl, row, true);
 			}
 
@@ -400,20 +336,8 @@ export class OrderModal extends Modal {
 			}
 		}
 
-		if (unorderableRows.length > 0) {
-			this.contentEl.createDiv({
-				cls: 'eoe-unorderable-note',
-				text: "These can't be ordered — sortspec.md has no way to express their names. They always appear last.",
-			});
-
-			const unorderableListEl = this.contentEl.createDiv({ cls: 'eoe-unorderable-list' });
-			for (const row of unorderableRows) {
-				this.renderRow(unorderableListEl, row, false);
-			}
-		}
-
 		// Nothing to drag into an order means nothing to save.
-		this.renderFooter(orderableRows.length > 0);
+		this.renderFooter(rows.length > 0);
 		this.finishRender();
 	}
 
@@ -432,9 +356,9 @@ export class OrderModal extends Modal {
 	 *
 	 * Running on every exit path, not just the one that renders a sortable
 	 * list, is also what gives the breadcrumb a label on the empty-folder and
-	 * everything-unorderable screens — the screens where finding the way back
-	 * out matters most. `refreshRowActionsDisabled` is a no-op there (no
-	 * rows), which is why this can be one unconditional call.
+	 * single-item screens — the screens where finding the way back out
+	 * matters most. `refreshRowActionsDisabled` is a no-op there (no rows),
+	 * which is why this can be one unconditional call.
 	 */
 	private finishRender(): void {
 		this.initialOrder = this.collectOrderedEntries();
@@ -456,23 +380,14 @@ export class OrderModal extends Modal {
 		this.rowActionsByRowEl.clear();
 		this.childFolderByName.clear();
 		this.navControls = [];
-		this.unorderableEntries = [];
 		this.initialOrder = [];
 		this.contentEl.empty();
 	}
 
 	/**
-	 * Whether the `render()` call identified by `token` should stop acting —
-	 * see `renderToken`'s doc comment for why a render can go stale mid-await.
-	 */
-	private isStale(token: number): boolean {
-		return this.closed || token !== this.renderToken;
-	}
-
-	/**
 	 * True when the on-screen order has changed since this level's `render()`
-	 * finished. This has to mean "the user changed something", not "the file
-	 * on disk would change if saved now" — a folder with no sortspec.md that
+	 * finished. This has to mean "the user changed something", not "the
+	 * index would change if saved now" — a folder with no stored order that
 	 * the user merely looked at while passing through must not get one
 	 * written just because navigating away triggers a save-if-dirty.
 	 * Comparing against `initialOrder` (fixed at render time) is what keeps
@@ -523,12 +438,11 @@ export class OrderModal extends Modal {
 				// blocked / failed: notices are already up, and entering now
 				// would discard what the user arranged. Stay on this level.
 				if (outcome === 'blocked' || outcome === 'failed') return;
-				// A successful save awaits custom-sort's refresh, which is
-				// easily long enough for the user to have closed the dialog
-				// underneath us. `renderToken` only protects the awaits
-				// *inside* render(); nothing stops us calling it in the first
-				// place, and doing so would rebuild a whole level into a
-				// closed modal's detached contentEl, listeners and all.
+				// `save()` is still async even though nothing inside it takes
+				// long, which is enough for the user to have closed the dialog
+				// underneath us while it was in flight. Calling render() into a
+				// closed modal's detached contentEl would rebuild a whole level
+				// nobody can see, so this has to be checked before doing that.
 				if (this.closed) return;
 			}
 			this.folder = target;
@@ -622,12 +536,7 @@ export class OrderModal extends Modal {
 
 	/**
 	 * Reads the on-screen order back into `Entry[]`: the sortable rows in
-	 * their current on-screen order (after any dragging), followed by the
-	 * unorderable ones. The unorderable entries still need to reach
-	 * `upsertFolderOrder` even though they live outside the sortable list and
-	 * are never actually written — passing them through is what makes it emit
-	 * the `unrepresentable-entry` diagnostics the "Skipped N item(s)…" notice
-	 * depends on.
+	 * their current on-screen order, after any dragging.
 	 */
 	private collectOrderedEntries(): Entry[] {
 		const entries: Entry[] = [];
@@ -639,60 +548,24 @@ export class OrderModal extends Modal {
 				if (entry) entries.push(entry);
 			}
 		}
-		entries.push(...this.unorderableEntries);
 		return entries;
-	}
-
-	/** The real representability check: can `encodeEntry` actually write this entry? */
-	private computeDisabledReason(entry: Entry, index: NameIndex): string | undefined {
-		const result = encodeEntry(entry, index);
-		if (result.ok) return undefined;
-		return describeUnencodableReason(result.reason);
-	}
-
-	/**
-	 * custom-sort also reads `Folder/Folder.md` as a sorting spec for this
-	 * folder. If that note also targets this folder, its section is a
-	 * second, independent source of truth custom-sort has no documented
-	 * precedence rule for — surfaced here, before the user invests effort
-	 * dragging rows, rather than only discovered after saving. We never
-	 * touch the note itself.
-	 */
-	private renderFolderNoteWarning(): void {
-		const banner = this.contentEl.createDiv({ cls: 'eoe-warning' });
-		setIcon(banner.createSpan({ cls: 'eoe-warning-icon' }), ICON_WARNING);
-		banner.createSpan({
-			cls: 'eoe-warning-text',
-			text: `${this.folder.name}.md also has a sorting-spec for this folder and may override the order saved here.`,
-		});
 	}
 
 	/**
 	 * Renders one row.
 	 *
 	 * `sortable` gates every control that changes a row's *position* — the
-	 * grip and the move buttons — and it is false in two cases: the
-	 * unorderable region, whose rows never sit in a `Sortable`-managed
-	 * container, and a folder holding a single item, where there is no second
-	 * row to move past. A grip that does nothing is the same false promise
-	 * the disabled styling used to make on its own.
+	 * grip and the move buttons — and it is false only for a folder holding a
+	 * single item, where there is no second row to move past.
 	 *
 	 * The "enter" control is deliberately gated on none of that, because
-	 * entering is navigation, not ordering. Whether this plugin can express a
-	 * folder's own name in its *parent's* spec says nothing about whether its
-	 * children can be ordered — and they always can, since a folder's spec is
-	 * written with `target-folder: .`, which never mentions the folder's name
-	 * at all. Tying the two together is what left a folder you could see but
-	 * could not open.
+	 * entering is navigation, not ordering: a folder's own position among its
+	 * siblings is unrelated to whether its children can be reordered, and
+	 * they always can.
 	 */
 	private renderRow(container: HTMLElement, row: OrderRow, sortable: boolean): void {
 		const rowEl = container.createDiv({ cls: 'eoe-row' });
 		this.entryByRowEl.set(rowEl, row.entry);
-
-		if (row.disabledReason !== undefined) {
-			rowEl.addClass('eoe-row-disabled');
-			setTooltip(rowEl, row.disabledReason);
-		}
 
 		if (sortable) {
 			const handle = rowEl.createDiv({ cls: 'eoe-row-handle' });
@@ -703,7 +576,7 @@ export class OrderModal extends Modal {
 		const icon = rowEl.createDiv({ cls: 'eoe-row-icon' });
 		setIcon(icon, row.entry.kind === 'folder' ? ICON_FOLDER : ICON_FILE);
 
-		rowEl.createSpan({ cls: 'eoe-row-name', text: row.entry.name });
+		rowEl.createSpan({ cls: 'eoe-row-name', text: displayLabel(row.entry) });
 
 		// Created for every row, even one that ends up holding only the
 		// "enter" control (or nothing at all): it is what keeps the row's
@@ -916,7 +789,7 @@ export class OrderModal extends Modal {
 		return Array.from(listEl.children).filter((child): child is HTMLElement => child.instanceOf(HTMLElement));
 	}
 
-	/** `canSave` is false when every entry is unorderable — nothing dragged into an order, so nothing to offer saving. */
+	/** `canSave` is false for the empty-folder and single-item screens — nothing was ever dragged into an order, so nothing to offer saving. */
 	private renderFooter(canSave: boolean): void {
 		const footer = this.contentEl.createDiv({ cls: 'eoe-footer' });
 
@@ -945,221 +818,75 @@ export class OrderModal extends Modal {
 	}
 
 	/**
-	 * Writes the on-screen order to `this.folder`'s sortspec.md. Does not
-	 * close the modal itself — the footer Save button and `navigateTo` each
-	 * need to react to the outcome differently (the former closes on success,
-	 * the latter needs the modal to stay open so it can then switch levels),
-	 * so that decision is left to the caller.
+	 * Writes the on-screen order to the index, keyed under this folder. Does
+	 * not close the modal itself — the footer Save button and `navigateTo`
+	 * each need to react to the outcome differently (the former closes on
+	 * success, the latter needs the modal to stay open so it can then switch
+	 * levels), so that decision is left to the caller.
+	 *
+	 * Declared `async` (even though `store.update` is itself synchronous) so
+	 * every existing call site — `await this.save()`, and the footer button's
+	 * `.then()`/`.finally()` chain — keeps working unchanged.
 	 */
 	private async save(): Promise<SaveOutcome> {
-		const orderedEntries = this.collectOrderedEntries();
+		const unusable = this.store.unusableReason();
+		if (unusable !== null) {
+			// Said here and now, not left to the one Notice the store showed
+			// when it first became unusable: that fires once and never repeats,
+			// so a user who breaks the note and comes back later would press
+			// Save and get complete silence — which reads as "nothing
+			// happened", not "this was refused". The arrangement stays on
+			// screen either way.
+			new Notice(`Could not save: the order note ${unusable}. Fix it and try again.`);
+			return 'blocked';
+		}
 
-		let result: MutationResult;
+		const names = this.collectOrderedEntries().map((entry) => entry.name);
+		const key = folderIndexKey(this.folder);
+
+		let changed = false;
 		try {
-			const hideNames = this.settings.hideSortspec ? [SORTSPEC_FILENAME] : [];
-			result = await updateFolderSpec(this.app, this.folder, (spec) =>
-				upsertFolderOrder(spec, targetKeyFor(this.folder), orderedEntries, hideNames),
-			);
+			this.store.update((index) => {
+				const next = setOrder(index, key, names);
+				changed = next !== index;
+				return next;
+			});
 		} catch (err) {
-			if (err instanceof FrontMatterError) {
-				new Notice(`Could not save the explorer order: ${describeFrontMatterError(err.code)}.`);
-				return 'failed';
-			}
 			console.error('[explorer-order-editor] failed to save explorer order', err);
 			new Notice('Could not save the explorer order: an unexpected error occurred.');
 			return 'failed';
 		}
 
-		switch (result.status) {
-			case 'blocked':
-				this.reportBlocked(result.diagnostics);
-				return 'blocked';
-			case 'unchanged':
-				new Notice('Explorer order unchanged.');
-				return 'unchanged';
-			case 'replaced':
-			case 'appended':
-				this.reportSaved(result.diagnostics);
-				return 'saved';
-			case 'removed':
-				// Save only ever upserts; unreachable from this modal.
-				return 'saved';
-		}
-	}
-
-	private reportBlocked(diagnostics: readonly Diagnostic[]): void {
-		const conflict = diagnostics.find(
-			(d): d is Extract<Diagnostic, { kind: 'multi-target-conflict' }> => d.kind === 'multi-target-conflict',
-		);
-		if (conflict !== undefined) {
-			const fragment = createFragment((el) => {
-				el.createSpan({
-					text: `Found a section in sortspec.md that also controls other folders (target-folder: ${conflict.targets.join(', ')}), so editing it here would change those too.`,
-				});
-				const button = el.createEl('button', { text: 'Open sortspec.md', cls: 'eoe-notice-action' });
-				button.addEventListener('click', () => {
-					void this.openSortspecFile();
-				});
-			});
-			new Notice(fragment, 0);
-			return;
+		if (!changed) {
+			new Notice('Explorer order unchanged.');
+			return 'unchanged';
 		}
 
-		const duplicate = diagnostics.find(
-			(d): d is Extract<Diagnostic, { kind: 'duplicate-section' }> => d.kind === 'duplicate-section',
-		);
-		if (duplicate !== undefined) {
-			new Notice(`Found ${duplicate.count} conflicting sections for this folder in sortspec.md; it needs manual attention.`);
-			return;
-		}
-
-		new Notice('Could not save the explorer order.');
-	}
-
-	/**
-	 * Per-save feedback, and the point where the refresh is *armed* rather
-	 * than performed — see `pendingRefresh` and `flushRefresh`.
-	 */
-	private reportSaved(diagnostics: readonly Diagnostic[]): void {
-		const skipped = diagnostics.filter(
-			(d): d is Extract<Diagnostic, { kind: 'unrepresentable-entry' }> => d.kind === 'unrepresentable-entry',
-		);
-		const replacedForeign = diagnostics.some((d) => d.kind === 'foreign-section-replaced');
-
-		let message = 'Explorer order saved.';
-		if (replacedForeign) {
-			message += ' Replaced a hand-written section for this folder.';
-		}
-		if (skipped.length > 0) {
-			message += ` ${describeSkipped(skipped)}`;
-		}
-		new Notice(message);
-
-		const file = this.app.vault.getFileByPath(sortspecPathFor(this.folder));
-		if (file === null) return; // shouldn't happen right after a successful write
-		// Start waiting for the metadata cache now, while the write that will
-		// settle it has just happened. The wait is only awaited at close; see
-		// `awaitMetadataSettled` for why it cannot be started there instead.
-		this.pendingRefresh = awaitMetadataSettled(this.app, file);
+		new Notice('Explorer order saved.');
+		// Arms the refresh — see `pendingRefresh` and `flushRefresh`. Unlike
+		// the old sortspec.md-based version there is no cache to wait for: the
+		// index is ours and `this.store` already holds the new value in
+		// memory, so all that's left is asking the file explorer to redraw.
+		this.pendingRefresh = true;
+		return 'saved';
 	}
 
 	/**
 	 * The one refresh a whole dialog session is worth, run after the modal
-	 * has closed.
-	 *
-	 * custom-sort's refresh command re-sorts the vault, and this dialog now
-	 * saves once per folder visited — walking five levels deep used to mean
-	 * five whole-vault re-sorts, each preceded by its own wait for the
-	 * metadata cache, with the file explorer hidden behind the modal the
-	 * entire time. Four of those five were work nobody could see the result
-	 * of. Batching costs nothing in correctness: every save still lands on
-	 * disk immediately and atomically: only the *display* of it is deferred,
-	 * to the moment there is something to display it on.
+	 * has closed — this dialog saves once per folder visited, and walking
+	 * five levels deep redrawing the file explorer five times, each behind
+	 * the still-open modal, would be work nobody could see the result of.
 	 */
-	private async flushRefresh(settled: Promise<void>): Promise<void> {
+	private flushRefresh(): void {
 		if (!this.settings.autoRefresh) {
 			new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
 			return;
 		}
-		await settled;
-		if (triggerCustomSortRefresh(this.app) === 'missing') {
-			// Neither renderer reachable — see the same case in main.ts.
+		if (!requestFileExplorerResort(this.app)) {
+			// No file explorer leaf to ask — genuinely rare, but still
+			// reported so a save that silently isn't visible anywhere isn't
+			// mistaken for one that is.
 			new Notice('Saved. The file explorer will show this when you next open it.');
 		}
-	}
-
-	private async openSortspecFile(): Promise<void> {
-		const file = this.app.vault.getFileByPath(sortspecPathFor(this.folder));
-		if (file === null) return;
-		await this.app.workspace.getLeaf(false).openFile(file);
-		this.close();
-	}
-}
-
-/**
- * Groups skipped entries by reason rather than repeating the explanation
- * once per name — with several items sharing a cause, the per-name form
- * grew into a wall of identical clauses.
- *
- * Says where they end up, not just that they were skipped: they are still
- * in the folder, they just cannot be given a position, so custom-sort's
- * default puts them after everything that was listed.
- */
-function describeSkipped(skipped: readonly { name: string; reason: UnencodableReason }[]): string {
-	const byReason = new Map<UnencodableReason, string[]>();
-	for (const { name, reason } of skipped) {
-		const names = byReason.get(reason);
-		if (names === undefined) {
-			byReason.set(reason, [name]);
-		} else {
-			names.push(name);
-		}
-	}
-
-	const clauses = [...byReason].map(
-		([reason, names]) => `${names.map((n) => `"${n}"`).join(', ')} — ${describeUnencodableCause(reason)}`,
-	);
-	const count = skipped.length === 1 ? '1 item' : `${skipped.length} items`;
-	return `${count} could not be given a position and will sort last: ${clauses.join('; ')}.`;
-}
-
-/**
- * The same causes as `describeUnencodableReason`, phrased as noun phrases so
- * they read correctly after a list of several names. The tooltip form is a
- * verb phrase because it describes exactly one row.
- *
- * Note `backslash` is close to unreachable in practice: Obsidian does not
- * index files whose name contains a backslash, so such a file never reaches
- * `folder.children` and never gets this far. Kept because the encoder must
- * still refuse the name if one ever does.
- */
-function describeUnencodableCause(reason: UnencodableReason): string {
-	switch (reason) {
-		case 'empty':
-			return 'an empty name';
-		case 'whitespace':
-			return 'leading or trailing whitespace';
-		case 'newline':
-			return 'a line break';
-		case 'wildcard':
-			return "the wildcard sequence '...'";
-		case 'backslash':
-			return 'a backslash';
-		case 'reserved-token':
-			return 'a leading symbol reserved by the sorting syntax';
-		case 'group-attribute':
-			return 'a leading phrase the sorting syntax treats as a matching rule';
-	}
-}
-
-function describeUnencodableReason(reason: UnencodableReason): string {
-	switch (reason) {
-		case 'empty':
-			return 'the name is empty';
-		case 'whitespace':
-			return 'has leading or trailing whitespace';
-		case 'newline':
-			return 'contains a line break';
-		case 'wildcard':
-			return "contains '...'";
-		case 'backslash':
-			return 'contains a backslash';
-		case 'reserved-token':
-			return 'starts with a symbol sequence reserved by the sorting syntax';
-		case 'group-attribute':
-			return 'starts with a phrase the sorting syntax treats as a matching rule instead of a name';
-	}
-}
-
-function describeFrontMatterError(code: FrontMatterErrorCode): string {
-	switch (code) {
-		case 'invalid-yaml':
-			return "the file's front matter is not valid YAML";
-		case 'duplicate-key':
-			return 'the file has more than one sorting-spec key';
-		case 'unsupported-shape':
-			return 'the existing sorting-spec value has a shape this plugin cannot safely rewrite';
-		case 'verification-failed':
-			return 'the write could not be verified, so nothing was changed';
 	}
 }

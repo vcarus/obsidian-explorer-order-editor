@@ -1,20 +1,20 @@
 /**
- * Patches the file explorer to render the order this plugin stores, so
- * custom-sort becomes optional rather than required to actually see a saved
- * order. custom-sort still wins whenever it's installed and enabled — this
- * module never touches `getSortedFolderItems`'s result in that case (see
- * `isCustomSortAvailable`) — so there is exactly one thing deciding the file
- * explorer's order at any moment, never two disagreeing.
+ * Patches the file explorer to render the order this plugin stores.
  *
- * The only new module that imports `obsidian`, and deliberately thin: every
- * judgment that doesn't need a live `TFolder`/`TAbstractFile` — reconciling
- * a stored order against live siblings, parsing the stored spec text — is
- * already pure (`sortspec.ts`) or lives in `sortspecFile.ts` (the data
- * layer's own, pre-existing single point of `obsidian` contact). This file's
+ * Since M10b there is a single vault-level order index (`orderIndex.ts`,
+ * held in memory by `IndexFileStore`) and this is the only thing that ever
+ * renders it — there is no longer a separately-installed renderer (the old
+ * custom-sort integration) to defer to, so the rule is simply "override
+ * folders the index has an order for, pass everything else through
+ * untouched."
+ *
+ * The only other module besides `indexFile.ts` that imports `obsidian`, and
+ * deliberately thin: every judgment that doesn't need a live
+ * `TFolder`/`TAbstractFile` — reconciling a stored order against live
+ * siblings — is already pure (`mergeOrder` in `orderIndex.ts`). This file's
  * own job is narrow: locate the file explorer view, patch its prototype,
- * read the already-parsed frontmatter synchronously, and map the resulting
- * order back onto the live item objects `getSortedFolderItems` already
- * produced.
+ * read the in-memory index synchronously, and map the resulting order back
+ * onto the live item objects `getSortedFolderItems` already produced.
  *
  * The `getSortedFolderItems` patch itself mirrors exactly how custom-sort
  * patches the same method (verified against its bundled `main.js`: it
@@ -26,13 +26,11 @@
  * private renderer, and always falls back to the explorer's own result on
  * any error.
  */
-import { Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
-import { SORTING_SPEC_KEY } from './frontmatter';
+import { normalizePath, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
+import { folderIndexKey, type IndexFileStore } from './indexFile';
+import { mergeOrder } from './orderIndex';
 import { aroundPrototypeMethod } from './patch';
-import { entryKey, mergeStoredOrder, parseSortingSpec, readFolderOrder, type ParsedSpec } from './sortspec';
-import { entryForChild, isCustomSortAvailable, SORTSPEC_FILENAME, sortspecPathFor, specFolderKeyFor, targetKeyFor } from './sortspecFile';
 import type { ExplorerOrderEditorSettings } from './settings';
-import type { Entry } from './types';
 
 /**
  * `getSortedFolderItems` and `requestSort` are not part of Obsidian's public
@@ -43,12 +41,7 @@ import type { Entry } from './types';
  * declares). A local interface plus a runtime guard, rather than a `declare
  * module 'obsidian'` augmentation on `View` itself: augmenting `View` would
  * make every *other* view (markdown, graph, ...) wrongly appear to have
- * these two members too. This follows the same "declare only the slice you
- * use, right next to its use" precedent as the `App.commands` augmentation
- * at the top of sortspecFile.ts; `sortspecFile.ts` needs `requestSort` too,
- * for a different reason, and declares its own equally narrow, independent
- * copy rather than importing this one (see the comment there for why that
- * would be circular).
+ * these two members too.
  */
 interface FileExplorerView extends View {
 	getSortedFolderItems(folder: TFolder): FileExplorerItem[];
@@ -90,31 +83,14 @@ type GetSortedFolderItemsFn = (this: FileExplorerView, folder: TFolder) => FileE
  */
 export interface ExplorerSortHost extends Plugin {
 	settings: ExplorerOrderEditorSettings;
-}
-
-/** One parsed-spec cache entry per sortspec.md path, invalidated by content. */
-interface CachedSpec {
-	readonly raw: string;
-	readonly spec: ParsedSpec;
+	store: IndexFileStore;
 }
 
 /**
  * Builds the `getSortedFolderItems` replacement for one file explorer view.
- * `cache` is created once per install (shared across every folder the view
- * asks about, for the file explorer's whole lifetime) so a fresh parse only
- * happens when a given folder's `sorting-spec` text actually changed since
- * the last call — see `getParsedSpec`.
  */
-function buildReplacement(host: ExplorerSortHost, cache: Map<string, CachedSpec>): (original: GetSortedFolderItemsFn) => GetSortedFolderItemsFn {
-	const { app } = host;
-
-	function getParsedSpec(path: string, raw: string, specFolderKey: string): ParsedSpec {
-		const cached = cache.get(path);
-		if (cached !== undefined && cached.raw === raw) return cached.spec;
-		const spec = parseSortingSpec(raw, specFolderKey);
-		cache.set(path, { raw, spec });
-		return spec;
-	}
+function buildReplacement(host: ExplorerSortHost): (original: GetSortedFolderItemsFn) => GetSortedFolderItemsFn {
+	const { store } = host;
 
 	return (original) =>
 		function replacement(this: FileExplorerView, folder: TFolder): FileExplorerItem[] {
@@ -125,100 +101,78 @@ function buildReplacement(host: ExplorerSortHost, cache: Map<string, CachedSpec>
 			const items = original.call(this, folder);
 
 			try {
-				// custom-sort, when present and enabled, is the one source of
-				// truth for the rendered order; this patch stays out of its
-				// way entirely rather than risk the two disagreeing. Checked
-				// per call (cheap: a single `in` lookup) so toggling
-				// custom-sort on/off at runtime is picked up immediately,
-				// without needing to know about it.
-				if (isCustomSortAvailable(app)) return items;
-
-				const path = sortspecPathFor(folder);
-				const sortspecFile = app.vault.getFileByPath(path);
-				if (sortspecFile === null) return items; // no sortspec.md for this folder at all
-
-				// Synchronous by design: `getSortedFolderItems` cannot await
-				// anything. The already-parsed frontmatter in `metadataCache`
-				// is exactly what `folderHasClearableOrder` reads the same
-				// way, for the same reason.
-				const rawValue: unknown = app.metadataCache.getFileCache(sortspecFile)?.frontmatter?.[SORTING_SPEC_KEY];
-				if (typeof rawValue !== 'string') return items;
+				const indexNotePath = normalizePath(host.settings.indexPath);
+				const stored = store.get(folderIndexKey(folder));
 
 				// Entries derived in the *items' own* order — this is what
 				// makes the result agree with the explorer's current sort
 				// setting for anything the stored order doesn't mention,
-				// instead of falling back to `entriesFor`'s alphabetic
-				// guess. `sortspec.md` itself is tracked separately: it's
-				// excluded from `siblings`/`itemByKey` by `entryForChild`
-				// (same as `entriesFor`), so it never participates in
-				// `readFolderOrder`/`mergeStoredOrder`, and is re-appended
-				// or omitted below based on the "hide" setting alone.
-				let sortspecItem: FileExplorerItem | null = null;
-				const siblings: Entry[] = [];
-				const itemByKey = new Map<string, FileExplorerItem>();
+				// instead of falling back to `fallbackEntryOrder`'s alphabetic
+				// guess. The index note itself is tracked separately: it never
+				// participates in `mergeOrder`, and is re-appended or omitted
+				// below based on the "hide" setting alone.
+				let indexFileItem: FileExplorerItem | null = null;
+				const liveNames: string[] = [];
+				const itemByName = new Map<string, FileExplorerItem>();
 				for (const item of items) {
 					const file: unknown = item?.file;
-					// The shape guard `FileExplorerItem` documents. A row that
-					// isn't wrapping a file or a folder means our assumption
-					// about this internal no longer holds, and the only safe
-					// answer is to render nothing of our own.
+					// The shape guard the doc comment on `FileExplorerItem`
+					// documents. A row that isn't wrapping a file or a folder
+					// means our assumption about this internal no longer
+					// holds, and the only safe answer is to render nothing of
+					// our own.
 					if (!(file instanceof TFile) && !(file instanceof TFolder)) return items;
 
-					if (file instanceof TFile && file.name === SORTSPEC_FILENAME) {
-						sortspecItem = item;
+					if (file instanceof TFile && file.path === indexNotePath) {
+						indexFileItem = item;
 						continue;
 					}
-					const entry = entryForChild(file);
-					// Unreachable given the guard above — `entryForChild`'s only
-					// other null case is sortspec.md, handled just above. Kept as
-					// a fail-safe: a row we cannot key has to send us back to the
-					// explorer's own order, never be dropped from the file tree.
-					if (entry === null) return items;
-					siblings.push(entry);
-					itemByKey.set(entryKey(entry), item);
+					liveNames.push(file.name);
+					itemByName.set(file.name, item);
 				}
 
-				// No row could be keyed, yet the folder has rows. Nothing below
-				// can emit a row that isn't in `itemByKey`, so this would
-				// reconcile to an empty order and render the folder empty — the
-				// exact shape of the bug the guard above prevents, caught a
-				// second time on the way out.
-				if (siblings.length === 0) return items;
+				// Nothing stored for this folder, and no reason to touch the
+				// order anyway — the common case, kept cheap. The index note
+				// counts as a reason only when it is actually being hidden:
+				// with hiding off and nothing stored, rebuilding the array
+				// would re-append that note at the end, moving it out of the
+				// position the explorer's own sort just gave it, in a folder
+				// the user never ordered at all.
+				if (stored === undefined && (indexFileItem === null || !host.settings.hideIndexFile)) return items;
 
-				const spec = getParsedSpec(path, rawValue, specFolderKeyFor(folder));
-				const stored = readFolderOrder(spec, targetKeyFor(folder), siblings);
-				if (stored === null) return items; // no saved order for this folder — the common case, kept cheap
+				// Every item was classified as *either* the index note *or* a
+				// real sibling above, so `liveNames` can only be empty here if
+				// the folder holds nothing but the index note — legitimate,
+				// not a bug. If it's empty for any other reason while there
+				// were items to begin with, that's the exact shape of the
+				// internal-assumption bug the guard above already returns out
+				// of; this is a second, redundant catch of the same case on
+				// the way out, in case some future change to the loop above
+				// ever lets it slip past the first one.
+				if (liveNames.length === 0 && indexFileItem === null && items.length > 0) return items;
 
-				const merged = mergeStoredOrder(stored, siblings);
+				const merged = mergeOrder(stored, liveNames);
 				const result: FileExplorerItem[] = [];
-				for (const entry of merged) {
-					const item = itemByKey.get(entryKey(entry));
-					// Always found: `merged` only ever contains entries that
-					// came from `siblings`, and every `siblings` entry has a
-					// corresponding `itemByKey` mapping by construction. The
+				for (const name of merged) {
+					const item = itemByName.get(name);
+					// Always found: `merged` only ever contains names that
+					// came from `liveNames`, and every `liveNames` entry has a
+					// corresponding `itemByName` mapping by construction. The
 					// guard exists so a future change to that invariant fails
 					// safe (skips one item) instead of pushing `undefined`.
 					if (item !== undefined) result.push(item);
 				}
 
-				// custom-sort's `/--hide:` directive achieves the same
-				// omission for its own renderer; this is that same effect
-				// for ours, driven by the same setting, so the two renderers
-				// agree regardless of which one is currently active. We keep
-				// writing `/--hide:` unchanged either way (see
-				// `upsertFolderOrder`'s `hideNames` parameter) — this is
-				// purely about what *this* renderer includes.
-				if (sortspecItem !== null && !host.settings.hideSortspec) {
-					result.push(sortspecItem);
+				if (indexFileItem !== null && !host.settings.hideIndexFile) {
+					result.push(indexFileItem);
 				}
 
 				return result;
 			} catch (err) {
 				// Obsidian's internals changed under us, or something above
 				// misbehaved: degrade to the explorer's own ordering rather
-				// than let the file explorer break. Logged once per call,
-				// not deduplicated — same tradeoff `syncHideSetting` and
-				// `orderSync.ts` already make elsewhere in this plugin.
+				// than let the file explorer break. Logged once per call, not
+				// deduplicated.
 				console.error('[explorer-order-editor] failed to render the saved explorer order, falling back to the default sort', err);
 				return items;
 			}
@@ -236,11 +190,10 @@ function buildReplacement(host: ExplorerSortHost, cache: Map<string, CachedSpec>
  * refresh to trigger one.
  */
 function installOnView(host: ExplorerSortHost, view: FileExplorerView): void {
-	const cache = new Map<string, CachedSpec>();
 	const remove = aroundPrototypeMethod<GetSortedFolderItemsFn>(
 		view.constructor.prototype as Record<string, unknown>,
 		'getSortedFolderItems',
-		buildReplacement(host, cache),
+		buildReplacement(host),
 	);
 	host.register(remove);
 	view.requestSort();
@@ -248,15 +201,13 @@ function installOnView(host: ExplorerSortHost, view: FileExplorerView): void {
 
 /**
  * Wires up the file explorer patch. Call once, from `onLayoutReady` — plugin
- * load order is not guaranteed any earlier (see the identical reasoning on
- * `isCustomSortAvailable` in sortspecFile.ts and on `registerOrderSync` in
- * orderSync.ts), and the file explorer leaf itself may not exist yet the
- * first time this runs. When it doesn't (or its view doesn't yet expose
- * `getSortedFolderItems`/`requestSort` — e.g. it's still a deferred, lazily
- * constructed leaf), this retries on every `layout-change` until it
- * succeeds once, then stops listening; it does not retry on any later
- * failure, since a leaf that has already produced a real file explorer view
- * is not expected to stop being one.
+ * load order is not guaranteed any earlier, and the file explorer leaf
+ * itself may not exist yet the first time this runs. When it doesn't (or its
+ * view doesn't yet expose `getSortedFolderItems`/`requestSort` — e.g. it's
+ * still a deferred, lazily constructed leaf), this retries on every
+ * `layout-change` until it succeeds once, then stops listening; it does not
+ * retry on any later failure, since a leaf that has already produced a real
+ * file explorer view is not expected to stop being one.
  */
 export function installExplorerSort(host: ExplorerSortHost): void {
 	const tryInstall = (): boolean => {
