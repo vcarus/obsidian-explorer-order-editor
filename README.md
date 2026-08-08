@@ -1,11 +1,11 @@
 # Explorer Order Editor
 
-An Obsidian plugin for setting a manual, drag-and-drop order for the folders
-and notes inside a folder, without renaming files and without storing the
-order somewhere that sync setups excluding `.obsidian/` (Dropbox, for
-example) would drop.
+An Obsidian plugin for putting the folders and notes inside a folder in the
+order you want — by dragging them in the file explorer itself — without
+renaming files and without storing the order somewhere that sync setups
+excluding `.obsidian/` (Dropbox, for example) would drop.
 
-![Right-clicking the file explorer, dragging the vault's top-level folders into a chosen order, and saving — after which the file explorer shows that order instead of the alphabetical one](docs/images/reorder.gif)
+![Dragging a note in the file explorer: a line marks the edge it will land on, and dropping it inside a different folder both moves it there and places it at that spot rather than at the end](docs/images/tree-drag.gif)
 
 > Works on its own. The order lives in one plain-text note inside your
 > vault, so it syncs with your notes, diffs in version control, and can be
@@ -28,14 +28,14 @@ moves there, and it lands in that position rather than at the end. Holding a
 drag near the top or bottom of the list scrolls it, faster the closer to the
 edge you get, so a long move doesn't have to be done in stages.
 
-![Dragging a note in the file explorer: a line marks the edge it will land on, and dropping it inside a different folder both moves it there and places it at that spot rather than at the end](docs/images/tree-drag.gif)
-
 ### Arrange a whole folder in one dialog
 
 Right-click a folder and choose **Set explorer order** to get a dialog listing
 its direct children; drag them into the order you want and **Save**. **Clear
 explorer order**, in the same menu, removes it again — it only appears when
 that folder actually has an order to remove.
+
+![Right-clicking the file explorer, dragging the vault's top-level folders into a chosen order, and saving — after which the file explorer shows that order instead of the alphabetical one](docs/images/reorder.gif)
 
 For the vault root, right-click empty space below the last item in the file
 explorer. There are also **Set explorer order for vault root** and **Clear
@@ -109,8 +109,8 @@ so the wrapper is written to fail quietly: on any unexpected result it hands
 back the file explorer's own ordering untouched. The worst case is that a
 saved order stops being applied, never a broken file tree.
 
-After a save or a clear, the file explorer is asked to redraw right away.
-That can be turned off in settings.
+After anything changes an order — a drop, a move, a save, a clear — the file
+explorer is asked to redraw right away. That can be turned off in settings.
 
 ## How the order is stored
 
@@ -124,9 +124,7 @@ root by default — in a fenced `json` block, one folder per line:
 }
 ```
 
-It is a plain note in your own vault, so it syncs like any other note, diffs
-in version control, and can be read or edited by hand. A few things worth
-knowing:
+A few things worth knowing about that block:
 
 - Names are exactly as they appear in the vault, extensions included. Any
   name can be stored, whatever characters it contains.
@@ -141,20 +139,19 @@ knowing:
 
 ## Settings
 
-- **Automatically refresh after saving** (on by default) — update the file
-  explorer as soon as an order is saved or cleared. When off, the change is
-  still written immediately and shows up at the explorer's next refresh.
+- **Automatically refresh after saving** (on by default) — redraw the file
+  explorer as soon as an order changes. When off, the change is still written
+  immediately and shows up at the explorer's next refresh.
 - **Hide the order note in the file explorer** (on by default) — keep
   `explorer-order.md` out of the tree, since it is a byproduct of using the
   plugin rather than something you wrote. Only the file explorer is affected;
   search, the quick switcher and the graph still show it. Turn this off to see
   it in place.
-- **Drag to reorder in the file explorer** (on by default) — drop a row on the
-  top or bottom edge of another one to place it there. Turn this off to leave
-  the tree's drag-and-drop exactly as Obsidian ships it.
-- **Show move actions in the file explorer menu** (off by default) — add
-  **Move up**, **Move down**, **Move to top** and **Move to bottom** to the
-  right-click menu. The four commands stay bindable to hotkeys either way.
+- **Drag to reorder in the file explorer** (on by default) — turn it off to
+  leave the tree's drag-and-drop exactly as Obsidian ships it.
+- **Show move actions in the file explorer menu** (off by default) — turn it
+  on to get the four move entries in the right-click menu. The commands stay
+  bindable to hotkeys either way.
 
 Three more rows appear only when there is something for them to do, and are
 absent otherwise:
@@ -164,8 +161,7 @@ absent otherwise:
   has left copies behind.
 - **Remove orders for missing folders** — shown when the note holds an order
   for a folder that is no longer in the vault. These are never removed
-  automatically: a folder missing at startup is as likely to be sync lag as a
-  real deletion.
+  automatically; see [Known limitations](#known-limitations) for why.
 
 ## If the order note can't be read
 
@@ -206,7 +202,7 @@ empty one.
 In Obsidian, open **Settings → Community plugins → Browse**, search for
 **Explorer Order Editor**, then install and enable it.
 
-That is the whole installation — no companion plugin, no configuration.
+That is the whole installation. There is nothing to configure before it works.
 
 From 0.5.0 onward this plugin needs **Obsidian 1.13 or newer**, which is what
 lets its settings be declared to Obsidian rather than drawn by hand — that is
