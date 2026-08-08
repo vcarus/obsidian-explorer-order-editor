@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-explorer-order-editor",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "Drag folders and notes into a manual order for the file explorer, stored as plain text inside your vault.",
 	"main": "main.js",
 	"type": "module",
