@@ -1,8 +1,8 @@
 /**
- * Three exposed settings, plus one stored-but-not-yet-exposed value:
+ * Four exposed settings, plus one stored-but-not-yet-exposed value:
  *
- * - `autoRefresh`, `hideIndexFile`, and `dragToReorder` below have toggles on
- *   this tab.
+ * - `autoRefresh`, `hideIndexFile`, `dragToReorder` and `showMoveActions`
+ *   below have toggles on this tab.
  * - `indexPath` (the vault path of the order index note, read by
  *   `IndexFileStore`) is stored but deliberately not exposed. A text field
  *   here would let one typo point the plugin at a note that doesn't exist,
@@ -51,6 +51,23 @@ export interface ExplorerOrderEditorSettings {
 	 * as before everywhere this doesn't take over.
 	 */
 	readonly dragToReorder: boolean;
+	/**
+	 * Offer the four direct move actions (move up / down / to top / to
+	 * bottom) in the file explorer's right-click menu.
+	 *
+	 * Defaults to **off**, unlike every other toggle here, and unlike how 1.1
+	 * shipped them: four items is a lot to add to a menu everyone opens
+	 * constantly, for a job the reorder dialog and — since 1.2 — dragging a
+	 * row both do without any menu at all. Someone who wants them back turns
+	 * this on once.
+	 *
+	 * Scoped to the menu only. The four *commands* are registered
+	 * unconditionally (`main.ts`), so any hotkey already bound to one keeps
+	 * working whatever this is set to — hiding a menu entry is a decision
+	 * about menu clutter, and silently unbinding somebody's hotkey would be a
+	 * different and much ruder decision wearing the same switch.
+	 */
+	readonly showMoveActions: boolean;
 	/** See the module doc comment above. */
 	readonly indexPath: string;
 }
@@ -59,6 +76,7 @@ export const DEFAULT_SETTINGS: ExplorerOrderEditorSettings = {
 	autoRefresh: true,
 	hideIndexFile: true,
 	dragToReorder: true,
+	showMoveActions: false,
 	indexPath: 'explorer-order.md',
 };
 
@@ -104,6 +122,11 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				name: 'Drag to reorder in the file explorer',
 				desc: 'Drag a file or folder onto another one in the file explorer to reorder it, without opening "Set explorer order" first.',
 				control: { type: 'toggle', key: 'dragToReorder' },
+			},
+			{
+				name: 'Show move actions in the file explorer menu',
+				desc: 'Add move up, move down, move to top and move to bottom to the right-click menu. The four commands stay available for hotkeys either way.',
+				control: { type: 'toggle', key: 'showMoveActions' },
 			},
 			// The cold-start repair action (M10e part 5): only ever visible
 			// while the store is unusable, so a healthy vault never shows it.
@@ -312,6 +335,8 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				return this.plugin.settings.hideIndexFile;
 			case 'dragToReorder':
 				return this.plugin.settings.dragToReorder;
+			case 'showMoveActions':
+				return this.plugin.settings.showMoveActions;
 			default:
 				return undefined;
 		}
@@ -340,13 +365,23 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			return;
 		}
 
-		if (key !== 'dragToReorder') return;
+		if (key === 'dragToReorder') {
+			// No re-sort needed: `explorerDrag.ts` reads this setting fresh on
+			// every drag event (see its own doc comment), so a save is the whole
+			// story — there is no listener to tear down or re-install, unlike
+			// `hideIndexFile` above, which changes what the tree renders.
+			this.plugin.settings = { ...this.plugin.settings, dragToReorder: value };
+			await this.plugin.saveSettings();
+			return;
+		}
 
-		// No re-sort needed: `explorerDrag.ts` reads this setting fresh on
-		// every drag event (see its own doc comment), so a save is the whole
-		// story — there is no listener to tear down or re-install, unlike
-		// `hideIndexFile` above, which changes what the tree renders.
-		this.plugin.settings = { ...this.plugin.settings, dragToReorder: value };
+		if (key !== 'showMoveActions') return;
+
+		// Same as `dragToReorder`: nothing to re-register and nothing to
+		// redraw. `main.ts`'s `file-menu` handler reads this setting each time
+		// a menu is built, and a menu is built on every right-click, so the
+		// next one already reflects the change.
+		this.plugin.settings = { ...this.plugin.settings, showMoveActions: value };
 		await this.plugin.saveSettings();
 	}
 }

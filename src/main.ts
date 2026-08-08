@@ -181,6 +181,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			autoRefresh: data?.autoRefresh ?? DEFAULT_SETTINGS.autoRefresh,
 			hideIndexFile,
 			dragToReorder: data?.dragToReorder ?? DEFAULT_SETTINGS.dragToReorder,
+			showMoveActions: data?.showMoveActions ?? DEFAULT_SETTINGS.showMoveActions,
 			indexPath: data?.indexPath ?? DEFAULT_SETTINGS.indexPath,
 		};
 	}
@@ -252,6 +253,12 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	 * times to build one menu.
 	 */
 	private addMoveMenuItems(menu: Menu, file: TAbstractFile): void {
+		// Off by default (see `showMoveActions` in `settings.ts`). Read here,
+		// per menu, rather than gating the `file-menu` registration itself:
+		// a menu is built fresh on every right-click, so toggling the setting
+		// takes effect on the very next one with no event to re-register.
+		if (!this.settings.showMoveActions) return;
+
 		if (!(file instanceof TFile) && !(file instanceof TFolder)) return;
 
 		const parent = file.parent;

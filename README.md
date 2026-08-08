@@ -24,14 +24,24 @@ explorer. There are also **Set explorer order for vault root** and **Clear
 explorer order for vault root** commands, for binding a hotkey or for a
 layout with no empty space left to click.
 
-To nudge a single item you don't need the dialog at all. Right-click any file
-or folder and use **Move up**, **Move down**, **Move to top** or **Move to
-bottom** — only the ones that would actually do something appear, so an item
-already at the top offers two rather than four. The same four exist as
-commands you can bind hotkeys to; those act on the note you currently have
-open, so you can reorder it in the sidebar without leaving the editor. Moving
-an item in a folder you have never ordered simply records the order you can
-already see, with that one item moved.
+To reorder without any menu, drag a row in the file explorer onto the top or
+bottom edge of another row. A line shows where the item will land, and
+dropping there saves that order. Dropping onto the middle of a folder row
+still does what it always has — moves the item into that folder — so nothing
+you already do with drag-and-drop changes. Dropping onto an edge inside a
+different folder does both at once: the item moves there, and it lands in
+that position rather than at the end.
+
+To nudge a single item from the keyboard, bind a hotkey to **Move up**,
+**Move down**, **Move to top** or **Move to bottom**. Those commands act on
+the note you currently have open, so you can reorder it in the sidebar
+without leaving the editor. The same four can also appear in the file
+explorer's right-click menu; that is off by default to keep the menu short,
+and **Show move actions in the file explorer menu** turns it on. Only the
+ones that would actually do something appear, so an item already at the top
+offers two rather than four. Moving an item in a folder you have never
+ordered simply records the order you can already see, with that one item
+moved.
 
 An order applies to **one folder only**; it does not cascade. Ordering
 `Projects` rearranges the items directly inside it, while `Projects/Client A`
@@ -117,6 +127,12 @@ knowing:
   plugin rather than something you wrote. Only the file explorer is affected;
   search, the quick switcher and the graph still show it. Turn this off to see
   it in place.
+- **Drag to reorder in the file explorer** (on by default) — drop a row on the
+  top or bottom edge of another one to place it there. Turn this off to leave
+  the tree's drag-and-drop exactly as Obsidian ships it.
+- **Show move actions in the file explorer menu** (off by default) — add
+  **Move up**, **Move down**, **Move to top** and **Move to bottom** to the
+  right-click menu. The four commands stay bindable to hotkeys either way.
 
 Three more rows appear only when there is something for them to do, and are
 absent otherwise:
