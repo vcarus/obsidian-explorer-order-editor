@@ -18,7 +18,7 @@ import { folderIndexKey, type IndexFileStore } from './indexFile';
 import { setOrder } from './orderIndex';
 import { insertNameBeside, moveNameInOrder, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
-import { entriesFor } from './sortspecFile';
+import { entriesFor } from './folderEntries';
 
 /**
  * Structural slice of `Plugin`, matching `ExplorerSortHost`/`IndexFileHost`
@@ -50,7 +50,7 @@ export function effectiveOrder(host: MoveItemHost, folder: TFolder): readonly st
 
 	const fromExplorer = explorerOrderNames(host.app, folder);
 	if (fromExplorer === null) {
-		// entriesFor (sortspecFile.ts) already excludes the index note by path
+		// entriesFor (folderEntries.ts) already excludes the index note by path
 		// — nothing further to filter here.
 		return entriesFor(folder, indexNotePath).map((entry) => entry.name);
 	}

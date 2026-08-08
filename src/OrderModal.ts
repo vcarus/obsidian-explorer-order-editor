@@ -6,7 +6,7 @@ import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type
 import { mergeOrder, setOrder } from './orderIndex';
 import { targetIndexFor, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
-import { entriesFor } from './sortspecFile';
+import { entriesFor } from './folderEntries';
 import { displayLabel, type Entry } from './types';
 
 const ICON_FOLDER = 'lucide-folder';

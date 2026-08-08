@@ -1,6 +1,5 @@
 /**
- * Shared vocabulary between the pure layers (`orderIndex.ts`, and — until
- * M10c removes them — `sortspec.ts`/`frontmatter.ts`) and the UI.
+ * Shared vocabulary between the pure layers (`orderIndex.ts`) and the UI.
  *
  * `name` is the exact child name as it appears in the vault: full name,
  * extension included, for files and folders alike. That is what the index

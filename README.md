@@ -107,16 +107,6 @@ knowing:
 - If the block cannot be parsed, the plugin says so and **refuses to write**
   until you fix it, rather than overwriting a file it could not read.
 
-If you used a version before 1.0, your orders are in per-folder `sortspec.md`
-files. The settings tab grows two rows while any of those still exist:
-**Import orders from sortspec.md files** copies them all into the order note
-in one pass — only sections this plugin wrote, skipping folders that already
-have an order, safe to run twice — and deletes nothing. Once you have checked
-the result, **Delete imported sortspec.md files** removes the old ones, and
-only for folders whose order actually made it into the note. Both rows
-disappear once no sortspec.md is left, so a vault that started on 1.0 never
-sees them.
-
 ## Settings
 
 - **Automatically refresh after saving** (on by default) — update the file
@@ -128,7 +118,7 @@ sees them.
   search, the quick switcher and the graph still show it. Turn this off to see
   it in place.
 
-Four more rows appear only when there is something for them to do, and are
+Three more rows appear only when there is something for them to do, and are
 absent otherwise:
 
 - **Repair the order note** — shown when the note cannot be read. See below.
@@ -138,9 +128,6 @@ absent otherwise:
   for a folder that is no longer in the vault. These are never removed
   automatically: a folder missing at startup is as likely to be sync lag as a
   real deletion.
-- **Import orders from sortspec.md files** and **Delete imported sortspec.md
-  files** — shown only while a vault still holds orders from a version before
-  1.0.
 
 ## If the order note can't be read
 
