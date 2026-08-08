@@ -22,16 +22,6 @@ const MOVE_MENU_ITEMS: readonly (readonly [RowMove, string, string])[] = [
 	['bottom', 'Move to bottom', 'lucide-chevrons-down'],
 ];
 
-/**
- * The shape `loadData()` can return from a pre-M10b install: `hideSortspec`
- * instead of today's `hideIndexFile`. Read once, in `loadSettings`, as a
- * fallback so an existing install keeps whatever choice it made rather than
- * silently reverting to the default the moment the key gets renamed.
- */
-interface LegacySettingsShape {
-	readonly hideSortspec?: boolean;
-}
-
 export default class ExplorerOrderEditorPlugin extends Plugin {
 	settings: ExplorerOrderEditorSettings = DEFAULT_SETTINGS;
 	store!: IndexFileStore;
@@ -168,8 +158,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	}
 
 	private async loadSettings(): Promise<void> {
-		const data = (await this.loadData()) as (Partial<ExplorerOrderEditorSettings> & LegacySettingsShape) | null;
-		const hideIndexFile = data?.hideIndexFile ?? data?.hideSortspec ?? DEFAULT_SETTINGS.hideIndexFile;
+		const data = (await this.loadData()) as Partial<ExplorerOrderEditorSettings> | null;
 		// Picked field by field, not `{...DEFAULT_SETTINGS, ...data}`: `data`
 		// is whatever `data.json` currently holds, which since M10e can also
 		// carry `IndexFileStore`'s index backup (see `saveSettings` below).
@@ -179,7 +168,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		// potentially overwriting a fresher backup with a stale one.
 		this.settings = {
 			autoRefresh: data?.autoRefresh ?? DEFAULT_SETTINGS.autoRefresh,
-			hideIndexFile,
+			hideIndexFile: data?.hideIndexFile ?? DEFAULT_SETTINGS.hideIndexFile,
 			dragToReorder: data?.dragToReorder ?? DEFAULT_SETTINGS.dragToReorder,
 			showMoveActions: data?.showMoveActions ?? DEFAULT_SETTINGS.showMoveActions,
 			indexPath: data?.indexPath ?? DEFAULT_SETTINGS.indexPath,

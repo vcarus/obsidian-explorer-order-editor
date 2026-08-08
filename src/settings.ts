@@ -29,10 +29,9 @@ export interface ExplorerOrderEditorSettings {
 	 * renderer (`explorerSort.ts`) simply omits that one row, the same way
 	 * it renders every other saved order.
 	 *
-	 * Defaults to on, for the same reason the old `hideSortspec` setting
-	 * did: the note is a byproduct of using this plugin, not something the
-	 * user wrote. Note the hide only covers the file explorer — search, the
-	 * quick switcher and the graph still show it.
+	 * Defaults to on: the note is a byproduct of using this plugin, not
+	 * something the user wrote. Note the hide only covers the file explorer —
+	 * search, the quick switcher and the graph still show it.
 	 */
 	readonly hideIndexFile: boolean;
 	/**
@@ -355,10 +354,9 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		}
 
 		if (key === 'hideIndexFile') {
-			// Unlike the old `hideSortspec` toggle, there is no vault-wide file to
-			// rewrite: hiding is purely a rendering choice `explorerSort.ts` makes
-			// on every call, driven straight off this setting. So the toggle only
-			// has to save and ask for a re-sort.
+			// Nothing on disk to rewrite: hiding is purely a rendering choice
+			// `explorerSort.ts` makes on every call, driven straight off this
+			// setting. So the toggle only has to save and ask for a re-sort.
 			this.plugin.settings = { ...this.plugin.settings, hideIndexFile: value };
 			await this.plugin.saveSettings();
 			requestFileExplorerResort(this.app);
