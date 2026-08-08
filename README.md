@@ -24,6 +24,15 @@ explorer. There are also **Set explorer order for vault root** and **Clear
 explorer order for vault root** commands, for binding a hotkey or for a
 layout with no empty space left to click.
 
+To nudge a single item you don't need the dialog at all. Right-click any file
+or folder and use **Move up**, **Move down**, **Move to top** or **Move to
+bottom** — only the ones that would actually do something appear, so an item
+already at the top offers two rather than four. The same four exist as
+commands you can bind hotkeys to; those act on the note you currently have
+open, so you can reorder it in the sidebar without leaving the editor. Moving
+an item in a folder you have never ordered simply records the order you can
+already see, with that one item moved.
+
 An order applies to **one folder only**; it does not cascade. Ordering
 `Projects` rearranges the items directly inside it, while `Projects/Client A`
 keeps sorting as it did until you give that folder its own order. There is
@@ -193,12 +202,6 @@ Development setup, the source layout and the release process are in
 
 MIT — see [LICENSE](./LICENSE).
 
-This plugin is not a fork of, and contains no code from,
-[Custom File Explorer sorting](https://github.com/SebastianMC/obsidian-custom-sort)
-(GPL-3.0). Versions before 1.0 wrote a configuration file in the format that
-plugin reads; the two were separate programs communicating through a data
-file, with no linking involved. Since 1.0 there is no interoperation at all,
-and the only remaining trace is factual: its published build was read to
-confirm which file explorer method to wrap and what a patch remover must do
-to coexist with another patch. Both are documented where they are relied on,
-in `src/explorerSort.ts` and `src/patch.ts`.
+Contains no code from any other plugin. Where an undocumented Obsidian API is
+relied on, the comment next to it records how the behaviour was confirmed —
+see `src/explorerSort.ts` and `src/patch.ts`.
