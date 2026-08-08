@@ -976,7 +976,16 @@ export function readFolderOrder(
 // the folder's actual current children.
 // ---------------------------------------------------------------------------
 
-function entryKey(entry: Entry): string {
+/**
+ * The identity `mergeStoredOrder`/`renameEntryInOrder` match entries by:
+ * (kind, name), NUL-joined so no name can collide across the two kinds no
+ * matter its contents. Exported for `explorerSort.ts`, which needs the exact
+ * same key to map a `mergeStoredOrder` result back onto the live item
+ * objects `getSortedFolderItems` produced — reusing this rather than
+ * re-deriving it is what keeps that mapping from silently drifting out of
+ * sync with the one `mergeStoredOrder` itself uses.
+ */
+export function entryKey(entry: Entry): string {
 	return `${entry.kind}\u0000${entry.name}`;
 }
 

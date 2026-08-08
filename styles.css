@@ -441,10 +441,13 @@
 
 /* Dependency status row in the settings tab. The missing state is a real
    warning: nothing this plugin writes will be visible until it is resolved. */
-.eoe-dependency-missing .setting-item-description {
-	color: var(--text-warning);
-}
-
+/*
+ * There used to be an `.eoe-dependency-missing` rule painting this row
+ * `--text-warning`: a missing custom-sort meant saved orders had no visible
+ * effect. Since the plugin renders the order itself, its absence is not a
+ * problem to flag, so the row is muted in both states and the warning
+ * variant is gone.
+ */
 .eoe-dependency-ok .setting-item-description {
 	color: var(--text-muted);
 }

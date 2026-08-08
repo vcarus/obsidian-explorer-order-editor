@@ -100,21 +100,21 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			{
 				name: 'Custom file explorer sorting',
 				desc: available
-					? 'Detected. Orders you save here will be applied to the file explorer.'
-					: 'Not detected. Orders are still saved to sortspec.md correctly, but the file explorer will keep sorting alphabetically until this plugin is installed and enabled.',
+					? 'Detected. It renders the order in the file explorer, and this plugin leaves the rendering to it.'
+					: 'Not detected, and not needed. This plugin renders saved orders in the file explorer itself.',
 				render: (setting) => {
-					setting.setClass(available ? 'eoe-dependency-ok' : 'eoe-dependency-missing');
+					setting.setClass('eoe-dependency-ok');
 				},
 			},
 			{
 				name: 'Automatically refresh after saving',
-				desc: "Re-run the custom file explorer sorting plugin's refresh command after saving or clearing an order, so the file explorer updates right away. When off, run that command yourself instead.",
+				desc: 'Update the file explorer as soon as an order is saved or cleared, instead of waiting for its next refresh.',
 				control: { type: 'toggle', key: 'autoRefresh' },
 			},
 			{
 				name: 'Hide sortspec.md in the file explorer',
 				desc:
-					'Ask the custom file explorer sorting plugin to hide sortspec.md from folders where you save an order. ' +
+					'Hide sortspec.md from folders where you save an order. ' +
 					'Applies immediately to every such folder in the vault, in both directions — this also tidies each ' +
 					"rewritten folder's section, dropping any stale sortspec.md entry left over from an older version of this plugin.",
 				control: { type: 'toggle', key: 'hideSortspec', disabled: () => this.syncing },
@@ -191,7 +191,8 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		// refreshing. It also meant enumerating the vault a second time.
 		if (result.settled !== null) await result.settled;
 		if (triggerCustomSortRefresh(this.app) === 'missing') {
-			new Notice('Install the custom file explorer sorting plugin to see the change in the file explorer.');
+			// Neither renderer reachable — see the same case in main.ts.
+			new Notice('Saved. The file explorer will show this when you next open it.');
 		}
 	}
 }

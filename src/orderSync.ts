@@ -313,12 +313,13 @@ class OrderSyncCoordinator {
 		const anchor = this.host.app.vault.getFileByPath(sortspecPathFor(folder));
 		if (anchor === null) return; // gone again by the time the debounce fired
 
-		// 'missing' (custom-sort not installed/enabled) intentionally gets
-		// no Notice here, unlike the modal's save button: this path fires on
-		// every background rename/delete, and reminding the user to install
-		// custom-sort on every single one would be pure noise —
-		// `onLayoutReady` in main.ts already told them once, when the plugin
-		// loaded.
+		// The result is intentionally ignored here, unlike the modal's save
+		// button: this path fires on every background rename/delete, and a
+		// 'missing' Notice reminding the user to install custom-sort on
+		// every single one would be pure noise — `onLayoutReady` in main.ts
+		// already told them once, when the plugin loaded. 'rendered' (our
+		// own explorer patch redrew the folder directly) needs no Notice at
+		// all, on this path or any other.
 		await refreshCustomSort(this.host.app, anchor);
 	}
 

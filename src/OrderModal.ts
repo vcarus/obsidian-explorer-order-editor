@@ -403,7 +403,7 @@ export class OrderModal extends Modal {
 		if (unorderableRows.length > 0) {
 			this.contentEl.createDiv({
 				cls: 'eoe-unorderable-note',
-				text: "These can't be ordered — custom file explorer sorting has no way to express their names. They always appear last.",
+				text: "These can't be ordered — sortspec.md has no way to express their names. They always appear last.",
 			});
 
 			const unorderableListEl = this.contentEl.createDiv({ cls: 'eoe-unorderable-list' });
@@ -1058,12 +1058,13 @@ export class OrderModal extends Modal {
 	 */
 	private async flushRefresh(settled: Promise<void>): Promise<void> {
 		if (!this.settings.autoRefresh) {
-			new Notice('Automatic refresh is off. Run the custom file explorer sorting plugin\'s refresh command to see the change.');
+			new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
 			return;
 		}
 		await settled;
 		if (triggerCustomSortRefresh(this.app) === 'missing') {
-			new Notice('Install the custom file explorer sorting plugin to see the new order in the file explorer.');
+			// Neither renderer reachable — see the same case in main.ts.
+			new Notice('Saved. The file explorer will show this when you next open it.');
 		}
 	}
 

@@ -1,8 +1,11 @@
 /**
- * The only file in the data layer that imports `obsidian`. Everything here
- * either derives `Entry[]` from a live `TFolder`, or performs the atomic
- * read-modify-write of a folder's sortspec.md and (once written) pokes
- * custom-sort into picking the change up.
+ * The only file in the data layer that imports `obsidian` (`explorerSort.ts`
+ * also imports it, but sits alongside `orderSync.ts`/`OrderModal.ts`/
+ * `settings.ts` as a downstream consumer of this layer, not part of it).
+ * Everything here either derives `Entry[]` from a live `TFolder`, or
+ * performs the atomic read-modify-write of a folder's sortspec.md and (once
+ * written) pokes custom-sort — or, absent custom-sort, the file explorer
+ * directly — into picking the change up.
  *
  * `App.commands` is not part of Obsidian's public typed API. The module
  * augmentation below declares only the slice we actually call — looking a
@@ -12,7 +15,7 @@
  * plugin that pokes commands programmatically relies on the same two
  * members.
  */
-import { App, normalizePath, parseYaml, TFile, TFolder, type Command } from 'obsidian';
+import { App, normalizePath, parseYaml, TAbstractFile, TFile, TFolder, type Command } from 'obsidian';
 import { readSortingSpecValue, removeSortingSpecFromFile, replaceSortingSpecInFile, SORTING_SPEC_KEY, type FrontMatterDeps } from './frontmatter';
 import {
 	hasAuthoredSection,
@@ -45,44 +48,62 @@ const METADATA_WAIT_TIMEOUT_MS = 1000;
 const yamlDeps: FrontMatterDeps = { parseYaml };
 
 /**
+ * Derives a single child's `Entry`, or `null` for `sortspec.md` itself or for
+ * a node that is neither a file nor a folder. `.md` files use their basename
+ * (no extension); every other file uses its full name including the
+ * extension; folders use the folder name — the exact strings custom-sort
+ * matches against (see `types.ts`).
+ *
+ * Deliberately Obsidian's own `extension`/`basename` rather than
+ * `entryNameForFileName`, even though the two agree on every name either of
+ * us has been able to construct: custom-sort derives the names it matches
+ * against from these same two `TFile` fields, so reading them is what makes
+ * our output agree with it *by definition*, whatever Obsidian's exact rule
+ * for `extension` turns out to be (the API docs don't say whether it is
+ * lower-cased). `entryNameForFileName` exists for the one place that has no
+ * `TFile` to ask — reconstructing the *former* name from a rename event's
+ * `oldPath` — and says so.
+ *
+ * `sortspec.md` is never offered: it's the file this plugin manages, and
+ * listing it invites ordering the thing that describes the order. Leaving it
+ * unlisted is harmless — an unlisted entry sorts to the end, whether that's
+ * custom-sort's default or `explorerSort.ts`'s own rendering of it (subject
+ * to the "hide sortspec.md" setting there).
+ *
+ * Exported (not just used by `entriesFor` below) so `explorerSort.ts` can
+ * derive entries from the file explorer's own live item list, in the
+ * *items' own* order, without re-deriving this naming rule and without
+ * going through `entriesFor`'s `fallbackEntryOrder` sort — the file
+ * explorer's own current order is the value that replacement keys off, not
+ * the alphabetic fallback.
+ */
+export function entryForChild(child: TAbstractFile): Entry | null {
+	if (child instanceof TFolder) {
+		return { name: child.name, kind: 'folder' };
+	}
+	if (child instanceof TFile) {
+		if (child.name === SORTSPEC_FILENAME) return null;
+		const name = child.extension === 'md' ? child.basename : child.name;
+		return { name, kind: 'file' };
+	}
+	return null;
+}
+
+/**
  * Derives this folder's rows, in `fallbackEntryOrder` — see it for what that
- * order is and where it knowingly diverges from the file explorer. `.md`
- * files use their basename (no extension); every other file uses its full
- * name including the extension; folders use the folder name — the exact
- * strings custom-sort matches against (see `types.ts`).
+ * order is and where it knowingly diverges from the file explorer.
  *
- * Only the name derivation lives here, because only it needs a `TFile`; the
- * ordering itself is pure and unit-tested in `types.ts` rather than trapped
- * behind this function's `obsidian` import.
- *
- * `sortspec.md` itself is never offered: it's the file this plugin manages,
- * and listing it invites ordering the thing that describes the order.
- * Leaving it unlisted is harmless — custom-sort sorts unlisted entries to
- * the end by default.
+ * Only the name derivation (`entryForChild`) lives in this file, because
+ * only it needs a `TFile`/`TFolder`; the ordering itself is pure and
+ * unit-tested in `types.ts` rather than trapped behind this function's
+ * `obsidian` import.
  */
 export function entriesFor(folder: TFolder): readonly Entry[] {
 	const entries: Entry[] = [];
-
 	for (const child of folder.children) {
-		if (child instanceof TFolder) {
-			entries.push({ name: child.name, kind: 'folder' });
-		} else if (child instanceof TFile) {
-			if (child.name === SORTSPEC_FILENAME) continue;
-			// Deliberately Obsidian's own `extension`/`basename` rather than
-			// `entryNameForFileName`, even though the two agree on every name
-			// either of us has been able to construct: custom-sort derives the
-			// names it matches against from these same two TFile fields, so
-			// reading them is what makes our output agree with it *by
-			// definition*, whatever Obsidian's exact rule for `extension`
-			// turns out to be (the API docs don't say whether it is
-			// lower-cased). `entryNameForFileName` exists for the one place
-			// that has no TFile to ask — reconstructing the *former* name from
-			// a rename event's `oldPath` — and says so.
-			const name = child.extension === 'md' ? child.basename : child.name;
-			entries.push({ name, kind: 'file' });
-		}
+		const entry = entryForChild(child);
+		if (entry !== null) entries.push(entry);
 	}
-
 	return fallbackEntryOrder(entries);
 }
 
@@ -102,8 +123,14 @@ export function sortspecPathFor(folder: TFolder): string {
 	return normalizePath(path);
 }
 
-/** The canonical key `parseSortingSpec`/`normalizeTarget` use for `folder` itself (`/` for the vault root). */
-function specFolderKeyFor(folder: TFolder): string {
+/**
+ * The canonical key `parseSortingSpec`/`normalizeTarget` use for `folder`
+ * itself (`/` for the vault root). Exported so `explorerSort.ts` can parse a
+ * folder's `sorting-spec` value with the same `specFolder` every other
+ * reader (`readStoredOrder`, `folderHasClearableOrder`, ...) uses — a `.`
+ * target only resolves correctly when it does.
+ */
+export function specFolderKeyFor(folder: TFolder): string {
 	return folder.isRoot() ? '/' : folder.path;
 }
 
@@ -302,18 +329,6 @@ function waitForMetadataChange(app: App, file: TFile, timeoutMs: number): Promis
 }
 
 /**
- * custom-sort never re-reads sortspec.md on its own, and it reads the
- * *parsed* frontmatter via `metadataCache`, not the raw file we just wrote —
- * so this waits for the cache to catch up (with a timeout fallback in case
- * the event never fires, so a missed event can't hang the flow) and then
- * runs its refresh command.
- *
- * Returns `'missing'` without throwing when the command isn't registered
- * (custom-sort not installed or disabled) — the caller's write already
- * succeeded and should still be treated as a success; this only affects
- * whether the file explorer visibly reflects it.
- */
-/**
  * Whether the custom-sort plugin is installed *and* enabled right now.
  *
  * Probed through the command registry rather than the plugin list: the
@@ -346,19 +361,67 @@ export function awaitMetadataSettled(app: App, file: TFile): Promise<void> {
 }
 
 /**
- * Runs custom-sort's refresh command, or reports that it isn't there.
+ * `requestSort` (forces the file explorer to recompute and redraw a folder's
+ * children) is not part of Obsidian's public typed API — it lives on the
+ * file explorer's own internal view subclass, not on the base `View` every
+ * leaf's `.view` is typed as. `explorerSort.ts` needs the same member for a
+ * different reason (installing the patch) and declares its own local
+ * interface for it, right next to its own use, the same way `App.commands`
+ * is declared right next to its use just above. This is a second,
+ * independently-scoped declaration rather than a shared one imported from
+ * there: `explorerSort.ts` already imports from this file
+ * (`isCustomSortAvailable`, `entryForChild`, `sortspecPathFor`,
+ * `specFolderKeyFor`, `targetKeyFor`) to do its own job, so the reverse
+ * import this file would need to reuse its interface would be circular.
+ */
+interface FileExplorerViewLike {
+	requestSort(): void;
+}
+
+/**
+ * Finds the file explorer leaf, if one exists, and asks its view to
+ * recompute and redraw — the same effect custom-sort's refresh command has,
+ * used here for the case custom-sort isn't the one rendering: once
+ * `explorerSort.ts` has patched `getSortedFolderItems`, that patch already
+ * computes the right order on every call, but Obsidian doesn't re-invoke it
+ * just because we edited sortspec.md's frontmatter, so this is what actually
+ * makes a write visible.
+ *
+ * Returns `false` when there is no file explorer leaf, or its view doesn't
+ * (yet, or ever) expose `requestSort` — e.g. `explorerSort.ts` hasn't
+ * finished installing. Never throws.
+ */
+function requestFileExplorerResort(app: App): boolean {
+	const leaf = app.workspace.getLeavesOfType('file-explorer')[0];
+	if (leaf === undefined) return false;
+	const view = leaf.view as Partial<FileExplorerViewLike>;
+	if (typeof view.requestSort !== 'function') return false;
+	view.requestSort();
+	return true;
+}
+
+/**
+ * Runs custom-sort's refresh command when it's present. When it isn't, asks
+ * the file explorer to redraw itself directly instead — `explorerSort.ts`'s
+ * patched `getSortedFolderItems` renders our own order once that redraw
+ * happens, so custom-sort is no longer required for a save to become
+ * visible. `'missing'` now means neither mechanism is available (no
+ * custom-sort *and* no file explorer leaf/patch to ask) — genuinely rare,
+ * but still reported so a write that silently isn't visible anywhere isn't
+ * mistaken for one that is.
+ *
  * Assumes the metadata cache is already current — see `awaitMetadataSettled`.
  */
-export function triggerCustomSortRefresh(app: App): 'triggered' | 'missing' {
-	if (!isCustomSortAvailable(app)) {
-		return 'missing';
+export function triggerCustomSortRefresh(app: App): 'triggered' | 'rendered' | 'missing' {
+	if (isCustomSortAvailable(app)) {
+		app.commands.executeCommandById(CUSTOM_SORT_COMMAND_ID);
+		return 'triggered';
 	}
-	app.commands.executeCommandById(CUSTOM_SORT_COMMAND_ID);
-	return 'triggered';
+	return requestFileExplorerResort(app) ? 'rendered' : 'missing';
 }
 
 /** Wait, then trigger — for callers that write and refresh in one go. */
-export async function refreshCustomSort(app: App, file: TFile): Promise<'triggered' | 'missing'> {
+export async function refreshCustomSort(app: App, file: TFile): Promise<'triggered' | 'rendered' | 'missing'> {
 	await awaitMetadataSettled(app, file);
 	return triggerCustomSortRefresh(app);
 }

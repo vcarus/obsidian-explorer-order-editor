@@ -1,11 +1,11 @@
 import { Notice, Plugin, TFolder } from 'obsidian';
+import { installExplorerSort } from './explorerSort';
 import { OrderModal } from './OrderModal';
 import { registerOrderSync } from './orderSync';
 import { DEFAULT_SETTINGS, ExplorerOrderEditorSettingTab, type ExplorerOrderEditorSettings } from './settings';
 import {
 	clearFolderOrder,
 	folderHasClearableOrder,
-	isCustomSortAvailable,
 	refreshCustomSort,
 	sortspecPathFor,
 } from './sortspecFile';
@@ -17,28 +17,21 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		await this.loadSettings();
 		this.addSettingTab(new ExplorerOrderEditorSettingTab(this.app, this));
 
-		// This plugin only writes configuration; the custom-sort plugin is what
-		// actually reorders the file explorer. Without it everything here still
-		// works and sortspec.md is still written correctly, but nothing visibly
-		// changes — so say so up front rather than letting someone arrange a
-		// folder, save, and only then discover a piece is missing.
+		// Deferred to onLayoutReady to sit out the vault's startup indexing
+		// flood of rename-like events.
 		//
-		// Deferred to onLayoutReady because plugin load order is not guaranteed:
-		// checking during onload can run before custom-sort has registered its
-		// commands and report a false negative.
-		this.app.workspace.onLayoutReady(() => {
-			if (isCustomSortAvailable(this.app)) return;
-			new Notice(
-				'Orders you save are written correctly, but the file explorer will keep sorting alphabetically until the custom file explorer sorting plugin is installed and enabled.',
-				10000,
-			);
-		});
-
-		// A separate onLayoutReady call, not folded into the one above: that one
-		// is about detecting custom-sort, this one is about avoiding the
-		// vault's startup indexing flood of rename-like events. Two unrelated
-		// reasons to defer shouldn't share one callback.
+		// Earlier versions had a third onLayoutReady call here, showing a
+		// Notice when custom-sort was absent: saved orders were written
+		// correctly but nothing in the file explorer would change. That was
+		// true then and is not now — with nothing else installed, the patch
+		// below renders the order itself, so there is nothing to warn about.
 		this.app.workspace.onLayoutReady(() => registerOrderSync(this));
+
+		// A separate onLayoutReady call, for an unrelated reason: the file
+		// explorer leaf itself need not exist yet (it can still be a
+		// deferred/lazy leaf this early). installExplorerSort retries on its
+		// own until it succeeds, so this only has to run once.
+		this.app.workspace.onLayoutReady(() => installExplorerSort(this));
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {
@@ -142,14 +135,17 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		new Notice('Explorer order cleared.');
 
 		if (!this.settings.autoRefresh) {
-			new Notice('Automatic refresh is off. Run the custom file explorer sorting plugin\'s refresh command to see the change.');
+			new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
 			return;
 		}
 
 		if (fileBeforeClear === null) return; // shouldn't happen — folderHasClearableOrder already confirmed a file existed
 		const refreshResult = await refreshCustomSort(this.app, fileBeforeClear);
 		if (refreshResult === 'missing') {
-			new Notice('Install the custom file explorer sorting plugin to see the change in the file explorer.');
+			// Neither renderer could be reached: no custom-sort, and no file
+			// explorer view to ask for a redraw either. The change is saved
+			// regardless — only the redraw is missing.
+			new Notice('Saved. The file explorer will show this when you next open it.');
 		}
 	}
 }
