@@ -32,6 +32,8 @@ you already do with drag-and-drop changes. Dropping onto an edge inside a
 different folder does both at once: the item moves there, and it lands in
 that position rather than at the end.
 
+![Dragging a note in the file explorer: a line marks the edge it will land on, and dropping it inside a different folder both moves it there and places it at that spot rather than at the end](docs/images/tree-drag.gif)
+
 To nudge a single item from the keyboard, bind a hotkey to **Move up**,
 **Move down**, **Move to top** or **Move to bottom**. Those commands act on
 the note you currently have open, so you can reorder it in the sidebar
