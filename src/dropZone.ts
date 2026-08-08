@@ -82,3 +82,66 @@ export function dropSideFor(pointerY: number, rowTop: number, rowHeight: number,
 			return fraction < EDGE_BAND ? 'before' : null;
 	}
 }
+
+/**
+ * How many pixels the drag-driven auto-scroll (M12c, `explorerDrag.ts`)
+ * should move a scroll container by this frame, given the pointer's current
+ * `pointerY` and the container's own `[rectTop, rectBottom)` — negative
+ * scrolls up, positive scrolls down, `0` means "don't scroll." Same
+ * discipline as `dropSideFor` above: this only turns plain numbers into a
+ * plain number, the caller owns finding the container, measuring its rect
+ * every frame, and actually writing `scrollTop`.
+ *
+ * Three guards return `0` outright, since none of them describe a container
+ * that can sensibly be scrolled at all: a non-positive height (`rectBottom -
+ * rectTop <= 0`, same division-by-zero/inverted-sign concern `dropSideFor`
+ * guards against), a non-positive `zone`, or a non-positive `maxStep`.
+ *
+ * The container is split into an upper hot zone `[rectTop, rectTop + zone)`,
+ * a lower hot zone `(rectBottom - zone, rectBottom]`, and a dead middle that
+ * returns `0`. **The two hot zones are never allowed to overlap**: if the
+ * container is shorter than `2 * zone`, `zone` is shrunk in place to exactly
+ * `height / 2` before anything else is computed. That makes the two zones
+ * meet at the container's exact midpoint with nothing left over — every
+ * `pointerY` still lands in at most one of them, so there is no case where
+ * both the "scroll up" and "scroll down" answers would both claim the same
+ * point and something else has to arbitrate which one wins.
+ *
+ * Within a hot zone, speed scales linearly with how deep the pointer is
+ * past the zone's *outer* edge — 0 right at the boundary with the dead
+ * middle, up to `maxStep` right at the container's own edge — rather than
+ * being a flat "in the zone or not." A pointer beyond the container
+ * entirely (above `rectTop` or below `rectBottom`, which can happen since
+ * `dragover` still fires while the pointer is over a sibling pane or a gap)
+ * is depth-clamped to exactly `maxStep`: without the `Math.min(1, …)` below,
+ * a pointer far off in open space would compute an ever-larger step with no
+ * upper bound, which reads as the tree suddenly snapping instead of
+ * scrolling.
+ *
+ * Both hot-zone checks are written as half-open on the side facing the dead
+ * middle (`pointerY < rectTop + zone`, `pointerY > rectBottom - zone`) and
+ * inclusive on the side facing outward, so a `pointerY` exactly on either
+ * boundary — or, in the shrunk case, exactly on the shared midpoint — falls
+ * through to the dead-middle `0` rather than either hot zone claiming it.
+ * That boundary is a single point (measure zero), not a dead *band*: moving
+ * one unit to either side immediately produces a nonzero step, so nothing
+ * in a hot zone ever computes to a false `0`.
+ */
+export function scrollStepFor(pointerY: number, rectTop: number, rectBottom: number, zone: number, maxStep: number): number {
+	const height = rectBottom - rectTop;
+	if (height <= 0 || zone <= 0 || maxStep <= 0) return 0;
+
+	const effectiveZone = height < 2 * zone ? height / 2 : zone;
+
+	if (pointerY < rectTop + effectiveZone) {
+		const depth = Math.min(1, (rectTop + effectiveZone - pointerY) / effectiveZone);
+		return -depth * maxStep;
+	}
+
+	if (pointerY > rectBottom - effectiveZone) {
+		const depth = Math.min(1, (pointerY - (rectBottom - effectiveZone)) / effectiveZone);
+		return depth * maxStep;
+	}
+
+	return 0;
+}

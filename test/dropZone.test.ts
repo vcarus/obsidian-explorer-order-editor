@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dropSideFor } from '../src/dropZone';
+import { dropSideFor, scrollStepFor } from '../src/dropZone';
 
 describe('dropSideFor', () => {
 	describe('file rows: split 50/50, before | after', () => {
@@ -140,6 +140,160 @@ describe('dropSideFor', () => {
 			expect(dropSideFor(206.8, rowTop, rowHeight, 'expanded-folder')).toBe('before');
 			expect(dropSideFor(206.9, rowTop, rowHeight, 'expanded-folder')).toBeNull();
 			expect(dropSideFor(227.5, rowTop, rowHeight, 'expanded-folder')).toBeNull();
+		});
+	});
+});
+
+describe('scrollStepFor', () => {
+	describe('top hot zone: negative (scroll up), speed grows toward the edge', () => {
+		const rectTop = 0;
+		const rectBottom = 200;
+		const zone = 40;
+		const maxStep = 10;
+
+		it('right at the container edge: full speed', () => {
+			expect(scrollStepFor(0, rectTop, rectBottom, zone, maxStep)).toBe(-10);
+		});
+
+		it('halfway into the zone: half speed', () => {
+			expect(scrollStepFor(20, rectTop, rectBottom, zone, maxStep)).toBe(-5);
+		});
+
+		it('just inside the zone, near the dead middle: still nonzero — no dead band', () => {
+			expect(scrollStepFor(39, rectTop, rectBottom, zone, maxStep)).toBeCloseTo(-0.25, 10);
+		});
+	});
+
+	describe('bottom hot zone: positive (scroll down), speed grows toward the edge', () => {
+		const rectTop = 0;
+		const rectBottom = 200;
+		const zone = 40;
+		const maxStep = 10;
+
+		it('right at the container edge: full speed', () => {
+			expect(scrollStepFor(200, rectTop, rectBottom, zone, maxStep)).toBe(10);
+		});
+
+		it('halfway into the zone: half speed', () => {
+			expect(scrollStepFor(180, rectTop, rectBottom, zone, maxStep)).toBe(5);
+		});
+
+		it('just inside the zone, near the dead middle: still nonzero — no dead band', () => {
+			expect(scrollStepFor(161, rectTop, rectBottom, zone, maxStep)).toBeCloseTo(0.25, 10);
+		});
+	});
+
+	describe('dead middle: always 0', () => {
+		const rectTop = 0;
+		const rectBottom = 200;
+		const zone = 40;
+		const maxStep = 10;
+
+		it('dead center', () => {
+			expect(scrollStepFor(100, rectTop, rectBottom, zone, maxStep)).toBe(0);
+		});
+
+		it('just inside the middle, near either boundary', () => {
+			expect(scrollStepFor(41, rectTop, rectBottom, zone, maxStep)).toBe(0);
+			expect(scrollStepFor(159, rectTop, rectBottom, zone, maxStep)).toBe(0);
+		});
+	});
+
+	describe('exact hot-zone boundaries: fall through to the dead middle, not either zone', () => {
+		const rectTop = 0;
+		const rectBottom = 200;
+		const zone = 40;
+		const maxStep = 10;
+
+		it('exactly rectTop + zone: 0, not the top zone — half-open on the inward side', () => {
+			expect(scrollStepFor(40, rectTop, rectBottom, zone, maxStep)).toBe(0);
+		});
+
+		it('exactly rectBottom - zone: 0, not the bottom zone — half-open on the inward side', () => {
+			expect(scrollStepFor(160, rectTop, rectBottom, zone, maxStep)).toBe(0);
+		});
+	});
+
+	describe('pointer outside the container: clamped to maxStep, does not grow without bound', () => {
+		const rectTop = 100;
+		const rectBottom = 300;
+		const zone = 40;
+		const maxStep = 10;
+
+		it('at rectTop and far above it: both exactly -maxStep, never past it', () => {
+			expect(scrollStepFor(100, rectTop, rectBottom, zone, maxStep)).toBe(-10);
+			expect(scrollStepFor(-5000, rectTop, rectBottom, zone, maxStep)).toBe(-10);
+		});
+
+		it('at rectBottom and far below it: both exactly +maxStep, never past it', () => {
+			expect(scrollStepFor(300, rectTop, rectBottom, zone, maxStep)).toBe(10);
+			expect(scrollStepFor(5000, rectTop, rectBottom, zone, maxStep)).toBe(10);
+		});
+	});
+
+	describe('container shorter than 2 * zone: zone shrinks to height / 2', () => {
+		// height = 50, zone = 40 → 2 * zone = 80 > 50, so the effective zone
+		// becomes 25, meeting at the container's exact midpoint (25).
+		const rectTop = 0;
+		const rectBottom = 50;
+		const zone = 40;
+		const maxStep = 10;
+
+		it('just above the midpoint: top zone, nonzero and negative', () => {
+			expect(scrollStepFor(24, rectTop, rectBottom, zone, maxStep)).toBeCloseTo(-0.4, 10);
+		});
+
+		it('exactly at the midpoint: 0 — the shrunk zones meet but do not overlap', () => {
+			expect(scrollStepFor(25, rectTop, rectBottom, zone, maxStep)).toBe(0);
+		});
+
+		it('just below the midpoint: bottom zone, nonzero and positive — no dead band either side', () => {
+			expect(scrollStepFor(26, rectTop, rectBottom, zone, maxStep)).toBeCloseTo(0.4, 10);
+		});
+
+		it('top edge of the shrunk container: full speed', () => {
+			expect(scrollStepFor(0, rectTop, rectBottom, zone, maxStep)).toBe(-10);
+		});
+
+		it('bottom edge of the shrunk container: full speed', () => {
+			expect(scrollStepFor(50, rectTop, rectBottom, zone, maxStep)).toBe(10);
+		});
+	});
+
+	describe('guards', () => {
+		it('rectBottom - rectTop <= 0: 0', () => {
+			expect(scrollStepFor(50, 100, 100, 40, 10)).toBe(0);
+			expect(scrollStepFor(50, 100, 80, 40, 10)).toBe(0);
+		});
+
+		it('zone <= 0: 0', () => {
+			expect(scrollStepFor(50, 0, 200, 0, 10)).toBe(0);
+			expect(scrollStepFor(50, 0, 200, -5, 10)).toBe(0);
+		});
+
+		it('maxStep <= 0: 0', () => {
+			expect(scrollStepFor(50, 0, 200, 40, 0)).toBe(0);
+			expect(scrollStepFor(50, 0, 200, 40, -5)).toBe(0);
+		});
+	});
+
+	describe('non-integer rect values (real measured rects are fractional pixels)', () => {
+		const rectTop = 10.5;
+		const rectBottom = 110.25;
+		const zone = 15.75;
+		const maxStep = 9.5;
+
+		it('at rectTop: full speed', () => {
+			expect(scrollStepFor(10.5, rectTop, rectBottom, zone, maxStep)).toBe(-9.5);
+		});
+
+		it('at rectBottom: full speed', () => {
+			expect(scrollStepFor(110.25, rectTop, rectBottom, zone, maxStep)).toBe(9.5);
+		});
+
+		it('mid-zone value computes the expected fractional depth', () => {
+			// Top zone spans [10.5, 26.25). At 18.375 the pointer is halfway in.
+			expect(scrollStepFor(18.375, rectTop, rectBottom, zone, maxStep)).toBeCloseTo(-4.75, 10);
 		});
 	});
 });
