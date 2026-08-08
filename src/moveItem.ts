@@ -12,10 +12,11 @@
  * pure layer where the moved item belongs, and write the result.
  */
 import { normalizePath, type Plugin, type TFile, type TFolder } from 'obsidian';
+import type { DropSide } from './dropZone';
 import { explorerOrderNames } from './explorerSort';
 import { folderIndexKey, type IndexFileStore } from './indexFile';
 import { setOrder } from './orderIndex';
-import { moveNameInOrder, type RowMove } from './rowMove';
+import { insertNameBeside, moveNameInOrder, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
 import { entriesFor } from './sortspecFile';
 
@@ -112,4 +113,98 @@ export async function applyMove(host: MoveItemHost, file: TFile | TFolder, move:
 
 	const accepted = await host.store.updateOrRepair((index) => setOrder(index, folderIndexKey(parent), moved));
 	return accepted ? 'moved' : 'refused';
+}
+
+export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed';
+
+/**
+ * The write side of the self-rendered tree drag-and-drop (M12b): places
+ * `dragged` immediately before/after `anchor` in `anchor.parent`'s saved
+ * order (`insertNameBeside`, `rowMove.ts`), moving `dragged` into that folder
+ * first when it isn't there already.
+ *
+ * `anchor.parent` (`dest`) is `null` only for the vault root itself acting as
+ * `anchor` — the root can be a drop *destination* but never someone's
+ * `parent`, so there is nothing to write into. `explorerDrag.ts`'s own
+ * judgment already rules this case out before calling here (an anchor with no
+ * parent fails its own guard), so this is a belt-and-suspenders check, not a
+ * path expected to be hit.
+ *
+ * Two shapes, same as `applyMove` above for the same-folder case, plus a
+ * third for the cross-folder one:
+ *
+ * Same folder (`dragged.parent === dest`, reference comparison — both are
+ * live `TFolder` objects resolved from the same vault): compute
+ * `effectiveOrder` for `dest`, splice `dragged.name` beside `anchor.name`, and
+ * write it — no rename involved, so this is `applyMove`'s shape exactly,
+ * `insertNameBeside` standing in for `moveNameInOrder`.
+ *
+ * Cross folder: order matters here, and it is deliberately "compute the
+ * destination order, *then* rename, and only write the order after the
+ * rename actually lands":
+ *
+ * 1. `insertNameBeside(effectiveOrder(host, dest), dragged.name, anchor.name,
+ *    side)` is computed against `dest`'s *current* order, before `dragged`
+ *    has moved anywhere — `insertNameBeside` tolerates `dragged.name` not yet
+ *    being a member of that order, which is exactly the cross-folder case.
+ *    `null` here would mean `anchor.name` isn't in `dest`'s own order, which
+ *    should not be reachable (the caller resolved `anchor` from a row
+ *    `dest` is currently rendering) — handled as `'unchanged'` anyway, on the
+ *    same "trust the null contract, not the specific reason" basis
+ *    `applyMove` already follows.
+ * 2. The destination path is built from `dest.path`/`dest.isRoot()` rather
+ *    than assuming what the vault root's `TFolder.path` literally is (`''`
+ *    vs `'/'`) — the same root-path trap this codebase avoids everywhere
+ *    else (`folderIndexKey`, `orderSync.ts`'s rename handling).
+ * 3. `fileManager.renameFile` actually performs the move. A failure here
+ *    (most commonly a name collision already at the destination) is caught
+ *    and reported as `'move-failed'` — **no** order is written in that case,
+ *    keeping the on-disk move and the saved order from ever disagreeing
+ *    about whether it happened.
+ * 4. Only once the rename has actually succeeded is the destination's order
+ *    written, using the order computed in step 1.
+ *
+ * Computing the destination order *before* the rename, rather than after, is
+ * what keeps this from racing `orderSync.ts`: that module reacts to the same
+ * rename event this triggers, but it only ever touches two keys — the old
+ * parent's (`removeEntry`, dropping `dragged`'s stale position there) and, if
+ * `dragged` is itself a folder, its own key (`renameFolderPath`, moving
+ * whatever was saved *inside* it). Neither is `folderIndexKey(dest)`: the
+ * caller's own guard against dropping a folder into its own descendant
+ * already guarantees `dest` can never be `dragged` or something nested inside
+ * it, so `orderSync`'s reaction to this same rename and this function's own
+ * write to `dest`'s key can never land on the same key at all, in either
+ * order.
+ */
+export async function applyDrop(
+	host: MoveItemHost,
+	dragged: TFile | TFolder,
+	anchor: TFile | TFolder,
+	side: DropSide,
+): Promise<{ outcome: DropOutcome; error?: string }> {
+	const dest = anchor.parent;
+	if (dest === null) return { outcome: 'unchanged' };
+
+	if (dragged.parent === dest) {
+		const order = effectiveOrder(host, dest);
+		const next = insertNameBeside(order, dragged.name, anchor.name, side);
+		if (next === null) return { outcome: 'unchanged' };
+
+		const accepted = await host.store.updateOrRepair((index) => setOrder(index, folderIndexKey(dest), next));
+		return { outcome: accepted ? 'moved' : 'refused' };
+	}
+
+	const next = insertNameBeside(effectiveOrder(host, dest), dragged.name, anchor.name, side);
+	if (next === null) return { outcome: 'unchanged' };
+
+	const newPath = normalizePath(dest.isRoot() ? dragged.name : `${dest.path}/${dragged.name}`);
+	try {
+		await host.app.fileManager.renameFile(dragged, newPath);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return { outcome: 'move-failed', error: message };
+	}
+
+	const accepted = await host.store.updateOrRepair((index) => setOrder(index, folderIndexKey(dest), next));
+	return { outcome: accepted ? 'moved' : 'refused' };
 }

@@ -1,7 +1,8 @@
 /**
- * Two exposed settings, plus one stored-but-not-yet-exposed value:
+ * Three exposed settings, plus one stored-but-not-yet-exposed value:
  *
- * - `autoRefresh` and `hideIndexFile` below have toggles on this tab.
+ * - `autoRefresh`, `hideIndexFile`, and `dragToReorder` below have toggles on
+ *   this tab.
  * - `indexPath` (the vault path of the order index note, read by
  *   `IndexFileStore`) is stored but deliberately not exposed. A text field
  *   here would let one typo point the plugin at a note that doesn't exist,
@@ -36,6 +37,22 @@ export interface ExplorerOrderEditorSettings {
 	 * quick switcher and the graph still show it.
 	 */
 	readonly hideIndexFile: boolean;
+	/**
+	 * Let dragging a row in the file explorer itself reorder it (M12b,
+	 * `explorerDrag.ts`) — same-folder reordering and dropping onto a
+	 * specific position in a different folder, without opening "Set explorer
+	 * order" first. Read at the moment each drag event fires
+	 * (`explorerDrag.ts`'s judgment checks it first, before anything else),
+	 * so toggling this off takes effect immediately and needs no listener to
+	 * be re-registered: the next `dragover` simply stops being intercepted
+	 * and Obsidian's native drop handling takes back over unchanged.
+	 *
+	 * Defaults to on: it changes nothing about how existing orders render,
+	 * only adds a second way to change one, and the file explorer's native
+	 * drag-and-drop (move into a folder) keeps working underneath it exactly
+	 * as before everywhere this doesn't take over.
+	 */
+	readonly dragToReorder: boolean;
 	/** See the module doc comment above. */
 	readonly indexPath: string;
 }
@@ -43,6 +60,7 @@ export interface ExplorerOrderEditorSettings {
 export const DEFAULT_SETTINGS: ExplorerOrderEditorSettings = {
 	autoRefresh: true,
 	hideIndexFile: true,
+	dragToReorder: true,
 	indexPath: 'explorer-order.md',
 };
 
@@ -83,6 +101,11 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				name: 'Hide the order note in the file explorer',
 				desc: 'Hide the note that stores saved orders from the file explorer.',
 				control: { type: 'toggle', key: 'hideIndexFile' },
+			},
+			{
+				name: 'Drag to reorder in the file explorer',
+				desc: 'Drag a file or folder onto another one in the file explorer to reorder it, without opening "Set explorer order" first.',
+				control: { type: 'toggle', key: 'dragToReorder' },
 			},
 			// The cold-start repair action (M10e part 5): only ever visible
 			// while the store is unusable, so a healthy vault never shows it.
@@ -408,6 +431,8 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				return this.plugin.settings.autoRefresh;
 			case 'hideIndexFile':
 				return this.plugin.settings.hideIndexFile;
+			case 'dragToReorder':
+				return this.plugin.settings.dragToReorder;
 			default:
 				return undefined;
 		}
@@ -415,7 +440,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 
 	async setControlValue(key: string, value: unknown): Promise<void> {
 		// The signature is `unknown` for every control type the API supports;
-		// both of ours are toggles, so anything else means we were handed a
+		// all of ours are toggles, so anything else means we were handed a
 		// key we never declared.
 		if (typeof value !== 'boolean') return;
 
@@ -425,14 +450,24 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			return;
 		}
 
-		if (key !== 'hideIndexFile') return;
+		if (key === 'hideIndexFile') {
+			// Unlike the old `hideSortspec` toggle, there is no vault-wide file to
+			// rewrite: hiding is purely a rendering choice `explorerSort.ts` makes
+			// on every call, driven straight off this setting. So the toggle only
+			// has to save and ask for a re-sort.
+			this.plugin.settings = { ...this.plugin.settings, hideIndexFile: value };
+			await this.plugin.saveSettings();
+			requestFileExplorerResort(this.app);
+			return;
+		}
 
-		// Unlike the old `hideSortspec` toggle, there is no vault-wide file to
-		// rewrite: hiding is purely a rendering choice `explorerSort.ts` makes
-		// on every call, driven straight off this setting. So the toggle only
-		// has to save and ask for a re-sort.
-		this.plugin.settings = { ...this.plugin.settings, hideIndexFile: value };
+		if (key !== 'dragToReorder') return;
+
+		// No re-sort needed: `explorerDrag.ts` reads this setting fresh on
+		// every drag event (see its own doc comment), so a save is the whole
+		// story — there is no listener to tear down or re-install, unlike
+		// `hideIndexFile` above, which changes what the tree renders.
+		this.plugin.settings = { ...this.plugin.settings, dragToReorder: value };
 		await this.plugin.saveSettings();
-		requestFileExplorerResort(this.app);
 	}
 }

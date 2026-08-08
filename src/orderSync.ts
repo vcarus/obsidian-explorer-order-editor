@@ -30,9 +30,18 @@
  *   the index note itself catches up, e.g. via `IndexFileStore`'s own
  *   `modify` handling).
  * - Moving an item into a new folder never inserts it into that folder's
- *   order. There is no signal for where the user would want it, so it joins
- *   every other child that folder's order doesn't mention — exactly where a
- *   brand-new file would land.
+ *   order, *as far as this module's own rename handling is concerned* — a
+ *   rename this module sees on its own, with no other signal attached, still
+ *   has no way to know where in the destination the user would want the item,
+ *   so it joins every other child that folder's order doesn't mention,
+ *   exactly where a brand-new file would land. Since M12b that is no longer
+ *   the only way an item can end up moved: `moveItem.ts`'s `applyDrop` is a
+ *   signal for exactly that (a tree drag dropped on a specific row), and it
+ *   supplies the position itself — by writing the destination folder's order
+ *   *after* the rename it performs, once this module's own reaction to that
+ *   same rename has already run and touched only the source folder's key.
+ *   Nothing here has to know that happened; it is simply a second, later
+ *   write to a key this module's own reaction to the rename never touches.
  * - If the order modal is open in memory when a rename happens elsewhere,
  *   saving from the modal afterwards still writes the name the entry had
  *   when the modal opened. Known limitation, not addressed here.

@@ -391,3 +391,24 @@
 .eoe-dependency-ok .setting-item-description {
 	color: var(--text-muted);
 }
+
+/* Drag-and-drop indicator line (M12b, explorerDrag.ts) — marks the row a
+   dropped item would land before/after.
+
+   inset box-shadow rather than a pseudo-element or absolute positioning:
+   nothing here has to know or care what `position` the host's own row
+   element is set to, the shadow can never spill outside the row's own box
+   (a border half-outside a rounded/scrolled row can), it adds no DOM node
+   of its own, and it scrolls and indents exactly as the row it's drawn on
+   already does — no separate positioning math to keep in sync with the
+   tree's own layout. The two selectors below are already 0-2-0 specificity,
+   which is enough to win outright, so this needs no !important. */
+.nav-file-title.eoe-drop-before,
+.nav-folder-title.eoe-drop-before {
+	box-shadow: inset 0 2px 0 0 var(--interactive-accent);
+}
+
+.nav-file-title.eoe-drop-after,
+.nav-folder-title.eoe-drop-after {
+	box-shadow: inset 0 -2px 0 0 var(--interactive-accent);
+}

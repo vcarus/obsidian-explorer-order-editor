@@ -1,4 +1,5 @@
 import { Menu, normalizePath, Notice, Plugin, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
 import { folderIndexKey, IndexFileStore, requestFileExplorerResort } from './indexFile';
 import { applyMove, effectiveOrder } from './moveItem';
@@ -56,6 +57,13 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		// deferred/lazy leaf this early). installExplorerSort retries on its
 		// own until it succeeds, so this only has to run once.
 		this.app.workspace.onLayoutReady(() => installExplorerSort(this));
+
+		// Same reasoning, same retry-until-success shape, for the tree's own
+		// drag-and-drop (M12b): installExplorerDrag needs the same file
+		// explorer leaf/view installExplorerSort does, and is independent of
+		// it otherwise, so it gets its own onLayoutReady call rather than
+		// being folded into the one above.
+		this.app.workspace.onLayoutReady(() => installExplorerDrag(this));
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {
@@ -172,6 +180,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		this.settings = {
 			autoRefresh: data?.autoRefresh ?? DEFAULT_SETTINGS.autoRefresh,
 			hideIndexFile,
+			dragToReorder: data?.dragToReorder ?? DEFAULT_SETTINGS.dragToReorder,
 			indexPath: data?.indexPath ?? DEFAULT_SETTINGS.indexPath,
 		};
 	}
