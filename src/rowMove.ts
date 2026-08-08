@@ -33,3 +33,31 @@ export function targetIndexFor(move: RowMove, index: number, count: number): num
 			return index === count - 1 ? null : count - 1;
 	}
 }
+
+/**
+ * Moves `name` within `names` per `move`, reusing `targetIndexFor` for the
+ * arithmetic rather than re-deriving it — this is the same computation
+ * `OrderModal.ts`'s `moveRow` does against live DOM rows, applied here to a
+ * plain array so the direct move commands/menu items (`moveItem.ts`) can
+ * reorder a folder's stored order without a modal open at all.
+ *
+ * Returns `null`, never `names` unchanged, whenever there is nothing to do:
+ * `name` isn't in `names`, `names` has fewer than two entries, or `name` is
+ * already at the edge `move` would send it to. Callers use the `null`/array
+ * split as their own "did anything change" signal, the same way every
+ * `orderIndex.ts` mutation uses same-reference-back for that.
+ *
+ * Never mutates `names` — always builds and returns a new array.
+ */
+export function moveNameInOrder(names: readonly string[], name: string, move: RowMove): string[] | null {
+	const index = names.indexOf(name);
+	if (index === -1) return null;
+
+	const target = targetIndexFor(move, index, names.length);
+	if (target === null) return null;
+
+	const next = [...names];
+	next.splice(index, 1);
+	next.splice(target, 0, name);
+	return next;
+}

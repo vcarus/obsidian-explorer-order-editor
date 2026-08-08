@@ -1,10 +1,25 @@
-import { Notice, Plugin, TFolder } from 'obsidian';
+import { Menu, normalizePath, Notice, Plugin, TAbstractFile, TFile, TFolder } from 'obsidian';
 import { installExplorerSort } from './explorerSort';
 import { folderIndexKey, IndexFileStore, requestFileExplorerResort } from './indexFile';
+import { applyMove, effectiveOrder } from './moveItem';
 import { OrderModal } from './OrderModal';
 import { registerOrderSync } from './orderSync';
 import { removeOrder } from './orderIndex';
+import { moveNameInOrder, type RowMove } from './rowMove';
 import { DEFAULT_SETTINGS, ExplorerOrderEditorSettingTab, type ExplorerOrderEditorSettings } from './settings';
+
+/**
+ * The four direct move actions (M11), each as `[move, title, icon]` — one
+ * source of truth shared by the context menu items (`addMoveMenuItems`) and
+ * the commands (`onload`), so the two entry points can never drift into
+ * different labels or a different set of moves.
+ */
+const MOVE_MENU_ITEMS: readonly (readonly [RowMove, string, string])[] = [
+	['up', 'Move up', 'lucide-arrow-up'],
+	['down', 'Move down', 'lucide-arrow-down'],
+	['top', 'Move to top', 'lucide-chevrons-up'],
+	['bottom', 'Move to bottom', 'lucide-chevrons-down'],
+];
 
 /**
  * The shape `loadData()` can return from a pre-M10b install: `hideSortspec`
@@ -44,36 +59,38 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {
-				if (!(file instanceof TFolder)) return;
-
-				menu.addItem((item) => {
-					item.setTitle('Set explorer order')
-						// The file explorer context menu renders no icons at all —
-						// not even for Obsidian's own items — so this only shows
-						// up in menu contexts that do. Registered ids carry a
-						// `lucide-` prefix (see getIconIds()); bare Lucide names
-						// are not in the map.
-						.setIcon('lucide-arrow-up-down')
-						.setSection('action')
-						.onClick(() => {
-							new OrderModal(this.app, file, this.settings, this.store).open();
-						});
-				});
-
-				// Only offered when there is actually something of ours to
-				// remove — a folder with no saved order gets no menu item at
-				// all, rather than one that clicks through to "nothing to
-				// clear".
-				if (this.store.get(folderIndexKey(file)) !== undefined) {
+				if (file instanceof TFolder) {
 					menu.addItem((item) => {
-						item.setTitle('Clear explorer order')
-							.setIcon('lucide-list-x')
+						item.setTitle('Set explorer order')
+							// The file explorer context menu renders no icons at all —
+							// not even for Obsidian's own items — so this only shows
+							// up in menu contexts that do. Registered ids carry a
+							// `lucide-` prefix (see getIconIds()); bare Lucide names
+							// are not in the map.
+							.setIcon('lucide-arrow-up-down')
 							.setSection('action')
 							.onClick(() => {
-								void this.clearOrderFor(file);
+								new OrderModal(this.app, file, this.settings, this.store).open();
 							});
 					});
+
+					// Only offered when there is actually something of ours to
+					// remove — a folder with no saved order gets no menu item at
+					// all, rather than one that clicks through to "nothing to
+					// clear".
+					if (this.store.get(folderIndexKey(file)) !== undefined) {
+						menu.addItem((item) => {
+							item.setTitle('Clear explorer order')
+								.setIcon('lucide-list-x')
+								.setSection('action')
+								.onClick(() => {
+									void this.clearOrderFor(file);
+								});
+						});
+					}
 				}
+
+				this.addMoveMenuItems(menu, file);
 			}),
 		);
 
@@ -99,6 +116,37 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 				return true;
 			},
 		});
+
+		// One command per direct move action (M11), so each can be given a
+		// hotkey — the context menu items above cover the mouse case, but
+		// hotkeys need commands regardless.
+		//
+		// The target is always `app.workspace.getActiveFile()` — the note
+		// currently open — never the file explorer's focused/selected row.
+		// Reaching for that would mean depending on two more undocumented
+		// internals (`view.tree.focusedItem`, `view.activeDom`), on top of
+		// the ones `explorerSort.ts`/`OrderModal.ts` already carry, for a case
+		// the context menu already handles well. This project takes on
+		// undocumented API only where there's no public alternative — that's
+		// not true here, so the commands stay scoped to the active file.
+		for (const [move, name] of MOVE_MENU_ITEMS) {
+			this.addCommand({
+				id: `move-${move}`,
+				name,
+				checkCallback: (checking) => {
+					const activeFile = this.app.workspace.getActiveFile();
+					if (activeFile === null) return false;
+					const parent = activeFile.parent;
+					if (parent === null) return false;
+
+					const order = effectiveOrder(this, parent);
+					if (moveNameInOrder(order, activeFile.name, move) === null) return false;
+
+					if (!checking) void this.moveFile(activeFile, move);
+					return true;
+				},
+			});
+		}
 	}
 
 	onunload(): void {
@@ -173,6 +221,88 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			// No file explorer leaf to ask — genuinely rare, but still
 			// reported so a change that silently isn't visible anywhere isn't
 			// mistaken for one that is.
+			new Notice('Saved. The file explorer will show this when you next open it.');
+		}
+	}
+
+	/**
+	 * Adds whichever of the four direct move items (M11) would actually do
+	 * something for `file`, grouped in their own section (`setSection`, not
+	 * `MenuItem.setSubmenu()` — that method isn't in the public typings and
+	 * would need a cast to reach, where a section achieves the same visual
+	 * grouping with public API only) so they read as one group instead of
+	 * crowding "Set explorer order"/"Clear explorer order" above.
+	 *
+	 * Silently adds nothing for: anything that isn't a `TFile`/`TFolder`, the
+	 * vault root (no parent to move it within), and the order index note
+	 * itself (never orderable — see `moveItem.ts`'s `effectiveOrder`).
+	 *
+	 * `effectiveOrder` is computed once here and reused for all four
+	 * decisions below, rather than recomputed per item — it can read through
+	 * the live file explorer, and there's no reason to pay for that four
+	 * times to build one menu.
+	 */
+	private addMoveMenuItems(menu: Menu, file: TAbstractFile): void {
+		if (!(file instanceof TFile) && !(file instanceof TFolder)) return;
+
+		const parent = file.parent;
+		if (parent === null) return;
+
+		if (file instanceof TFile && file.path === normalizePath(this.settings.indexPath)) return;
+
+		const order = effectiveOrder(this, parent);
+
+		for (const [move, title, icon] of MOVE_MENU_ITEMS) {
+			if (moveNameInOrder(order, file.name, move) === null) continue; // would be a no-op — omit rather than offer a dead click
+
+			menu.addItem((item) => {
+				item.setTitle(title)
+					.setIcon(icon)
+					.setSection('explorer-order-editor-move')
+					.onClick(() => {
+						void this.moveFile(file, move);
+					});
+			});
+		}
+	}
+
+	/**
+	 * Moves `file` within its parent folder's saved order (`applyMove`,
+	 * `moveItem.ts`) and reports the outcome — same shape as `clearOrderFor`
+	 * above: `updateOrRepair`'s refusal is reported via `unusableReason()`
+	 * rather than claimed as success, and a successful write gets the same
+	 * auto-refresh handling.
+	 *
+	 * Deliberately does *not* also show a "Moved." success Notice the way
+	 * `clearOrderFor` shows "Explorer order cleared.": a move is a small,
+	 * often-repeated nudge (one hotkey press, or several in a row) where the
+	 * reordered row itself is the feedback, and a Notice on every press would
+	 * just be noise. The auto-refresh-off and no-file-explorer-leaf notices
+	 * below still fire — those report a state the user can't otherwise see,
+	 * which is a different thing from confirming a click landed.
+	 */
+	private async moveFile(file: TFile | TFolder, move: RowMove): Promise<void> {
+		const outcome = await applyMove(this, file, move);
+
+		// Silence, not a message: the item was already where this move would
+		// put it, or stopped being movable between the check and the click.
+		// Nothing happened and nothing is wrong.
+		if (outcome === 'unchanged') return;
+
+		if (outcome === 'refused') {
+			new Notice(
+				`Could not move: the order note ${this.store.unusableReason() ?? 'could not be repaired'}. ` +
+					'Use "Repair the order note" in settings, or check the console for details.',
+			);
+			return;
+		}
+
+		if (!this.settings.autoRefresh) {
+			new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
+			return;
+		}
+
+		if (!requestFileExplorerResort(this.app)) {
 			new Notice('Saved. The file explorer will show this when you next open it.');
 		}
 	}
