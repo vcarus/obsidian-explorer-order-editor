@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
 	getOrder,
+	mergeIndexesByPrecedence,
 	mergeOrder,
 	parseIndex,
 	pruneMissing,
+	recoverIndex,
 	removeEntry,
 	removeOrder,
 	renameEntry,
 	renameFolderPath,
+	salvageIndex,
 	serializeIndex,
 	setOrder,
 	type OrderIndex,
@@ -581,5 +584,245 @@ describe('mergeOrder', () => {
 		const snapshot = [...live];
 		mergeOrder(['a.md'], live);
 		expect(live).toEqual(snapshot);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// salvageIndex (M10e)
+// ---------------------------------------------------------------------------
+
+describe('salvageIndex', () => {
+	it('recovers every line of an otherwise-valid block, with zero dropped', () => {
+		const text = ['```json', '{', '  "A": ["x.md", "y.md"],', '  "B": ["z.md"]', '}', '```'].join('\n');
+		const result = salvageIndex(text);
+		expect(result.droppedLines).toBe(0);
+		expectIndexEqual(result.index, buildIndex([['A', ['x.md', 'y.md']], ['B', ['z.md']]]));
+	});
+
+	it('the { and } lines are structural, not data, and are not counted as dropped', () => {
+		const text = ['```json', '{', '  "A": ["x.md"]', '}', '```'].join('\n');
+		const result = salvageIndex(text);
+		expect(result.droppedLines).toBe(0);
+	});
+
+	it('blank lines inside the block are not counted as dropped', () => {
+		const text = ['```json', '{', '', '  "A": ["x.md"]', '', '}', '```'].join('\n');
+		const result = salvageIndex(text);
+		expect(result.droppedLines).toBe(0);
+		expectIndexEqual(result.index, buildIndex([['A', ['x.md']]]));
+	});
+
+	it('a note whose json block cannot be located returns an empty index and 0 dropped', () => {
+		expect(salvageIndex('')).toEqual({ index: new Map(), droppedLines: 0 });
+		expect(salvageIndex('Just prose, no fence anywhere.')).toEqual({ index: new Map(), droppedLines: 0 });
+		expect(salvageIndex('```other\nnot json\n```')).toEqual({ index: new Map(), droppedLines: 0 });
+	});
+
+	it('a line whose value is not an array of strings is dropped and counted, surrounding lines survive', () => {
+		const text = ['```json', '{', '  "A": ["x.md"],', '  "B": "not-an-array",', '  "C": ["y.md", 42],', '  "D": ["z.md"]', '}', '```'].join(
+			'\n',
+		);
+		const result = salvageIndex(text);
+		expect(result.droppedLines).toBe(2);
+		expectIndexEqual(result.index, buildIndex([['A', ['x.md']], ['D', ['z.md']]]));
+	});
+
+	it('git conflict markers sitting among good lines are dropped, and folder lines from both sides survive', () => {
+		const text = [
+			'```json',
+			'{',
+			'  "Projects/Alpha": ["Design.md"],',
+			'<<<<<<< HEAD',
+			'  "Projects/Beta": ["b.md", "a.md"],',
+			'=======',
+			'  "Projects/Beta": ["a.md", "b.md", "c.md"],',
+			'  "Projects/Gamma": ["g.md"],',
+			'>>>>>>> branch',
+			'  "Projects/Delta": ["d.md"]',
+			'}',
+			'```',
+		].join('\n');
+		const result = salvageIndex(text);
+		// Three marker lines (<<<<<<<, =======, >>>>>>>) don't parse as a pair.
+		expect(result.droppedLines).toBe(3);
+		// Both sides' distinct keys survive; the conflicting key ("Projects/Beta")
+		// resolves to whichever copy appears later in the file, matching
+		// JSON.parse's own last-write-wins semantics for a repeated key.
+		expectIndexEqual(
+			result.index,
+			buildIndex([
+				['Projects/Alpha', ['Design.md']],
+				['Projects/Beta', ['a.md', 'b.md', 'c.md']],
+				['Projects/Gamma', ['g.md']],
+				['Projects/Delta', ['d.md']],
+			]),
+		);
+	});
+
+	it('later duplicate keys win over earlier ones, matching JSON.parse semantics', () => {
+		const text = ['```json', '{', '  "A": ["first.md"],', '  "A": ["second.md"]', '}', '```'].join('\n');
+		const result = salvageIndex(text);
+		expect(getOrder(result.index, 'A')).toEqual(['second.md']);
+	});
+
+	it('a truncated final line is dropped and counted; earlier good lines survive', () => {
+		// No closing fence at all -- the file just stops mid-line, as a
+		// half-written / interrupted-mid-write copy would look.
+		const text = ['```json', '{', '  "A": ["a.md"],', '  "B": ["b'].join('\n');
+		const result = salvageIndex(text);
+		expect(result.droppedLines).toBe(1);
+		expectIndexEqual(result.index, buildIndex([['A', ['a.md']]]));
+	});
+
+	it('an unterminated fence is still salvaged to EOF, unlike parseIndex which refuses the whole block', () => {
+		const text = ['```json', '{', '  "A": ["a.md"],', '  "B": ["b.md"]', '}'].join('\n');
+		expect(parseIndex(text).status).toBe('invalid');
+		const result = salvageIndex(text);
+		expect(result.droppedLines).toBe(0);
+		expectIndexEqual(result.index, buildIndex([['A', ['a.md']], ['B', ['b.md']]]));
+	});
+
+	it('malformed JSON on a line (not just wrong shape) is dropped and counted', () => {
+		const text = ['```json', '{', '  "A": ["a.md"],', '  this is not json at all,', '  "B": ["b.md"]', '}', '```'].join('\n');
+		const result = salvageIndex(text);
+		expect(result.droppedLines).toBe(1);
+		expectIndexEqual(result.index, buildIndex([['A', ['a.md']], ['B', ['b.md']]]));
+	});
+});
+
+describe('salvageIndex without a fence', () => {
+	it('recovers the data lines when the ```json fence itself was deleted', () => {
+		const mangled = [
+			'This note is maintained by the Explorer Order Editor plugin.',
+			'',
+			'{',
+			'  "A": ["x.md", "y.md"],',
+			'  "B": ["z.md"]',
+			'}',
+		].join('\n');
+		const { index, droppedLines } = salvageIndex(mangled);
+		expect(sortedEntries(index)).toEqual([
+			['A', ['x.md', 'y.md']],
+			['B', ['z.md']],
+		]);
+		// Outside a fence, a line that does not parse cannot be told apart from
+		// prose that was never data, so nothing is reported as lost.
+		expect(droppedLines).toBe(0);
+	});
+
+	it('reports nothing for a note that is only prose', () => {
+		const { index, droppedLines } = salvageIndex('Just some writing.\n\nAnd more.\n');
+		expect(index.size).toBe(0);
+		expect(droppedLines).toBe(0);
+	});
+});
+
+
+// ---------------------------------------------------------------------------
+// mergeIndexesByPrecedence / recoverIndex (M10e)
+// ---------------------------------------------------------------------------
+
+describe('mergeIndexesByPrecedence', () => {
+	it('an empty sources array yields an empty index', () => {
+		expectIndexEqual(mergeIndexesByPrecedence([]), empty);
+	});
+
+	it('a single source is returned as-is (its keys, unchanged)', () => {
+		const i = buildIndex([['A', ['x.md']]]);
+		expectIndexEqual(mergeIndexesByPrecedence([i]), i);
+	});
+
+	it('the earliest source in the array wins for a key present in more than one', () => {
+		const first = buildIndex([['A', ['from-first.md']]]);
+		const second = buildIndex([['A', ['from-second.md']]]);
+		const third = buildIndex([['A', ['from-third.md']]]);
+		expect(getOrder(mergeIndexesByPrecedence([first, second, third]), 'A')).toEqual(['from-first.md']);
+	});
+
+	it('is a union: keys unique to a lower-precedence source are still present', () => {
+		const highest = buildIndex([['A', ['a.md']]]);
+		const middle = buildIndex([['B', ['b.md']]]);
+		const lowest = buildIndex([['C', ['c.md']]]);
+		expectIndexEqual(
+			mergeIndexesByPrecedence([highest, middle, lowest]),
+			buildIndex([
+				['A', ['a.md']],
+				['B', ['b.md']],
+				['C', ['c.md']],
+			]),
+		);
+	});
+
+	it('never lets a lower-precedence source override a key a higher one still has, even partially', () => {
+		// The single most likely bug: naively spreading sources in array order
+		// (`{...sources[0], ...sources[1], ...}`) would let the *last* source
+		// win instead of the first. This pins the direction down.
+		const highest = buildIndex([
+			['A', ['keep-this.md']],
+			['B', ['keep-this-too.md']],
+		]);
+		const lowest = buildIndex([
+			['A', ['must-not-appear.md']],
+			['B', ['must-not-appear-either.md']],
+			['C', ['this-one-is-fine.md']],
+		]);
+		const merged = mergeIndexesByPrecedence([highest, lowest]);
+		expect(getOrder(merged, 'A')).toEqual(['keep-this.md']);
+		expect(getOrder(merged, 'B')).toEqual(['keep-this-too.md']);
+		expect(getOrder(merged, 'C')).toEqual(['this-one-is-fine.md']);
+	});
+});
+
+describe('recoverIndex', () => {
+	it('unions salvage, memory, and backup, salvage winning conflicts, memory next, backup last', () => {
+		const unreadableText = [
+			'```json',
+			'{',
+			'  "FromSalvageOnly": ["s.md"],',
+			'  "InBoth": ["from-salvage.md"]',
+			'}',
+			'```',
+		].join('\n');
+		const memory = buildIndex([
+			['InBoth', ['from-memory.md']],
+			['FromMemoryOnly', ['m.md']],
+		]);
+		const backup = buildIndex([
+			['InBoth', ['from-backup.md']],
+			['FromMemoryOnly', ['stale.md']],
+			['FromBackupOnly', ['b.md']],
+		]);
+
+		const result = recoverIndex(unreadableText, memory, backup);
+		expect(result.droppedLines).toBe(0);
+		expectIndexEqual(
+			result.index,
+			buildIndex([
+				['FromSalvageOnly', ['s.md']],
+				['InBoth', ['from-salvage.md']],
+				['FromMemoryOnly', ['m.md']],
+				['FromBackupOnly', ['b.md']],
+			]),
+		);
+	});
+
+	it('reports salvageIndex\'s dropped-line count', () => {
+		const unreadableText = ['```json', '{', '  "A": ["a.md"],', 'garbage,', '  "B": ["b.md"]', '}', '```'].join('\n');
+		const result = recoverIndex(unreadableText, empty, empty);
+		expect(result.droppedLines).toBe(1);
+	});
+
+	it('an unreadable note that cannot even be located still recovers from memory and backup', () => {
+		const memory = buildIndex([['A', ['a.md']]]);
+		const backup = buildIndex([['B', ['b.md']]]);
+		const result = recoverIndex('no fence here', memory, backup);
+		expect(result.droppedLines).toBe(0);
+		expectIndexEqual(result.index, buildIndex([['A', ['a.md']], ['B', ['b.md']]]));
+	});
+
+	it('all three sources empty -> an empty recovered index (the caller is the one that must refuse to write it)', () => {
+		const result = recoverIndex('', empty, empty);
+		expect(result.index.size).toBe(0);
+		expect(result.droppedLines).toBe(0);
 	});
 });

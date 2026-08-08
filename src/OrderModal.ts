@@ -824,29 +824,22 @@ export class OrderModal extends Modal {
 	 * success, the latter needs the modal to stay open so it can then switch
 	 * levels), so that decision is left to the caller.
 	 *
-	 * Declared `async` (even though `store.update` is itself synchronous) so
-	 * every existing call site — `await this.save()`, and the footer button's
-	 * `.then()`/`.finally()` chain — keeps working unchanged.
+	 * Genuinely `async` now (M10e): `store.updateOrRepair` heals the order
+	 * note first when it's unusable, rather than refusing outright, which
+	 * needs real I/O (quarantining the unreadable text, rebuilding the
+	 * note). There is no cheap pre-check to short-circuit on any more — the
+	 * store can't know whether a save is recoverable without attempting the
+	 * same repair a save would trigger, so this always calls
+	 * `updateOrRepair` and reads the outcome from its result instead.
 	 */
 	private async save(): Promise<SaveOutcome> {
-		const unusable = this.store.unusableReason();
-		if (unusable !== null) {
-			// Said here and now, not left to the one Notice the store showed
-			// when it first became unusable: that fires once and never repeats,
-			// so a user who breaks the note and comes back later would press
-			// Save and get complete silence — which reads as "nothing
-			// happened", not "this was refused". The arrangement stays on
-			// screen either way.
-			new Notice(`Could not save: the order note ${unusable}. Fix it and try again.`);
-			return 'blocked';
-		}
-
 		const names = this.collectOrderedEntries().map((entry) => entry.name);
 		const key = folderIndexKey(this.folder);
 
 		let changed = false;
+		let ok: boolean;
 		try {
-			this.store.update((index) => {
+			ok = await this.store.updateOrRepair((index) => {
 				const next = setOrder(index, key, names);
 				changed = next !== index;
 				return next;
@@ -855,6 +848,18 @@ export class OrderModal extends Modal {
 			console.error('[explorer-order-editor] failed to save explorer order', err);
 			new Notice('Could not save the explorer order: an unexpected error occurred.');
 			return 'failed';
+		}
+
+		if (!ok) {
+			// The store already logged why; a repair was attempted and found
+			// nothing recoverable, which is the only way this is reachable
+			// now — said here and now regardless, since silence at the point
+			// of action reads as "nothing happened", not "this was refused".
+			new Notice(
+				`Could not save: the order note ${this.store.unusableReason() ?? 'could not be repaired'}. ` +
+					'Use "Repair the order note" in settings, or check the console for details.',
+			);
+			return 'blocked';
 		}
 
 		if (!changed) {

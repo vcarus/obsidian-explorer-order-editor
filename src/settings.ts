@@ -10,10 +10,11 @@
  *   type anyway so the path is configurable by hand, and so exposing it
  *   later is a UI change rather than a data-shape change.
  */
-import { App, Notice, Plugin, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
+import { App, normalizePath, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
 import { ConfirmModal } from './ConfirmModal';
 import { requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { deleteImportedSortspecFiles, importOrdersFromSortspec } from './sortspecMigration';
+import { isQuarantinePath } from './quarantine';
 import { SORTSPEC_FILENAME } from './sortspecFile';
 
 export interface ExplorerOrderEditorSettings {
@@ -82,6 +83,39 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				desc: 'Hide the note that stores saved orders from the file explorer.',
 				control: { type: 'toggle', key: 'hideIndexFile' },
 			},
+			// The cold-start repair action (M10e part 5): only ever visible
+			// while the store is unusable, so a healthy vault never shows it.
+			// Saving, clearing, or the migration rows below already attempt
+			// this same repair automatically the moment they need to write —
+			// this row exists for the case none of those happen to run first,
+			// e.g. right after startup finds the note broken and the user just
+			// wants it fixed without touching anything else yet.
+			{
+				name: 'Repair the order note',
+				desc:
+					'The order note could not be read. Repairing keeps the unreadable note as a copy beside it, ' +
+					'then rebuilds the note from everything still recoverable: the note itself, what is currently loaded, and the last backup.',
+				visible: () => !this.plugin.store.isUsable(),
+				disabled: () => this.busy,
+				action: () => void this.runRepair(),
+			},
+			// Housekeeping for the copies `IndexFileStore` keeps when it has to
+			// repair the order note. Named and described in full sentences on
+			// purpose: "quarantined copies" means nothing to someone who has
+			// never seen one, and these appear in the vault unannounced, so
+			// the row has to answer "what is this file and why is it here"
+			// before it offers to delete anything.
+			{
+				name: 'Delete the kept copies of unreadable order notes',
+				desc:
+					'When the order note cannot be read — a bad hand edit, or a sync conflict — this plugin rebuilds it from whatever it can recover, ' +
+					'and keeps the unreadable version beside it as a separate note so nothing is thrown away. ' +
+					'Those kept copies are only useful for checking whether an order went missing in the rebuild. ' +
+					'Once you are satisfied nothing is, they can go.',
+				visible: () => this.quarantineFiles().length > 0,
+				disabled: () => this.busy,
+				action: () => void this.runDeleteQuarantines(),
+			},
 			// Migration, for vaults carrying orders from a version before 1.0.
 			// `visible` is re-evaluated on every render, so both rows are
 			// absent entirely in a vault that has no sortspec.md — which is
@@ -126,21 +160,70 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 */
 	private busy = false;
 
+	/** Every kept copy of an unreadable order note currently in the vault. */
+	private quarantineFiles(): readonly TFile[] {
+		const notePath = normalizePath(this.plugin.settings.indexPath);
+		return this.app.vault.getFiles().filter((file) => isQuarantinePath(notePath, file.path));
+	}
+
+	private async runDeleteQuarantines(): Promise<void> {
+		const files = this.quarantineFiles();
+		if (files.length === 0) return;
+
+		const confirmed = await ConfirmModal.ask(
+			this.app,
+			`Delete ${files.length} kept cop${files.length === 1 ? 'y' : 'ies'}?`,
+			'These are the unreadable versions of your order note, kept when it was repaired. ' +
+				"Your current order note is not affected. This moves them to your vault's trash.",
+			'Delete',
+		);
+		if (!confirmed) return;
+
+		this.busy = true;
+		this.update();
+		try {
+			let deleted = 0;
+			let failed = 0;
+			for (const file of files) {
+				try {
+					await this.app.fileManager.trashFile(file);
+					deleted++;
+				} catch (err) {
+					console.error('[explorer-order-editor] failed to delete a kept copy of the order note', err);
+					failed++;
+				}
+			}
+			new Notice(failed > 0 ? `Deleted ${deleted}. ${failed} could not be deleted — see the console.` : `Deleted ${deleted}.`);
+		} finally {
+			this.busy = false;
+			this.update();
+		}
+	}
+
 	/**
-	 * Reports and stops when the order note cannot be written. Both migration
-	 * rows walk the whole vault and report counts afterwards; without this the
-	 * import would count every folder it "imported" into a store that refused
-	 * every single write.
+	 * Reports and stops when the order note cannot be written, after
+	 * attempting a repair first (M10e part 4/6): the import and cleanup rows
+	 * are two of the three explicit user actions healing runs for, so a
+	 * broken note is given the same chance to recover here as saving or
+	 * clearing would give it, rather than refusing outright the way this did
+	 * before healing existed. Both migration rows walk the whole vault and
+	 * report counts afterwards; without this guard the import would count
+	 * every folder it "imported" into a store that refused every single
+	 * write.
 	 */
-	private refuseWhileUnusable(): boolean {
-		const reason = this.plugin.store.unusableReason();
-		if (reason === null) return false;
-		new Notice(`The order note ${reason}. Fix it before importing or deleting anything.`, 0);
+	private async refuseWhileUnusable(): Promise<boolean> {
+		if (this.plugin.store.isUsable()) return false;
+		if (await this.plugin.store.repair()) return false;
+		new Notice(
+			`The order note ${this.plugin.store.unusableReason() ?? 'could not be repaired'}. ` +
+				'Use "Repair the order note" above, or check the console for details, before importing or deleting anything.',
+			0,
+		);
 		return true;
 	}
 
 	private async runImport(): Promise<void> {
-		if (this.refuseWhileUnusable()) return;
+		if (await this.refuseWhileUnusable()) return;
 		this.busy = true;
 		this.update();
 		try {
@@ -170,7 +253,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		// that are the fallback for a broken order note, and doing that while
 		// the note itself cannot be written is the one ordering that could
 		// leave a vault with neither copy.
-		if (this.refuseWhileUnusable()) return;
+		if (await this.refuseWhileUnusable()) return;
 
 		const confirmed = await ConfirmModal.ask(
 			this.app,
@@ -195,6 +278,31 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			}
 			if (summary.failed > 0) lines.push(`${summary.failed} failed — see the console for details.`);
 			new Notice(lines.join('\n'), 0);
+		} finally {
+			this.busy = false;
+			this.update();
+		}
+	}
+
+	/**
+	 * "Repair the order note" (M10e part 5). Only ever visible while the
+	 * store is unusable, so this row is the explicit, discoverable action for
+	 * the cold-start case: a bad note found at load time leaves nothing in
+	 * memory, and healing automatically at that point would risk clobbering
+	 * an edit the user made deliberately while Obsidian was closed — so
+	 * nothing repairs until this (or a save/clear/migration row) is actually
+	 * clicked. `store.repair()` runs the identical recovery machinery those
+	 * other actions trigger automatically, already reports its own outcome
+	 * via a Notice (success naming the quarantine note, failure logged), so
+	 * this only has to redraw the tab — the row disappears on success because
+	 * `visible` is re-evaluated — and ask the file explorer to re-sort.
+	 */
+	private async runRepair(): Promise<void> {
+		this.busy = true;
+		this.update();
+		try {
+			const healed = await this.plugin.store.repair();
+			if (healed) requestFileExplorerResort(this.app);
 		} finally {
 			this.busy = false;
 			this.update();

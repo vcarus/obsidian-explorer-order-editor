@@ -70,7 +70,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 							.setIcon('lucide-list-x')
 							.setSection('action')
 							.onClick(() => {
-								this.clearOrderFor(file);
+								void this.clearOrderFor(file);
 							});
 					});
 				}
@@ -94,7 +94,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 				const root = this.app.vault.getRoot();
 				if (this.store.get(folderIndexKey(root)) === undefined) return false;
 				if (!checking) {
-					this.clearOrderFor(root);
+					void this.clearOrderFor(root);
 				}
 				return true;
 			},
@@ -114,14 +114,30 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	private async loadSettings(): Promise<void> {
 		const data = (await this.loadData()) as (Partial<ExplorerOrderEditorSettings> & LegacySettingsShape) | null;
 		const hideIndexFile = data?.hideIndexFile ?? data?.hideSortspec ?? DEFAULT_SETTINGS.hideIndexFile;
-		this.settings = { ...DEFAULT_SETTINGS, ...data, hideIndexFile };
+		// Picked field by field, not `{...DEFAULT_SETTINGS, ...data}`: `data`
+		// is whatever `data.json` currently holds, which since M10e can also
+		// carry `IndexFileStore`'s index backup (see `saveSettings` below).
+		// Spreading the whole object would leak that stray key into
+		// `this.settings` at runtime (the `Partial<...>` cast doesn't strip it),
+		// and it would then ride along on every future `saveSettings()` call,
+		// potentially overwriting a fresher backup with a stale one.
+		this.settings = {
+			autoRefresh: data?.autoRefresh ?? DEFAULT_SETTINGS.autoRefresh,
+			hideIndexFile,
+			indexPath: data?.indexPath ?? DEFAULT_SETTINGS.indexPath,
+		};
 	}
 
 	async saveSettings(): Promise<void> {
-		await this.saveData(this.settings);
+		// Read-modify-write, not a blind `saveData(this.settings)`: `data.json`
+		// is shared with `IndexFileStore`'s index backup (M10e part 2) under a
+		// key this settings object doesn't know about, and a wholesale
+		// overwrite from this stale-by-construction object would erase it.
+		const data = (await this.loadData()) as Record<string, unknown> | null;
+		await this.saveData({ ...data, ...this.settings });
 	}
 
-	private clearOrderFor(folder: TFolder): void {
+	private async clearOrderFor(folder: TFolder): Promise<void> {
 		const key = folderIndexKey(folder);
 		if (this.store.get(key) === undefined) {
 			// The menu item and command are both gated on this same condition,
@@ -132,11 +148,18 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			return;
 		}
 
-		// Checked, not assumed: `update` refuses while the order note is
-		// unparseable, and claiming "cleared" over a refusal would be a plain
-		// lie about the user's data.
-		if (!this.store.update((index) => removeOrder(index, key))) {
-			new Notice(`Could not clear: the order note ${this.store.unusableReason() ?? 'could not be written'}. Fix it and try again.`);
+		// `updateOrRepair`, not `update`: if the order note has since become
+		// unreadable, this is one of the three explicit user actions M10e
+		// heals on, so it gets a chance to repair the note before completing
+		// the clear rather than refusing outright. Still checked, not
+		// assumed — a repair with nothing left to recover still refuses, and
+		// claiming "cleared" over that would be a plain lie about the user's
+		// data.
+		if (!(await this.store.updateOrRepair((index) => removeOrder(index, key)))) {
+			new Notice(
+				`Could not clear: the order note ${this.store.unusableReason() ?? 'could not be repaired'}. ` +
+					'Use "Repair the order note" in settings, or check the console for details.',
+			);
 			return;
 		}
 		new Notice('Explorer order cleared.');

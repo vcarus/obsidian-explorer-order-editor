@@ -233,6 +233,200 @@ export function serializeIndex(noteText: string, index: OrderIndex): string {
 }
 
 // ---------------------------------------------------------------------------
+// Salvage & recovery (M10e) — never destroy unreadable content, only ever
+// try to recover from it. See indexFile.ts's `IndexFileStore` for how this
+// is actually invoked; everything here is pure and needs no vault I/O.
+// ---------------------------------------------------------------------------
+
+export interface SalvageResult {
+	readonly index: OrderIndex;
+	/** Lines inside the json block that did not parse as a `"path": [names]` pair. Excludes the `{`/`}` structural lines and blank lines, which are not data and so are never counted. */
+	readonly droppedLines: number;
+}
+
+/**
+ * Locates the lines between the first ` ```json ` fence and its closing
+ * ` ``` ` for salvage purposes. Unlike `findJsonBlock` (used by
+ * `parseIndex`/`serializeIndex`), a missing closing fence is not treated as
+ * unusable here — it's read straight through to the end of the note instead.
+ * That difference is deliberate: `parseIndex` refuses because it cannot
+ * prove where the block ends and a *write* through that ambiguity would
+ * corrupt something; `salvageIndex` only ever reads, and the most likely
+ * reason a fence never closes is exactly the case it exists for — a
+ * half-written file, cut off mid-write, where everything up to the cutoff is
+ * still worth keeping. Returns `null` if there is no opening fence at all —
+ * the block cannot be located, so there is nothing to read line by line.
+ */
+function linesForSalvage(noteText: string): { readonly lines: readonly string[]; readonly fenced: boolean } {
+	const lines = noteText.split('\n');
+	let openLine = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i]?.trimEnd() === FENCE_OPEN) {
+			openLine = i;
+			break;
+		}
+	}
+	// No fence at all is itself a corruption this has to survive: a hand edit
+	// that deleted the ```json line leaves every data line intact and only the
+	// wrapper gone. Scanning the whole note recovers them — the preamble and
+	// any prose simply fail to parse, same as any other unusable line.
+	//
+	// Those failures are NOT counted as dropped, though: outside a fence there
+	// is no way to tell a mangled data line from a sentence that was never data,
+	// and reporting "37 lines could not be salvaged" for a note holding one
+	// paragraph would be a lie about what was lost.
+	if (openLine === -1) return { lines, fenced: false };
+
+	let closeLine = -1;
+	for (let i = openLine + 1; i < lines.length; i++) {
+		if (lines[i]?.trimEnd() === FENCE_CLOSE) {
+			closeLine = i;
+			break;
+		}
+	}
+	const end = closeLine === -1 ? lines.length : closeLine;
+	return { lines: lines.slice(openLine + 1, end), fenced: true };
+}
+
+/**
+ * Parses one salvage candidate line — a single `"path": ["a", "b"]` pair,
+ * optionally trailing-comma-terminated the way `buildBlockBody` writes every
+ * line but the last. Wrapping in `{`/`}` and handing the result to
+ * `JSON.parse` reuses the platform's own JSON grammar for everything inside
+ * the line (quoting, escaping, unicode) rather than re-implementing it, while
+ * still keeping each line an independent unit of success or failure — the
+ * entire point of `salvageIndex`. Returns `null` for anything that isn't
+ * parseable JSON, or that parses to something other than a single `string ->
+ * array of strings` pair (wrong arity, a non-array value, a non-string
+ * element) — same shape `parseIndex` requires of a whole object, applied
+ * here to one line.
+ */
+function parseSalvageLine(trimmedLine: string): readonly [string, readonly string[]] | null {
+	const withoutTrailingComma = trimmedLine.endsWith(',') ? trimmedLine.slice(0, -1) : trimmedLine;
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(`{${withoutTrailingComma}}`);
+	} catch {
+		return null;
+	}
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+	const obj = parsed as Record<string, unknown>;
+	const keys = Object.keys(obj);
+	if (keys.length !== 1) return null;
+
+	const key = keys[0];
+	if (key === undefined) return null;
+	const value = obj[key];
+	if (!Array.isArray(value) || !value.every((v): v is string => typeof v === 'string')) return null;
+
+	return [key, value];
+}
+
+/**
+ * Recovers as much of `noteText`'s json block as it can, one line at a
+ * time, instead of parsing the block as a whole the way `parseIndex` does —
+ * the whole reason this exists is that a single bad line (a git conflict
+ * marker, a truncated final line, one hand-edit gone wrong) must not cost
+ * every *other* line, which whole-block `JSON.parse` would.
+ *
+ * Lines are processed top to bottom and later duplicate keys win over
+ * earlier ones — the same "last write wins" semantics `JSON.parse` itself
+ * has for a literal object with a repeated key — so of two conflicting git
+ * versions of the same folder's line, whichever sorts later in the file
+ * (both are kept if their keys differ, which is the common case: per-line
+ * JSON is exactly what lets a three-way merge resolve most folders without
+ * conflict at all) is the one `salvageIndex` keeps.
+ *
+ * The `{` and `}` structural lines, and blank lines, are recognized and
+ * skipped without being counted as dropped — they carry no data to lose.
+ * Every other line that doesn't parse to a valid pair (a conflict marker, a
+ * truncated fragment, a value that isn't an array of strings, ...) is
+ * dropped and counted.
+ *
+ * Never throws. If the json block cannot even be located, returns an empty
+ * index and zero dropped lines — there is nothing to read, so nothing was
+ * lost by this function specifically (whatever's missing was already
+ * missing before it ran).
+ */
+export function salvageIndex(noteText: string): SalvageResult {
+	const { lines, fenced } = linesForSalvage(noteText);
+
+	const index = new Map<string, readonly string[]>();
+	let droppedLines = 0;
+
+	for (const rawLine of lines) {
+		const trimmed = rawLine.trim();
+		if (trimmed === '' || trimmed === '{' || trimmed === '}') continue;
+
+		const pair = parseSalvageLine(trimmed);
+		if (pair === null) {
+			if (fenced) droppedLines++;
+			continue;
+		}
+		index.set(pair[0], pair[1]);
+	}
+
+	return { index, droppedLines };
+}
+
+/**
+ * Merges several indexes into one, per-key, by precedence: for each folder
+ * key present in any source, the value comes from the *earliest* source in
+ * `sources` that has that key — later sources in the array only fill in keys
+ * none of the earlier ones had. No source overrides a key an
+ * earlier-precedence source still holds, which is what makes this a union
+ * rather than a choice between sources: nothing already recovered is ever
+ * displaced by a lower-precedence value for the same key.
+ *
+ * Implemented by writing lowest precedence first (`sources` reversed) so
+ * each higher-precedence source's `Map.set` naturally overwrites what a
+ * lower one wrote for the same key, and simply doesn't touch keys a lower
+ * source didn't have.
+ */
+export function mergeIndexesByPrecedence(sources: readonly OrderIndex[]): OrderIndex {
+	const merged = new Map<string, readonly string[]>();
+	for (const source of [...sources].reverse()) {
+		for (const [key, value] of source) {
+			merged.set(key, value);
+		}
+	}
+	return merged;
+}
+
+export interface RecoveryResult {
+	readonly index: OrderIndex;
+	/** From `salvageIndex`'s pass over `unreadableText` — see `SalvageResult`. */
+	readonly droppedLines: number;
+}
+
+/**
+ * Builds the index `IndexFileStore` heals with (M10e), as a union of three
+ * sources rather than a choice between them, in this precedence:
+ *
+ * 1. `salvageIndex(unreadableText)` — what the broken note's text actually
+ *    holds right now. Highest precedence: it's the newest state, and may
+ *    hold something no other source does (another device's edit that landed
+ *    after the last successful parse).
+ * 2. `memoryIndex` — the last successfully parsed state plus every mutation
+ *    made since, filling in keys salvage lost entirely (not merely garbled,
+ *    but a line the corruption ate outright — a truncated file, say).
+ * 3. `backupIndex` — the last `data.json` backup (see `indexFile.ts`),
+ *    filling in whatever both of the above are still missing.
+ *
+ * Never destroys anything: it can only add keys none of the higher-
+ * precedence sources had, never remove or override one. Deciding whether the
+ * result is *usable* (non-empty) is the caller's job — see the module doc
+ * comment in `indexFile.ts` for why an empty result must never be written.
+ */
+export function recoverIndex(unreadableText: string, memoryIndex: OrderIndex, backupIndex: OrderIndex): RecoveryResult {
+	const salvage = salvageIndex(unreadableText);
+	const index = mergeIndexesByPrecedence([salvage.index, memoryIndex, backupIndex]);
+	return { index, droppedLines: salvage.droppedLines };
+}
+
+// ---------------------------------------------------------------------------
 // Lookups
 // ---------------------------------------------------------------------------
 
