@@ -11,56 +11,36 @@ example) would drop.
 > vault, so it syncs with your notes, diffs in version control, and can be
 > read and edited by hand. See [below](#how-the-order-is-stored).
 
-## What it does
+## Four ways to reorder
 
-Right-click a folder and choose **Set explorer order** to get a dialog
-listing its direct children; drag them into the order you want and **Save**.
-The order is recorded in the plugin's order note. **Clear explorer order**,
-in the same menu, removes it again — it only appears when that folder
-actually has an order to remove.
+All four write to the same place, so nothing stops you from mixing them: drag
+a row into place today, nudge it with a hotkey tomorrow.
+
+### Drag a row in the file explorer
+
+Drag a row onto the **top or bottom edge** of another row. A line shows where
+the item will land, and dropping there saves that order. Dropping onto the
+**middle** of a folder row still does what it always has — moves the item into
+that folder — so nothing you already do with drag-and-drop changes.
+
+Dropping onto an edge inside a different folder does both at once: the item
+moves there, and it lands in that position rather than at the end. Holding a
+drag near the top or bottom of the list scrolls it, faster the closer to the
+edge you get, so a long move doesn't have to be done in stages.
+
+![Dragging a note in the file explorer: a line marks the edge it will land on, and dropping it inside a different folder both moves it there and places it at that spot rather than at the end](docs/images/tree-drag.gif)
+
+### Arrange a whole folder in one dialog
+
+Right-click a folder and choose **Set explorer order** to get a dialog listing
+its direct children; drag them into the order you want and **Save**. **Clear
+explorer order**, in the same menu, removes it again — it only appears when
+that folder actually has an order to remove.
 
 For the vault root, right-click empty space below the last item in the file
 explorer. There are also **Set explorer order for vault root** and **Clear
 explorer order for vault root** commands, for binding a hotkey or for a
 layout with no empty space left to click.
-
-To reorder without any menu, drag a row in the file explorer onto the top or
-bottom edge of another row. A line shows where the item will land, and
-dropping there saves that order. Dropping onto the middle of a folder row
-still does what it always has — moves the item into that folder — so nothing
-you already do with drag-and-drop changes. Dropping onto an edge inside a
-different folder does both at once: the item moves there, and it lands in
-that position rather than at the end.
-
-![Dragging a note in the file explorer: a line marks the edge it will land on, and dropping it inside a different folder both moves it there and places it at that spot rather than at the end](docs/images/tree-drag.gif)
-
-To nudge a single item from the keyboard, bind a hotkey to **Move up**,
-**Move down**, **Move to top** or **Move to bottom**. Those commands act on
-the note you currently have open, so you can reorder it in the sidebar
-without leaving the editor. The same four can also appear in the file
-explorer's right-click menu; that is off by default to keep the menu short,
-and **Show move actions in the file explorer menu** turns it on. Only the
-ones that would actually do something appear, so an item already at the top
-offers two rather than four. Moving an item in a folder you have never
-ordered simply records the order you can already see, with that one item
-moved.
-
-An order applies to **one folder only**; it does not cascade. Ordering
-`Projects` rearranges the items directly inside it, while `Projects/Client A`
-keeps sorting as it did until you give that folder its own order. There is
-nothing to cascade — a manual order is a list of specific names, and those
-names don't exist in the folders below.
-
-So arranging a whole tree means visiting each folder in turn, which is why
-the dialog lets you walk the tree without closing it. Every folder row has a
-**›** button that opens that folder, and each level of the path at the top is
-clickable, so getting from four levels deep back to the vault root is one
-click rather than four. Nothing is saved behind your back: if you have
-dragged rows, the control you are about to click says **Save and open "…"**
-and does exactly that; if you have not touched anything, opening a folder
-writes nothing at all.
-
-![Opening a subfolder from inside the dialog: the path at the top gains a level, and the folder's own contents are listed ready to arrange](docs/images/subfolders.gif)
 
 The dialog works on mobile as well as desktop — drag a row by its grip
 handle, using a long press on touch. Dragging is not the only way to move a
@@ -68,11 +48,51 @@ row: each one has buttons that send it straight to the top or bottom, and on
 desktop `Alt`+`↑`/`Alt`+`↓` nudge the focused row a step at a time while
 `Alt`+`Shift`+`↑`/`Alt`+`Shift`+`↓` send it to either end.
 
-Renaming an item keeps its position, and deleting it — or moving it out of
-the folder — drops it from the order. Moving an item *into* a folder does not
-insert it into that folder's order: there is no way to know where you would
-want it, so it joins everything else the order doesn't mention, at the
-end.
+Because an order covers one folder at a time (see below), arranging a whole
+tree means visiting each folder in turn — so the dialog lets you walk the tree
+without closing it. Every folder row has a **›** button that opens that
+folder, and each level of the path at the top is clickable, so getting from
+four levels deep back to the vault root is one click rather than four. Nothing
+is saved behind your back: if you have dragged rows, the control you are about
+to click says **Save and open "…"** and does exactly that; if you have not
+touched anything, opening a folder writes nothing at all.
+
+![Opening a subfolder from inside the dialog: the path at the top gains a level, and the folder's own contents are listed ready to arrange](docs/images/subfolders.gif)
+
+### Nudge one item from the right-click menu
+
+**Move up**, **Move down**, **Move to top** and **Move to bottom** work on any
+file or folder. Only the ones that would actually do something are offered, so
+an item already at the top gets two entries rather than four.
+
+These are **off by default**: four extra items is a lot to add to a menu you
+open constantly, now that dragging a row does the same job without any menu.
+**Show move actions in the file explorer menu** turns them on.
+
+### Nudge one item with a hotkey
+
+The same four are commands, so they can be bound to keys whether or not the
+menu shows them. They act on the note you currently have open rather than on
+whatever the file explorer has selected, so a hotkey reorders the note you are
+reading without your hands leaving the keyboard.
+
+## What an order covers
+
+An order applies to **one folder only**; it does not cascade. Ordering
+`Projects` rearranges the items directly inside it, while `Projects/Client A`
+keeps sorting as it did until you give that folder its own order. There is
+nothing to cascade — a manual order is a list of specific names, and those
+names don't exist in the folders below.
+
+Moving an item in a folder you have never ordered simply records the order you
+can already see, with that one item moved. You never have to arrange a whole
+folder before you can nudge one thing in it.
+
+Renaming an item keeps its position, and deleting it — or moving it out of the
+folder — drops it from the order. Moving an item *into* a folder places it
+where you dropped it if you dropped it on an edge; any other kind of move has
+nothing to say about where you wanted it, so it joins everything else the
+order doesn't mention, at the end.
 
 ## How it renders
 
