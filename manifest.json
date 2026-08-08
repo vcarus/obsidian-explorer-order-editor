@@ -3,7 +3,7 @@
 	"name": "Explorer Order Editor",
 	"version": "1.2.0",
 	"minAppVersion": "1.13.0",
-	"description": "Drag folders and notes into a manual order for the file explorer, stored as plain text inside your vault.",
+	"description": "Drag folders and notes into a manual order, in the file explorer itself or in a dialog. Stored as plain text inside your vault.",
 	"author": "vcarus",
 	"authorUrl": "https://github.com/vcarus",
 	"isDesktopOnly": false
