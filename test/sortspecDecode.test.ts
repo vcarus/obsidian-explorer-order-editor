@@ -1,15 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { decodeEntryLine, parseSortingSpec, readFolderOrder } from '../src/sortspec';
+import { parseSortingSpec, readFolderOrder } from '../src/sortspec';
 import type { Entry } from '../src/types';
 
 const file = (name: string): Entry => ({ name, kind: 'file' });
 const folder = (name: string): Entry => ({ name, kind: 'folder' });
 
+/**
+ * Decodes a single section-body line the same way the retired standalone
+ * `decodeEntryLine` used to, but through `readFolderOrder` — its behaviour's
+ * real, still-live entry point (both share the same underlying
+ * `parseEntryLine` classification). Wraps `line` as the sole body line of a
+ * one-target section and returns whatever `readFolderOrder` decoded it as,
+ * or `undefined` if the line contributed no entry (blank, comment,
+ * instruction, reserved token, wildcard, ...).
+ */
+function decode(line: string, siblings: readonly Entry[] = []): Entry | undefined {
+	const spec = parseSortingSpec(`target-folder: .\n${line}`, '/');
+	return readFolderOrder(spec, '.', siblings)?.[0];
+}
+
 // ---------------------------------------------------------------------------
-// decodeEntryLine: everything that is NOT a plain item name decodes to null
+// decode (via readFolderOrder): everything that is NOT a plain item name
+// contributes no entry
 // ---------------------------------------------------------------------------
 
-describe('decodeEntryLine: not a plain item name -> null', () => {
+describe('readFolderOrder: a body line that is not a plain item name contributes nothing', () => {
 	const nullCases: readonly [string, string][] = [
 		['blank', ''],
 		['whitespace only', '   '],
@@ -40,32 +55,32 @@ describe('decodeEntryLine: not a plain item name -> null', () => {
 	];
 
 	it.each(nullCases)('%s: %j', (_label, line) => {
-		expect(decodeEntryLine(line)).toBeNull();
+		expect(decode(line)).toBeUndefined();
 	});
 });
 
-describe('decodeEntryLine: type-prefixed names', () => {
+describe('readFolderOrder: type-prefixed names', () => {
 	it('/folders <name> -> folder', () => {
-		expect(decodeEntryLine('/folders Notes')).toEqual({ name: 'Notes', kind: 'folder' });
+		expect(decode('/folders Notes')).toEqual({ name: 'Notes', kind: 'folder' });
 	});
 	it('/ <name> -> folder (short alias)', () => {
-		expect(decodeEntryLine('/ Notes')).toEqual({ name: 'Notes', kind: 'folder' });
+		expect(decode('/ Notes')).toEqual({ name: 'Notes', kind: 'folder' });
 	});
 	it('/:files <name> -> file', () => {
-		expect(decodeEntryLine('/:files Notes')).toEqual({ name: 'Notes', kind: 'file' });
+		expect(decode('/:files Notes')).toEqual({ name: 'Notes', kind: 'file' });
 	});
 	it('/: <name> -> file (short alias)', () => {
-		expect(decodeEntryLine('/: Notes')).toEqual({ name: 'Notes', kind: 'file' });
+		expect(decode('/: Notes')).toEqual({ name: 'Notes', kind: 'file' });
 	});
 	it('strips exactly one prefix layer, even if the remainder looks like another token', () => {
-		expect(decodeEntryLine('/folders /folders')).toEqual({ name: '/folders', kind: 'folder' });
-		expect(decodeEntryLine('/:files target-folder: x')).toEqual({ name: 'target-folder: x', kind: 'file' });
+		expect(decode('/folders /folders')).toEqual({ name: '/folders', kind: 'folder' });
+		expect(decode('/:files target-folder: x')).toEqual({ name: 'target-folder: x', kind: 'file' });
 	});
 });
 
-describe('decodeEntryLine: bare unprefixed name defaults to file', () => {
-	it('an ordinary bare name', () => {
-		expect(decodeEntryLine('Meeting notes')).toEqual({ name: 'Meeting notes', kind: 'file' });
+describe('readFolderOrder: bare unprefixed name defaults to file', () => {
+	it('an ordinary bare name, no sibling context', () => {
+		expect(decode('Meeting notes')).toEqual({ name: 'Meeting notes', kind: 'file' });
 	});
 });
 

@@ -119,6 +119,40 @@ sees them.
   search, the quick switcher and the graph still show it. Turn this off to see
   it in place.
 
+Four more rows appear only when there is something for them to do, and are
+absent otherwise:
+
+- **Repair the order note** — shown when the note cannot be read. See below.
+- **Delete the kept copies of unreadable order notes** — shown when a repair
+  has left copies behind.
+- **Remove orders for missing folders** — shown when the note holds an order
+  for a folder that is no longer in the vault. These are never removed
+  automatically: a folder missing at startup is as likely to be sync lag as a
+  real deletion.
+- **Import orders from sortspec.md files** and **Delete imported sortspec.md
+  files** — shown only while a vault still holds orders from a version before
+  1.0.
+
+## If the order note can't be read
+
+A bad hand edit or a sync conflict can leave the note unparseable. The plugin
+says so and stops writing, but it does not touch the file: editing it by hand
+passes through invalid JSON on every autosave, and healing at that moment
+would overwrite what you were typing.
+
+The next time you actually ask for something — saving an order, or the
+**Repair the order note** row — it recovers. The unreadable text is copied to
+a note beside it first, so nothing is ever destroyed to make room for the
+repair. What gets rebuilt is the union of three sources: whatever can still be
+read from the broken note line by line, whatever the plugin has in memory, and
+a backup it keeps in its own plugin data. Because the format is one folder per
+line, a single mangled line costs one folder rather than the file, and git
+conflict markers leave both sides' folders intact.
+
+If none of the three yields anything, the note is left exactly as it is. The
+one thing that never happens is a repair that replaces your only copy with an
+empty one.
+
 ## Known limitations
 
 - An order is keyed by folder path, so a folder renamed or moved **while this
@@ -132,15 +166,6 @@ sees them.
   per-folder layout could not. The one-line-per-folder format is what keeps a
   git merge resolving cleanly; Obsidian Sync will leave a conflict copy.
 - There is no multi-select drag; reordering is one row at a time.
-- The order the dialog suggests for a folder with no saved order — folders
-  first, then files, each by name with digit runs compared as numbers —
-  approximates the file explorer rather than matching it. The dialog reads the
-  folder from the vault rather than from the explorer, so if you've set the
-  explorer to anything other than name A→Z, the dialog's starting order will
-  differ from what you see in the tree. It's a starting point to drag from;
-  once saved, the order is explicit and identical everywhere. (The rendered
-  result does follow your sort setting for anything you didn't place by hand —
-  this is only about the dialog's initial suggestion.)
 
 ## Installation
 

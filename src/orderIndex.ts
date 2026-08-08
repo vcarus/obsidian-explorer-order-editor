@@ -384,8 +384,13 @@ export function salvageIndex(noteText: string): SalvageResult {
  * each higher-precedence source's `Map.set` naturally overwrites what a
  * lower one wrote for the same key, and simply doesn't touch keys a lower
  * source didn't have.
+ *
+ * Not exported: `recoverIndex` below is its only caller — nothing else in
+ * `src/` needs an arbitrary-length precedence merge, and `recoverIndex`'s own
+ * fixed three-source shape (salvage/memory/backup) is what every other
+ * module actually wants.
  */
-export function mergeIndexesByPrecedence(sources: readonly OrderIndex[]): OrderIndex {
+function mergeIndexesByPrecedence(sources: readonly OrderIndex[]): OrderIndex {
 	const merged = new Map<string, readonly string[]>();
 	for (const source of [...sources].reverse()) {
 		for (const [key, value] of source) {
@@ -424,14 +429,6 @@ export function recoverIndex(unreadableText: string, memoryIndex: OrderIndex, ba
 	const salvage = salvageIndex(unreadableText);
 	const index = mergeIndexesByPrecedence([salvage.index, memoryIndex, backupIndex]);
 	return { index, droppedLines: salvage.droppedLines };
-}
-
-// ---------------------------------------------------------------------------
-// Lookups
-// ---------------------------------------------------------------------------
-
-export function getOrder(index: OrderIndex, folderPath: string): readonly string[] | undefined {
-	return index.get(folderPath);
 }
 
 // ---------------------------------------------------------------------------

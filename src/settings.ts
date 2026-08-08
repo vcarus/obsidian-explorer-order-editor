@@ -12,7 +12,8 @@
  */
 import { App, normalizePath, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
 import { ConfirmModal } from './ConfirmModal';
-import { requestFileExplorerResort, type IndexFileStore } from './indexFile';
+import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
+import { pruneMissing } from './orderIndex';
 import { deleteImportedSortspecFiles, importOrdersFromSortspec } from './sortspecMigration';
 import { isQuarantinePath } from './quarantine';
 import { SORTSPEC_FILENAME } from './sortspecFile';
@@ -116,6 +117,23 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				disabled: () => this.busy,
 				action: () => void this.runDeleteQuarantines(),
 			},
+			// Manual escape hatch for `pruneMissing` (`orderIndex.ts`), which
+			// nothing else ever calls: a key whose folder is missing at startup
+			// is never pruned automatically, since that could just as easily be
+			// sync lag or a rename made while the plugin was off, and pruning it
+			// behind the user's back would be indistinguishable from silently
+			// losing an order. This row is the only place a stale key can ever
+			// be removed, so it stays visible for as long as one exists rather
+			// than being a one-time migration control.
+			{
+				name: 'Remove orders for missing folders',
+				desc:
+					'A stale entry is a saved order for a folder that is no longer in the vault — usually because it was deleted or renamed while this plugin was not running. ' +
+					'This removes those entries from the order note. Folders that still exist are never affected.',
+				visible: () => this.staleKeys().length > 0,
+				disabled: () => this.busy,
+				action: () => void this.runPruneMissing(),
+			},
 			// Migration, for vaults carrying orders from a version before 1.0.
 			// `visible` is re-evaluated on every render, so both rows are
 			// absent entirely in a vault that has no sortspec.md — which is
@@ -155,8 +173,9 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	}
 
 	/**
-	 * Guards both migration rows while either is running: they walk the whole
-	 * vault, and two overlapping passes would race each other's writes.
+	 * Guards every action row on this tab while any one of them is running:
+	 * several walk the whole vault, and two overlapping passes would race
+	 * each other's writes (to the vault, or to the order note itself).
 	 */
 	private busy = false;
 
@@ -164,6 +183,30 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	private quarantineFiles(): readonly TFile[] {
 		const notePath = normalizePath(this.plugin.settings.indexPath);
 		return this.app.vault.getFiles().filter((file) => isQuarantinePath(notePath, file.path));
+	}
+
+	/**
+	 * Every folder currently in the vault, keyed exactly the way the index
+	 * keys its own entries — via `folderIndexKey`, not raw `TFolder.path` —
+	 * so this set and the index can never disagree about what the vault root
+	 * is called. `getAllFolders(true)` includes the root itself, which is why
+	 * this doesn't also need to special-case it the way `folderIndexKey`'s own
+	 * callers elsewhere do.
+	 */
+	private existingFolderKeys(): ReadonlySet<string> {
+		return new Set(this.app.vault.getAllFolders(true).map((folder) => folderIndexKey(folder)));
+	}
+
+	/**
+	 * Index keys with no corresponding folder in the vault right now — see
+	 * "Remove orders for missing folders" below. Recomputed on each call,
+	 * same as `hasSortspecFiles`/`quarantineFiles`: cheap enough to run on
+	 * every settings render, and always current with no cached flag to go
+	 * stale after a prune removes the last one.
+	 */
+	private staleKeys(): readonly string[] {
+		const existing = this.existingFolderKeys();
+		return [...this.plugin.store.keys()].filter((key) => !existing.has(key));
 	}
 
 	private async runDeleteQuarantines(): Promise<void> {
@@ -194,6 +237,56 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				}
 			}
 			new Notice(failed > 0 ? `Deleted ${deleted}. ${failed} could not be deleted — see the console.` : `Deleted ${deleted}.`);
+		} finally {
+			this.busy = false;
+			this.update();
+		}
+	}
+
+	/**
+	 * "Remove orders for missing folders" — the manual escape hatch for
+	 * `pruneMissing` (`orderIndex.ts`), which nothing else in the plugin ever
+	 * calls (see its doc comment: pruning automatically at startup risks
+	 * discarding an order over sync lag or an offline rename, not an actual
+	 * deletion). `updateOrRepair`, not `update`: a broken order note gets the
+	 * same chance to heal here as saving or clearing gives it, same as
+	 * `main.ts`'s `clearOrderFor`, which this otherwise mirrors — a single
+	 * mutation, counted from the size difference `pruneMissing` itself
+	 * produces rather than from the pre-confirmation snapshot (which could in
+	 * principle be stale by the time this actually runs).
+	 */
+	private async runPruneMissing(): Promise<void> {
+		const stale = this.staleKeys();
+		if (stale.length === 0) return;
+
+		const confirmed = await ConfirmModal.ask(
+			this.app,
+			`Remove ${stale.length} stale ${stale.length === 1 ? 'entry' : 'entries'}?`,
+			'A stale entry is a saved order for a folder that is no longer in the vault — usually because it was deleted or renamed while this plugin was not running. ' +
+				'Folders that still exist are never affected.',
+			'Remove',
+		);
+		if (!confirmed) return;
+
+		this.busy = true;
+		this.update();
+		try {
+			const existing = this.existingFolderKeys();
+			let removed = 0;
+			const ok = await this.plugin.store.updateOrRepair((index) => {
+				const pruned = pruneMissing(index, existing);
+				removed = index.size - pruned.size;
+				return pruned;
+			});
+
+			if (!ok) {
+				new Notice(
+					`Could not remove stale entries: the order note ${this.plugin.store.unusableReason() ?? 'could not be repaired'}. ` +
+						'Use "Repair the order note" above, or check the console for details.',
+				);
+				return;
+			}
+			new Notice(`Removed ${removed} stale ${removed === 1 ? 'entry' : 'entries'}.`);
 		} finally {
 			this.busy = false;
 			this.update();

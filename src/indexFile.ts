@@ -221,6 +221,17 @@ export class IndexFileStore {
 		return this.index.get(folderPath);
 	}
 
+	/**
+	 * Every folder key the index currently holds an order for. Synchronous
+	 * and cheap, like `get()` — used by the settings tab's "Remove orders for
+	 * missing folders" row to find which keys have no corresponding folder in
+	 * the vault any more (`pruneMissing`, `orderIndex.ts`); `get()`'s
+	 * per-key lookup has no way to enumerate what's stored.
+	 */
+	keys(): ReadonlySet<string> {
+		return new Set(this.index.keys());
+	}
+
 	isUsable(): boolean {
 		return this.usable;
 	}

@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-	getOrder,
-	mergeIndexesByPrecedence,
 	mergeOrder,
 	parseIndex,
 	pruneMissing,
@@ -229,13 +227,13 @@ describe('setOrder', () => {
 	it('an empty names array removes the key instead of storing []', () => {
 		const i = setOrder(empty, 'A', ['x.md']);
 		const cleared = setOrder(i, 'A', []);
-		expect(getOrder(cleared, 'A')).toBeUndefined();
+		expect(cleared.get('A')).toBeUndefined();
 		expectIndexEqual(cleared, empty);
 	});
 
 	it('de-duplicates names, keeping the first occurrence', () => {
 		const i = setOrder(empty, 'A', ['x.md', 'y.md', 'x.md', 'z.md', 'y.md']);
-		expect(getOrder(i, 'A')).toEqual(['x.md', 'y.md', 'z.md']);
+		expect(i.get('A')).toEqual(['x.md', 'y.md', 'z.md']);
 	});
 
 	it('does not mutate its argument', () => {
@@ -249,7 +247,7 @@ describe('setOrder', () => {
 	it('overwrites an existing order for the same folder', () => {
 		const i = setOrder(empty, 'A', ['x.md']);
 		const j = setOrder(i, 'A', ['y.md', 'z.md']);
-		expect(getOrder(j, 'A')).toEqual(['y.md', 'z.md']);
+		expect(j.get('A')).toEqual(['y.md', 'z.md']);
 	});
 });
 
@@ -275,8 +273,8 @@ describe('renameFolderPath', () => {
 	it('remaps the key itself', () => {
 		const i = buildIndex([['Projects', ['a.md']]]);
 		const renamed = renameFolderPath(i, 'Projects', 'Work');
-		expect(getOrder(renamed, 'Projects')).toBeUndefined();
-		expect(getOrder(renamed, 'Work')).toEqual(['a.md']);
+		expect(renamed.get('Projects')).toBeUndefined();
+		expect(renamed.get('Work')).toEqual(['a.md']);
 	});
 
 	it('remaps every descendant key', () => {
@@ -361,7 +359,7 @@ describe('renameEntry', () => {
 	it('preserves position: swaps the name in place without disturbing order', () => {
 		const i = setOrder(empty, 'A', ['x.md', 'y.md', 'z.md']);
 		const renamed = renameEntry(i, 'A', 'y.md', 'y2.md');
-		expect(getOrder(renamed, 'A')).toEqual(['x.md', 'y2.md', 'z.md']);
+		expect(renamed.get('A')).toEqual(['x.md', 'y2.md', 'z.md']);
 	});
 
 	it('returns the index unchanged (same reference) for an unknown name', () => {
@@ -387,7 +385,7 @@ describe('renameEntry', () => {
 		// own position; the stale occurrence is what goes.
 		const i = setOrder(empty, 'A', ['b.md', 'x.md', 'a.md']);
 		const renamed = renameEntry(i, 'A', 'a.md', 'b.md');
-		expect(getOrder(renamed, 'A')).toEqual(['x.md', 'b.md']);
+		expect(renamed.get('A')).toEqual(['x.md', 'b.md']);
 	});
 });
 
@@ -399,13 +397,13 @@ describe('removeEntry', () => {
 	it('drops the named entry, keeping the rest in order', () => {
 		const i = setOrder(empty, 'A', ['x.md', 'y.md', 'z.md']);
 		const removed = removeEntry(i, 'A', 'y.md');
-		expect(getOrder(removed, 'A')).toEqual(['x.md', 'z.md']);
+		expect(removed.get('A')).toEqual(['x.md', 'z.md']);
 	});
 
 	it('removes the key entirely when that was the only entry', () => {
 		const i = setOrder(empty, 'A', ['x.md']);
 		const removed = removeEntry(i, 'A', 'x.md');
-		expect(getOrder(removed, 'A')).toBeUndefined();
+		expect(removed.get('A')).toBeUndefined();
 		expectIndexEqual(removed, empty);
 	});
 
@@ -508,7 +506,7 @@ describe('parseIndex: never throws, never falls back to an empty index on bad in
 		const text = ['```json', '{"A": []}', '```'].join('\n');
 		const result = parseIndex(text);
 		expect(result.status).toBe('ok');
-		if (result.status === 'ok') expect(getOrder(result.index, 'A')).toEqual([]);
+		if (result.status === 'ok') expect(result.index.get('A')).toEqual([]);
 	});
 });
 
@@ -534,7 +532,7 @@ describe('names needing JSON escaping survive a round trip', () => {
 		const result = parseIndex(serialized);
 		expect(result.status).toBe('ok');
 		if (result.status === 'ok') {
-			expect(getOrder(result.index, trickyFolder)).toEqual(trickyNames);
+			expect(result.index.get(trickyFolder)).toEqual(trickyNames);
 		}
 	});
 });
@@ -662,7 +660,7 @@ describe('salvageIndex', () => {
 	it('later duplicate keys win over earlier ones, matching JSON.parse semantics', () => {
 		const text = ['```json', '{', '  "A": ["first.md"],', '  "A": ["second.md"]', '}', '```'].join('\n');
 		const result = salvageIndex(text);
-		expect(getOrder(result.index, 'A')).toEqual(['second.md']);
+		expect(result.index.get('A')).toEqual(['second.md']);
 	});
 
 	it('a truncated final line is dropped and counted; earlier good lines survive', () => {
@@ -717,63 +715,37 @@ describe('salvageIndex without a fence', () => {
 	});
 });
 
-
 // ---------------------------------------------------------------------------
-// mergeIndexesByPrecedence / recoverIndex (M10e)
+// recoverIndex (M10e) — also the only remaining coverage of the internal
+// `mergeIndexesByPrecedence` helper it's built on: that function is no
+// longer exported (recoverIndex is its only caller in src/, always with the
+// same fixed three-source [salvage, memory, backup] shape), so the general
+// arbitrary-source-array properties it used to have their own describe
+// block for are now pinned down here, through recoverIndex itself.
 // ---------------------------------------------------------------------------
 
-describe('mergeIndexesByPrecedence', () => {
-	it('an empty sources array yields an empty index', () => {
-		expectIndexEqual(mergeIndexesByPrecedence([]), empty);
-	});
-
-	it('a single source is returned as-is (its keys, unchanged)', () => {
-		const i = buildIndex([['A', ['x.md']]]);
-		expectIndexEqual(mergeIndexesByPrecedence([i]), i);
-	});
-
-	it('the earliest source in the array wins for a key present in more than one', () => {
-		const first = buildIndex([['A', ['from-first.md']]]);
-		const second = buildIndex([['A', ['from-second.md']]]);
-		const third = buildIndex([['A', ['from-third.md']]]);
-		expect(getOrder(mergeIndexesByPrecedence([first, second, third]), 'A')).toEqual(['from-first.md']);
-	});
-
-	it('is a union: keys unique to a lower-precedence source are still present', () => {
-		const highest = buildIndex([['A', ['a.md']]]);
-		const middle = buildIndex([['B', ['b.md']]]);
-		const lowest = buildIndex([['C', ['c.md']]]);
-		expectIndexEqual(
-			mergeIndexesByPrecedence([highest, middle, lowest]),
-			buildIndex([
-				['A', ['a.md']],
-				['B', ['b.md']],
-				['C', ['c.md']],
-			]),
-		);
-	});
-
+describe('recoverIndex', () => {
 	it('never lets a lower-precedence source override a key a higher one still has, even partially', () => {
-		// The single most likely bug: naively spreading sources in array order
-		// (`{...sources[0], ...sources[1], ...}`) would let the *last* source
-		// win instead of the first. This pins the direction down.
-		const highest = buildIndex([
+		// The single most likely bug in the precedence merge underneath this:
+		// naively spreading sources in order (`{...backup, ...memory, ...salvage}`
+		// or similar) would let the *last*-applied source win instead of the
+		// highest-precedence one actually present. This pins the direction down
+		// with salvage contributing nothing (no fence at all), isolating memory
+		// (higher precedence) against backup (lower).
+		const memory = buildIndex([
 			['A', ['keep-this.md']],
 			['B', ['keep-this-too.md']],
 		]);
-		const lowest = buildIndex([
+		const backup = buildIndex([
 			['A', ['must-not-appear.md']],
 			['B', ['must-not-appear-either.md']],
 			['C', ['this-one-is-fine.md']],
 		]);
-		const merged = mergeIndexesByPrecedence([highest, lowest]);
-		expect(getOrder(merged, 'A')).toEqual(['keep-this.md']);
-		expect(getOrder(merged, 'B')).toEqual(['keep-this-too.md']);
-		expect(getOrder(merged, 'C')).toEqual(['this-one-is-fine.md']);
+		const result = recoverIndex('no fence here', memory, backup);
+		expect(result.index.get('A')).toEqual(['keep-this.md']);
+		expect(result.index.get('B')).toEqual(['keep-this-too.md']);
+		expect(result.index.get('C')).toEqual(['this-one-is-fine.md']);
 	});
-});
-
-describe('recoverIndex', () => {
 	it('unions salvage, memory, and backup, salvage winning conflicts, memory next, backup last', () => {
 		const unreadableText = [
 			'```json',

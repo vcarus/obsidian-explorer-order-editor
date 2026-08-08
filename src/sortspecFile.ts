@@ -40,8 +40,10 @@ const yamlDeps: FrontMatterDeps = { parseYaml };
  * The index note is never offered: it's the file this plugin manages, and
  * listing it invites ordering the thing that describes the order. Leaving it
  * unlisted is harmless — an unlisted entry sorts to the end.
+ *
+ * Not exported: `entriesFor` below is its only caller.
  */
-export function entryForChild(child: TAbstractFile, indexNotePath: string): Entry | null {
+function entryForChild(child: TAbstractFile, indexNotePath: string): Entry | null {
 	if (child instanceof TFolder) {
 		return { name: child.name, kind: 'folder' };
 	}
@@ -80,8 +82,12 @@ export function targetKeyFor(folder: TFolder): string {
 	return '.';
 }
 
-/** The normalized vault path to `folder`'s sortspec.md, whether or not it exists yet. */
-export function sortspecPathFor(folder: TFolder): string {
+/**
+ * The normalized vault path to `folder`'s sortspec.md, whether or not it
+ * exists yet. Not exported: `updateFolderSpec`/`clearFolderOrder` below are
+ * its only callers.
+ */
+function sortspecPathFor(folder: TFolder): string {
 	const path = folder.isRoot() ? SORTSPEC_FILENAME : `${folder.path}/${SORTSPEC_FILENAME}`;
 	return normalizePath(path);
 }

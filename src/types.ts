@@ -43,13 +43,15 @@ export function displayLabel(entry: Entry): string {
  * using numbered names and makes the dialog's suggested order look wrong
  * before the user has touched anything.
  *
- * This can only ever approximate the explorer, and deliberately stops here:
+ * This is not the dialog's usual starting order — it is the *fallback*
+ * `OrderModal` uses when the file explorer itself can't be consulted (no
+ * leaf open, or something unexpected about its internals). The usual path is
+ * `explorerOrderNames` in `explorerSort.ts`, which reads the order straight
+ * out of the file explorer's own `getSortedFolderItems` — through this
+ * plugin's own patch of that method — so it agrees with whatever the tree is
+ * actually showing, sort setting and all, rather than guessing. This
+ * function still only ever approximates that:
  *
- * - There is no public API for the explorer's current visual order, and its
- *   sort setting (name A→Z / Z→A / by modified time) is not readable either,
- *   so a user who picked anything but A→Z sees a dialog that disagrees. The
- *   alternative — reaching into the file explorer view for its `sortOrder` —
- *   is the monkey-patching this plugin exists to avoid.
  * - No locale is passed, so the collation is the runtime's default. Two
  *   devices with different system locales can suggest different orders for
  *   the same CJK names. Pinning a locale would trade that for being wrong

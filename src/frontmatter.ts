@@ -107,7 +107,13 @@ export interface FrontMatterNone {
 
 export type FrontMatterLocation = FrontMatterFound | FrontMatterNone;
 
-export function locateFrontMatter(raw: string): FrontMatterLocation {
+/**
+ * Not exported: every case this distinguishes (`kind: 'none'` for an empty
+ * file, no `---`, or an unclosed opening `---`; `kind: 'found'` otherwise) is
+ * already exercised through `readSortingSpecValue`/`replaceSortingSpecInFile`/
+ * `removeSortingSpecFromFile` below, its only callers.
+ */
+function locateFrontMatter(raw: string): FrontMatterLocation {
 	const bom = raw.startsWith('﻿') ? '﻿' : '';
 	const body = raw.slice(bom.length);
 	const lines = splitPhysicalLines(body);

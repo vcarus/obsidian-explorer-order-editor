@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-	canonicalizeSortingSpec,
-	hasAuthoredSection,
-	normalizeTarget,
-	parseSortingSpec,
-	removeFolderOrder,
-	serializeSortingSpec,
-	specTargets,
-} from '../src/sortspec';
+import { canonicalizeSortingSpec, hasAuthoredSection, normalizeTarget, parseSortingSpec, removeFolderOrder, serializeSortingSpec } from '../src/sortspec';
 
 // ---------------------------------------------------------------------------
 // normalizeTarget / target kinds
@@ -109,36 +101,6 @@ describe('round trip: serialize(parse(x)) === canonicalize(x)', () => {
 
 	it.each(corpus.map((c, i) => [i, c] as const))('corpus[%i]', (_i, source) => {
 		expect(serializeSortingSpec(parseSortingSpec(source, '/'))).toBe(canonicalizeSortingSpec(source));
-	});
-});
-
-// ---------------------------------------------------------------------------
-// specTargets
-// ---------------------------------------------------------------------------
-
-describe('specTargets', () => {
-	it('true when a single-target section resolves to the key', () => {
-		const spec = parseSortingSpec('target-folder: .\nItem', 'Archive');
-		expect(specTargets(spec, 'Archive')).toBe(true);
-	});
-
-	it('true when the key is one of several targets in a multi-target section', () => {
-		const spec = parseSortingSpec('target-folder: Archive\ntarget-folder: Inbox\n// shared\nItem', '/');
-		expect(specTargets(spec, 'Inbox')).toBe(true);
-	});
-
-	it('false when nothing in the spec targets the key', () => {
-		const spec = parseSortingSpec('target-folder: Elsewhere\nItem', '/');
-		expect(specTargets(spec, 'Archive')).toBe(false);
-	});
-
-	it('false for an empty spec', () => {
-		expect(specTargets(parseSortingSpec('', '/'), '/')).toBe(false);
-	});
-
-	it('does not care whether the matching section is authored by us or foreign', () => {
-		const spec = parseSortingSpec('target-folder: .\nHand-written, no marker', 'Notes');
-		expect(specTargets(spec, 'Notes')).toBe(true);
 	});
 });
 

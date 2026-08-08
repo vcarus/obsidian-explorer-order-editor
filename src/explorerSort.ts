@@ -26,7 +26,7 @@
  * private renderer, and always falls back to the explorer's own result on
  * any error.
  */
-import { normalizePath, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
+import { App, normalizePath, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
 import { folderIndexKey, type IndexFileStore } from './indexFile';
 import { mergeOrder } from './orderIndex';
 import { aroundPrototypeMethod } from './patch';
@@ -224,4 +224,43 @@ export function installExplorerSort(host: ExplorerSortHost): void {
 		if (tryInstall()) host.app.workspace.offref(ref);
 	});
 	host.registerEvent(ref);
+}
+
+/**
+ * The order the file explorer is showing for `folder` right now, as plain
+ * child names — for `OrderModal` to seed its rows with, so the dialog opens
+ * agreeing with the tree next to it instead of guessing alphabetically.
+ *
+ * Deliberately goes through `leaf.view.getSortedFolderItems(folder)` itself
+ * — the very method this file patches above — rather than reading the index
+ * or the explorer's sort setting separately: called after the patch is
+ * installed, this returns the stored order for a folder that has one, and
+ * the explorer's own current sort (name/modified/...) for one that doesn't.
+ * Either way it is exactly what the tree is rendering, which is what makes
+ * this correct rather than a second, possibly-diverging guess.
+ *
+ * Returns `null`, never throws, whenever the file explorer can't be
+ * consulted: no file-explorer leaf, a view that isn't (yet) recognizable as
+ * one (`isFileExplorerView`), or a row whose `.file` isn't a `TFile`/
+ * `TFolder` — the same runtime shape guard `buildReplacement` above applies
+ * to the identical rows, reused here rather than re-declared.
+ */
+export function explorerOrderNames(app: App, folder: TFolder): readonly string[] | null {
+	try {
+		const leaf = app.workspace.getLeavesOfType('file-explorer')[0];
+		if (leaf === undefined) return null;
+		if (!isFileExplorerView(leaf.view)) return null;
+
+		const items = leaf.view.getSortedFolderItems(folder);
+		const names: string[] = [];
+		for (const item of items) {
+			const file: unknown = item?.file;
+			if (!(file instanceof TFile) && !(file instanceof TFolder)) return null;
+			names.push(file.name);
+		}
+		return names;
+	} catch (err) {
+		console.error('[explorer-order-editor] failed to read the file explorer\'s current order, falling back', err);
+		return null;
+	}
 }

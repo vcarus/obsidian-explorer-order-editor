@@ -188,18 +188,6 @@ export function serializeSortingSpec(spec: ParsedSpec): string {
 	return lines.join('\n');
 }
 
-/**
- * Whether `spec` has any section — single- or multi-target, ours or
- * someone else's — whose resolved target set includes `key`. Doesn't decode
- * or claim to know "the" order; just answers "does something here talk
- * about this folder at all". Used to detect a second, independent source of
- * truth for the same folder (e.g. a folder note's own `sorting-spec`
- * targeting the folder it lives in) without pretending to resolve it.
- */
-export function specTargets(spec: ParsedSpec, key: string): boolean {
-	return spec.sections.some((section) => section.targets.some((t) => t.resolved === key));
-}
-
 // ---------------------------------------------------------------------------
 // Name index
 //
@@ -214,7 +202,8 @@ export function specTargets(spec: ParsedSpec, key: string): boolean {
 
 export type NameIndex = ReadonlyMap<string, ReadonlySet<EntryKind>>;
 
-export function buildNameIndex(siblings: readonly Entry[]): NameIndex {
+/** Not exported: `readFolderOrder` below is its only caller. */
+function buildNameIndex(siblings: readonly Entry[]): NameIndex {
 	const map = new Map<string, Set<EntryKind>>();
 	for (const sibling of siblings) {
 		const kinds = map.get(sibling.name) ?? new Set<EntryKind>();
@@ -447,20 +436,6 @@ function parseEntryLine(line: string): ParsedEntryLine | null {
 	return { name: trimmed, kind: 'file', explicit: false };
 }
 
-/**
- * Decodes a single line from a section body into an `Entry`, or `null` if
- * the line isn't a plain item name (see `parseEntryLine` for the exact
- * exclusions). Standalone: with no sibling context, a bare unprefixed name
- * always decodes as `kind: 'file'`. `readFolderOrder` shares the same
- * classification internally but can do better by consulting the folder's
- * actual current children.
- */
-export function decodeEntryLine(line: string): Entry | null {
-	const parsed = parseEntryLine(line);
-	if (parsed === null) return null;
-	return { name: parsed.name, kind: parsed.kind };
-}
-
 function soleKind(kinds: ReadonlySet<EntryKind> | undefined): EntryKind | null {
 	if (kinds === undefined || kinds.size !== 1) return null;
 	for (const kind of kinds) return kind;
@@ -476,7 +451,7 @@ function soleKind(kinds: ReadonlySet<EntryKind> | undefined): EntryKind | null {
  * convention this decoder speaks (a `.md` file stripped to its basename,
  * everything else full — see the M10c sortspec.md import, this function's
  * only remaining caller, for how it builds that list and maps the result
- * back to full names). It resolves the one thing `decodeEntryLine` can't on
+ * back to full names). It resolves the one thing `parseEntryLine` can't on
  * its own: a bare, unprefixed line. The old encoder only omitted the type
  * prefix when the name didn't collide with a same-named sibling of the other
  * kind — so if exactly one kind of `siblings` entry has this name, that must

@@ -1,5 +1,6 @@
 import { App, ButtonComponent, Modal, Notice, normalizePath, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
 import Sortable from 'sortablejs';
+import { explorerOrderNames } from './explorerSort';
 import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
 import { mergeOrder, setOrder } from './orderIndex';
@@ -253,20 +254,7 @@ export class OrderModal extends Modal {
 			return;
 		}
 
-		// Restore whatever order is already stored for this folder, merged
-		// against what's actually here now. Without this, reopening the modal
-		// on an already-ordered folder would show alphabetical order and
-		// saving would silently destroy the existing order. `store.get` is a
-		// synchronous in-memory lookup — no read, no staleness to guard
-		// against the way the old (async) `readStoredOrder` needed.
-		const stored = this.store.get(folderIndexKey(this.folder));
-		const siblingByName = new Map(siblings.map((entry) => [entry.name, entry]));
-		const orderedEntries: Entry[] = mergeOrder(
-			stored,
-			siblings.map((entry) => entry.name),
-		)
-			.map((name) => siblingByName.get(name))
-			.filter((entry): entry is Entry => entry !== undefined);
+		const orderedEntries = this.orderedEntriesFor(siblings);
 
 		const rows: OrderRow[] = orderedEntries.map((entry) => ({ entry }));
 
@@ -339,6 +327,65 @@ export class OrderModal extends Modal {
 		// Nothing to drag into an order means nothing to save.
 		this.renderFooter(rows.length > 0);
 		this.finishRender();
+	}
+
+	/**
+	 * The rows this level's `render()` should open with, in the order the
+	 * file explorer is actually showing right now — so the dialog agrees with
+	 * the tree next to it, including for a folder whose sort setting isn't
+	 * A→Z by name, which `fallbackEntryOrder` can only ever guess at.
+	 *
+	 * `explorerOrderNames` goes through our own `getSortedFolderItems` patch,
+	 * so its answer already *is* either this folder's saved order or the
+	 * explorer's own current sort — there is nothing left for this method to
+	 * merge against a separately-read `store.get()`, unlike the fallback path
+	 * below. The index note is never among `siblings` (`entriesFor` excludes
+	 * it), so any name `explorerOrderNames` returns that isn't in
+	 * `siblingByName` — the index note itself, or anything else this dialog
+	 * doesn't know how to order — is simply skipped rather than turned into a
+	 * row.
+	 *
+	 * Falls back to `mergeOrder(store.get(...), siblings)` — today's
+	 * behaviour — whenever the explorer can't be consulted (`null`): a closed
+	 * file explorer, or anything unexpected about its internals, degrades to
+	 * the old approximation rather than leaving the dialog with no order at
+	 * all.
+	 */
+	private orderedEntriesFor(siblings: readonly Entry[]): Entry[] {
+		const siblingByName = new Map(siblings.map((entry) => [entry.name, entry]));
+		const explorerNames = explorerOrderNames(this.app, this.folder);
+
+		if (explorerNames === null) {
+			const stored = this.store.get(folderIndexKey(this.folder));
+			return mergeOrder(
+				stored,
+				siblings.map((entry) => entry.name),
+			)
+				.map((name) => siblingByName.get(name))
+				.filter((entry): entry is Entry => entry !== undefined);
+		}
+
+		const seen = new Set<string>();
+		const ordered: Entry[] = [];
+		for (const name of explorerNames) {
+			const entry = siblingByName.get(name);
+			// Not found for the index note (excluded from `siblings` on
+			// purpose — see the doc comment above) or anything else this
+			// dialog doesn't recognize as an orderable sibling.
+			if (entry === undefined) continue;
+			if (seen.has(name)) continue; // defensive: siblings are already unique by name
+			seen.add(name);
+			ordered.push(entry);
+		}
+		// Anything entriesFor knows about that the explorer didn't return —
+		// should not happen once the explorer's own patch is installed, but a
+		// stale row must still get a position rather than vanish from the
+		// dialog entirely.
+		for (const entry of siblings) {
+			if (seen.has(entry.name)) continue;
+			ordered.push(entry);
+		}
+		return ordered;
 	}
 
 	/**

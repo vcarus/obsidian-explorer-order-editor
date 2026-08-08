@@ -1,51 +1,22 @@
 import { parse as parseYaml } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import {
-	FrontMatterError,
-	locateFrontMatter,
-	readSortingSpecValue,
-	removeSortingSpecFromFile,
-	replaceSortingSpecInFile,
-	type FrontMatterDeps,
-} from '../src/frontmatter';
+import { FrontMatterError, readSortingSpecValue, removeSortingSpecFromFile, replaceSortingSpecInFile, type FrontMatterDeps } from '../src/frontmatter';
 
 const deps: FrontMatterDeps = { parseYaml };
 
 // ---------------------------------------------------------------------------
-// locateFrontMatter
-// ---------------------------------------------------------------------------
-
-describe('locateFrontMatter', () => {
-	it('finds a well-formed block and reports BOM/newline-agnostic positions', () => {
-		const loc = locateFrontMatter('---\nfoo: bar\n---\nbody');
-		expect(loc.kind).toBe('found');
-		if (loc.kind !== 'found') throw new Error('unreachable');
-		expect(loc.openIndex).toBe(0);
-		expect(loc.closeIndex).toBe(2);
-		expect(loc.yamlText).toBe('foo: bar\n');
-	});
-
-	it('treats an empty file as no front matter', () => {
-		expect(locateFrontMatter('').kind).toBe('none');
-	});
-
-	it('treats a plain note with no --- as no front matter', () => {
-		expect(locateFrontMatter('just a note\nsecond line').kind).toBe('none');
-	});
-
-	it('treats an unclosed opening --- as no front matter', () => {
-		expect(locateFrontMatter('---\nfoo: bar\nnever closed').kind).toBe('none');
-	});
-
-	it('strips a leading BOM and reports it separately', () => {
-		const loc = locateFrontMatter('﻿---\nfoo: bar\n---\n');
-		expect(loc.bom).toBe('﻿');
-		expect(loc.kind).toBe('found');
-	});
-});
-
-// ---------------------------------------------------------------------------
 // readSortingSpecValue — semantic view
+//
+// Also the only remaining coverage of the internal `locateFrontMatter`
+// helper these (and `replaceSortingSpecInFile`/`removeSortingSpecFromFile`
+// below) are built on: that function is no longer exported, and every case
+// it distinguishes was already redundant with a test here or below — an
+// empty file, a plain note with no `---`, and an unclosed opening `---` all
+// already had their own `readSortingSpecValue` case (`no-frontmatter`), and
+// a leading BOM being stripped and correctly reproduced is what
+// `replaceSortingSpecInFile`'s "preserves a leading BOM" case (further down)
+// actually verifies — more strongly than checking the parsed position alone
+// would, since it round-trips through a real write.
 // ---------------------------------------------------------------------------
 
 describe('readSortingSpecValue', () => {

@@ -27,36 +27,52 @@ testing.
 ## Source layout
 
 ```
-src/types.ts         Entry / EntryKind — the vocabulary shared by the pure layer and the UI.
-src/sortspec.ts      Pure: parse/serialize/upsert/remove the sorting-spec value, plus name encoding and decoding.
-src/frontmatter.ts   Pure: locating and splicing the sorting-spec key within a file's front matter.
-src/rowMove.ts       Pure: the index arithmetic behind the dialog's move-to-top/bottom buttons and shortcuts.
-src/navigation.ts    Pure: the judgments behind walking the tree in the dialog — whether anything has been
-                     dragged since the level was drawn, and which levels of a deep path stay visible.
-src/sortspecFile.ts  The only module importing `obsidian` for data access: TFolder to entries, reading and
-                     writing sortspec.md, triggering custom-sort.
-src/orderSync.ts     Keeps a saved order in step with the vault's rename and delete events.
+src/types.ts         Entry / EntryKind and the label shown for a row — the vocabulary the pure
+                     layer and the UI share.
+src/orderIndex.ts    Pure: the order index itself. Parse, serialize, mutate, salvage a damaged
+                     note line by line, and merge recovery sources. Zero imports.
+src/quarantine.ts    Pure: naming the copy kept when an unreadable order note is repaired, and
+                     recognising those copies again later.
+src/patch.ts         Pure: monkey-around's patch/remove contract, reimplemented. Removing our
+                     patch must never detach one installed on top of it.
+src/rowMove.ts       Pure: the index arithmetic behind the dialog's move-to-top/bottom buttons
+                     and shortcuts.
+src/navigation.ts    Pure: the judgments behind walking the tree in the dialog.
+src/indexFile.ts     Imports obsidian. The runtime home of the index: loads it once at startup,
+                     serves synchronous lookups, writes on a debounce, repairs when asked.
+src/explorerSort.ts  Imports obsidian. Patches the file explorer's getSortedFolderItems so a
+                     saved order is what the tree renders.
+src/orderSync.ts     Keeps saved orders in step with the vault's rename and delete events.
 src/OrderModal.ts    The drag-and-drop dialog.
-src/settings.ts      The settings tab.
+src/ConfirmModal.ts  A yes/no dialog, used only before something destructive.
+src/settings.ts      The settings tab, including the conditional migration, repair and prune rows.
 src/main.ts          Plugin entry point: commands, the context menu, lifecycle.
+
+src/sortspec.ts      Legacy, read-only. The pre-1.0 sortspec.md format, kept solely so the
+src/frontmatter.ts   import command can read orders written by earlier versions. Nothing writes
+src/sortspecFile.ts  this format any more. To be removed once the migration is retired.
+src/sortspecMigration.ts   The two one-time commands that read the above into the index.
 ```
 
-`types.ts`, `sortspec.ts`, `frontmatter.ts`, `rowMove.ts` and `navigation.ts`
-have no dependency on the `obsidian` package (front matter parsing is
-injected as a parameter), so they're covered by the `vitest` unit tests in
-`test/`; `sortspecFile.ts`, `orderSync.ts`, `OrderModal.ts` and `main.ts` are
-exercised by hand in the test vault. Logic those four need is pushed down
-into the pure modules wherever it can be, precisely so it can be tested — a
-change to any of the four needs a manual pass in the vault, because nothing
-else will catch it.
+Everything without an `obsidian` import is covered by the `vitest` suites in
+`test/`. `indexFile.ts`, `explorerSort.ts`, `orderSync.ts`, `OrderModal.ts`,
+`settings.ts` and `main.ts` are exercised by hand in the test vault, so a
+change to any of them needs a manual pass — nothing else will catch it.
+Logic those need is pushed down into the pure modules wherever it can be,
+precisely so it can be tested.
 
-Writes never go through `app.fileManager.processFrontMatter`: it
-re-serializes the entire YAML block, which can strip comments and hard-wrap
-long lines in ways that would corrupt file names. Instead, writes locate the
-exact line range the `sorting-spec` value occupies and splice in new text
-directly through `Vault.process`, leaving everything else byte-for-byte
-untouched, then re-read and verify the result before treating the write as
-successful.
+The file explorer patch is the one place this plugin reaches for an
+undocumented API, and it is written to fail into the explorer's own ordering
+rather than into a broken tree: the row shape is checked at runtime, and any
+error returns the untouched original result. See the comments in
+`explorerSort.ts` for what happened the one time that shape was assumed
+rather than checked.
+
+Writes never go through `app.fileManager.processFrontMatter`, and never
+compute the new file text in advance: `Vault.process` re-reads the file when
+it runs, which is what makes a write a genuine atomic read-modify-write.
+Before overwriting an order note that cannot be parsed, the unreadable text
+is always copied aside first.
 
 ## Releasing
 
