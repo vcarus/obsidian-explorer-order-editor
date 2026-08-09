@@ -140,8 +140,48 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 					'The order note could not be read. Repairing keeps the unreadable note as a copy beside it, ' +
 					'then rebuilds the note from everything still recoverable: the note itself, what is currently loaded, and the last backup.',
 				visible: () => !this.plugin.store.isUsable(),
-				disabled: () => this.busy,
-				action: () => void this.runRepair(),
+				render: (setting) => {
+					setting.addButton((button) =>
+						button
+							.setButtonText('Repair')
+							.setDisabled(this.busy)
+							.onClick(() => void this.runRepair()),
+					);
+				},
+			},
+			// Ordered by how much they destroy, increasing downward, and the two
+			// that destroy something sit at the bottom. This is not cosmetic: these
+			// rows appear and disappear on their own conditions, so a row that
+			// vanishes when its action succeeds drops whatever follows it straight
+			// under the pointer that just clicked. Repairing the order note is the
+			// case that actually happens — it hides its own row on success and
+			// creates a kept copy in the same moment, which is what makes "Delete
+			// the kept copies" appear. Having the destructive one arrive exactly
+			// where the safe one just was is the wrong place for it. `ConfirmModal`
+			// is still the guarantee (it focuses Cancel, so no stray click or Enter
+			// can destroy anything); this only keeps the trap from being laid.
+			// Manual escape hatch for `pruneMissing` (`orderIndex.ts`), which
+			// nothing else ever calls: a key whose folder is missing at startup
+			// is never pruned automatically, since that could just as easily be
+			// sync lag or a rename made while the plugin was off, and pruning it
+			// behind the user's back would be indistinguishable from silently
+			// losing an order. This row is the only place a stale key can ever
+			// be removed, so it stays visible for as long as one exists rather
+			// than being a one-time migration control.
+			{
+				name: 'Remove orders for missing folders',
+				desc:
+					'A stale entry is a saved order for a folder that is no longer in the vault — usually because it was deleted or renamed while this plugin was not running. ' +
+					'This removes those entries from the order note. Folders that still exist are never affected.',
+				visible: () => this.staleKeys().length > 0,
+				render: (setting) => {
+					setting.addButton((button) =>
+						button
+							.setButtonText('Remove')
+							.setDisabled(this.busy)
+							.onClick(() => void this.runPruneMissing()),
+					);
+				},
 			},
 			// Housekeeping for the copies `IndexFileStore` keeps when it has to
 			// repair the order note. Named and described in full sentences on
@@ -157,25 +197,15 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 					'Those kept copies are only useful for checking whether an order went missing in the rebuild. ' +
 					'Once you are satisfied nothing is, they can go.',
 				visible: () => this.quarantineFiles().length > 0,
-				disabled: () => this.busy,
-				action: () => void this.runDeleteQuarantines(),
-			},
-			// Manual escape hatch for `pruneMissing` (`orderIndex.ts`), which
-			// nothing else ever calls: a key whose folder is missing at startup
-			// is never pruned automatically, since that could just as easily be
-			// sync lag or a rename made while the plugin was off, and pruning it
-			// behind the user's back would be indistinguishable from silently
-			// losing an order. This row is the only place a stale key can ever
-			// be removed, so it stays visible for as long as one exists rather
-			// than being a one-time migration control.
-			{
-				name: 'Remove orders for missing folders',
-				desc:
-					'A stale entry is a saved order for a folder that is no longer in the vault — usually because it was deleted or renamed while this plugin was not running. ' +
-					'This removes those entries from the order note. Folders that still exist are never affected.',
-				visible: () => this.staleKeys().length > 0,
-				disabled: () => this.busy,
-				action: () => void this.runPruneMissing(),
+				render: (setting) => {
+					setting.addButton((button) =>
+						button
+							.setButtonText('Delete')
+							.setDestructive()
+							.setDisabled(this.busy)
+							.onClick(() => void this.runDeleteQuarantines()),
+					);
+				},
 			},
 			// The vault-wide counterpart to a single folder's "Clear order":
 			// the only way to undo an ordering pass over a whole subtree
@@ -189,8 +219,15 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 					'Remove every saved order in this vault, so all folders go back to the file explorer\'s own sort setting. ' +
 					'Files and folders are not touched, renamed or deleted — only the saved orders. This cannot be undone.',
 				visible: () => this.plugin.store.keys().size > 0,
-				disabled: () => this.busy,
-				action: () => void this.runClearAll(),
+				render: (setting) => {
+					setting.addButton((button) =>
+						button
+							.setButtonText('Clear all')
+							.setDestructive()
+							.setDisabled(this.busy)
+							.onClick(() => void this.runClearAll()),
+					);
+				},
 			},
 		];
 	}
