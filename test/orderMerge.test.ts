@@ -68,6 +68,19 @@ describe('fallbackEntryOrder', () => {
 	it('an empty folder produces an empty order', () => {
 		expect(fallbackEntryOrder([])).toEqual([]);
 	});
+
+	it('an NFC/NFD pair produces the same output regardless of input order', () => {
+		// localeCompare alone treats these as equal (see this function's doc
+		// comment and compareNames in types.ts), so without the code-unit
+		// tiebreak this pair's relative order would depend on which one
+		// folder.children happened to hand in first — not fixed, and not
+		// guaranteed to agree across two devices holding the same vault.
+		const nfc = file('café.md'.normalize('NFC'));
+		const nfd = file('café.md'.normalize('NFD'));
+		expect(nfc.name).not.toBe(nfd.name);
+
+		expect(fallbackEntryOrder([nfc, nfd])).toEqual(fallbackEntryOrder([nfd, nfc]));
+	});
 });
 
 describe('targetIndexFor', () => {
