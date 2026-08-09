@@ -606,28 +606,49 @@ function armCaptureListeners(host: MoveItemHost, containerEl: HTMLElement): void
 }
 
 /**
- * Wires up self-rendered drag-and-drop for the file explorer. Call once,
- * from `onLayoutReady` — same reasoning as `installExplorerSort`
- * (`explorerSort.ts`): plugin load order does not guarantee the
- * `file-explorer` leaf exists yet, and it may still be a deferred, lazily
- * constructed leaf the first time this runs. When it isn't ready
- * (`isFileExplorerViewHandle` fails), this retries on every `layout-change`
- * until it succeeds once, then stops listening — a leaf that has already
- * produced a real file explorer view is not expected to stop being one.
+ * Wires up self-rendered drag-and-drop for the file explorer. Call once, from
+ * `onLayoutReady` — plugin load order does not guarantee the `file-explorer`
+ * leaf exists yet, and it may still be a deferred, lazily constructed leaf the
+ * first time this runs.
+ *
+ * Unlike `installExplorerSort` (`explorerSort.ts`), this **keeps listening for
+ * the life of the plugin instead of stopping after one success**, because the
+ * two install fundamentally different things. That patch goes on the file
+ * explorer view's shared *prototype*, so it covers every instance Obsidian
+ * ever constructs, including ones built long afterwards. These listeners live
+ * on one view instance's own `containerEl`, and a rebuilt file explorer has a
+ * new one.
+ *
+ * Confirmed by hand rather than assumed: detaching the `file-explorer` leaf
+ * and reopening it yields a different `containerEl`, and dragging in the tree
+ * then silently stops working until the plugin is reloaded. Rendering keeps
+ * working throughout — the prototype patch is untouched — which is exactly
+ * what made it invisible: the saved order still looks right, so nothing points
+ * at the drag having come loose.
+ *
+ * `armed` is a `WeakSet`, not an "installed" boolean. `layout-change` fires
+ * constantly, and arming the *same* element twice would stack duplicate
+ * capture handlers, so a single drop would be written more than once. Holding
+ * the elements weakly means a destroyed view's element stays collectable.
+ *
+ * Every `file-explorer` leaf is armed, not just `[0]`: `getLeavesOfType`
+ * matches on view type and so returns deferred leaves too, whose views have
+ * none of the members this needs — so indexing `[0]` would skip a real
+ * explorer sitting behind a deferred one.
  */
 export function installExplorerDrag(host: MoveItemHost): void {
-	const tryInstall = (): boolean => {
-		const leaf = host.app.workspace.getLeavesOfType('file-explorer')[0];
-		if (leaf === undefined) return false;
-		if (!isFileExplorerViewHandle(leaf.view)) return false;
-		armCaptureListeners(host, leaf.view.containerEl);
-		return true;
+	const armed = new WeakSet<HTMLElement>();
+
+	const armAll = (): void => {
+		for (const leaf of host.app.workspace.getLeavesOfType('file-explorer')) {
+			if (!isFileExplorerViewHandle(leaf.view)) continue;
+			const { containerEl } = leaf.view;
+			if (armed.has(containerEl)) continue;
+			armed.add(containerEl);
+			armCaptureListeners(host, containerEl);
+		}
 	};
 
-	if (tryInstall()) return;
-
-	const ref = host.app.workspace.on('layout-change', () => {
-		if (tryInstall()) host.app.workspace.offref(ref);
-	});
-	host.registerEvent(ref);
+	armAll();
+	host.registerEvent(host.app.workspace.on('layout-change', armAll));
 }
