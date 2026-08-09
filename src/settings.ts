@@ -177,6 +177,21 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				disabled: () => this.busy,
 				action: () => void this.runPruneMissing(),
 			},
+			// The vault-wide counterpart to a single folder's "Clear order":
+			// the only way to undo an ordering pass over a whole subtree
+			// without right-clicking every folder in it. Last in the list, and
+			// the only row here that discards work the user deliberately did —
+			// the three above only ever remove something already broken,
+			// already stale, or already a copy.
+			{
+				name: 'Clear every saved order',
+				desc:
+					'Remove every saved order in this vault, so all folders go back to the file explorer\'s own sort setting. ' +
+					'Files and folders are not touched, renamed or deleted — only the saved orders. This cannot be undone.',
+				visible: () => this.plugin.store.keys().size > 0,
+				disabled: () => this.busy,
+				action: () => void this.runClearAll(),
+			},
 		];
 	}
 
@@ -295,6 +310,67 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				return;
 			}
 			new Notice(`Removed ${removed} stale ${removed === 1 ? 'entry' : 'entries'}.`);
+		} finally {
+			this.busy = false;
+			this.update();
+		}
+	}
+
+	/**
+	 * "Clear every saved order" — the vault-wide counterpart to `main.ts`'s
+	 * `clearOrderFor`, which clears one folder. Mirrors `runPruneMissing`
+	 * above (confirm, `busy` guard, `updateOrRepair` so a broken note gets the
+	 * same chance to heal, count taken from the mutation rather than from the
+	 * pre-confirmation snapshot) with one addition: this is the only action on
+	 * this tab whose effect is visible in the file explorer, so it asks for a
+	 * redraw the way saving and clearing do, and honours `autoRefresh` the
+	 * same way rather than forcing one.
+	 *
+	 * No quarantine copy and no undo. That asymmetry with `store.repair()` is
+	 * deliberate: a repair salvages a note the user did not choose to lose, so
+	 * keeping the original is the only evidence of what it could not recover,
+	 * whereas this is an explicit, confirmed request to discard exactly what
+	 * the confirmation names. Leaving a copy behind would be a second file the
+	 * user then has to notice and clean up.
+	 */
+	private async runClearAll(): Promise<void> {
+		const count = this.plugin.store.keys().size;
+		if (count === 0) return;
+
+		const confirmed = await ConfirmModal.ask(
+			this.app,
+			`Clear the saved order for ${count} folder${count === 1 ? '' : 's'}?`,
+			'Every folder goes back to the file explorer\'s own sort setting. ' +
+				'Your files and folders are not touched — nothing is renamed, moved or deleted. This cannot be undone.',
+			'Clear all',
+		);
+		if (!confirmed) return;
+
+		this.busy = true;
+		this.update();
+		try {
+			let cleared = 0;
+			const ok = await this.plugin.store.updateOrRepair((index) => {
+				cleared = index.size;
+				return new Map<string, readonly string[]>();
+			});
+
+			if (!ok) {
+				new Notice(
+					`Could not clear: the order note ${this.plugin.store.unusableReason() ?? 'could not be repaired'}. ` +
+						'Use "Repair the order note" above, or check the console for details.',
+				);
+				return;
+			}
+			new Notice(`Cleared ${cleared} saved order${cleared === 1 ? '' : 's'}.`);
+
+			if (!this.plugin.settings.autoRefresh) {
+				new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
+				return;
+			}
+			if (!requestFileExplorerResort(this.app)) {
+				new Notice('Cleared. The file explorer will show this when you next open it.');
+			}
 		} finally {
 			this.busy = false;
 			this.update();
