@@ -52,18 +52,16 @@ row: each one has buttons that send it straight to the top or bottom, and on
 desktop `Alt`+`↑`/`Alt`+`↓` nudge the focused row a step at a time while
 `Alt`+`Shift`+`↑`/`Alt`+`Shift`+`↓` send it to either end.
 
-A folder does not have to be dragged into shape from scratch. **Sort by**,
-above the list, arranges the rows by name, creation date or modification date,
-in either direction — useful on its own, and useful as a starting point you
-then adjust by hand. Folders always come first whichever you pick, because
-Obsidian records no dates for folders at all. Sorting rearranges the dialog
-and nothing else: press **Save** to keep the result, or **Cancel** to leave
-the folder exactly as it was.
+A folder does not have to be dragged into shape from scratch. **Sort by**, at
+the end of the path line, arranges the rows by name, creation date or
+modification date, in either direction. Sort by a date and each row shows the
+date it was sorted on. Folders always come first: Obsidian records no dates
+for them at all.
 
-What you save is that arrangement, not a rule that keeps re-applying: a file
-added later joins the end of the folder like any other item the order doesn't
-mention, rather than slotting into the date or name position it would have
-had.
+Sorting rearranges the dialog and nothing else — **Save** keeps the result,
+**Cancel** leaves the folder as it was. What you save is that arrangement, not
+a rule that keeps re-applying: a file added later joins the end, like any
+other item the order doesn't mention.
 
 Because an order covers one folder at a time (see below), arranging a whole
 tree means visiting each folder in turn — so the dialog lets you walk the tree
