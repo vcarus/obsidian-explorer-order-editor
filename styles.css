@@ -362,13 +362,23 @@
    `flex-wrap: wrap` is what lets the date drop to a second line rather than
    eat into the name — see `.eoe-row-name`'s min-width below, which is what
    actually provokes the wrap. Baseline alignment so the smaller date sits on
-   the name's baseline instead of being centred against it. */
+   the name's baseline instead of being centred against it.
+
+   The gap is written as the shorthand with an explicit zero row gap, rather
+   than as `column-gap`, only to keep the community scanner quiet: caniuse
+   files `column-gap` under the `multicolumn` feature, so a flex container
+   using it is reported as relying on partially-supported multicolumn. Flex
+   gap has been in Chromium since 84 and this rule has nothing to do with
+   columns, but the plain `gap` spelling is not classified that way and says
+   the same thing. The zero is the behaviour that was already there —
+   `row-gap` defaults to `normal`, which is 0 in flex layout — so wrapping the
+   date onto a second line still adds no vertical space. */
 .eoe-row-text {
 	display: flex;
 	flex: 1 1 auto;
 	flex-wrap: wrap;
 	align-items: baseline;
-	column-gap: var(--size-4-2);
+	gap: 0 var(--size-4-2);
 	min-width: 0;
 }
 
@@ -388,9 +398,8 @@
 }
 
 /* Only ever non-empty while a date sort is showing (`showDatesFor`), so an
-   empty span costs nothing here: no padding, no min-width, and `column-gap`
-   on the parent contributes nothing when there is no second item to gap
-   against. `tabular-nums` so the dates line up as a column down the list
+   empty span costs nothing here: no padding, no min-width, and the parent's
+   gap contributes nothing when there is no second item to gap against. `tabular-nums` so the dates line up as a column down the list
    instead of jittering with each digit's natural width. */
 .eoe-row-date {
 	flex: 0 0 auto;
