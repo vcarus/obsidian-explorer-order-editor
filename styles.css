@@ -12,6 +12,36 @@
    to a long current folder (see .eoe-breadcrumb-crumb below for the specific
    bug that forced the rewrite). Compact — var(--font-ui-small) and a tight
    line-height — because up to five of these lines sit above the row list. */
+/* Keeps Save/Cancel on screen in a folder with many items.
+
+   Obsidian's own `.modal` is already `display: flex; flex-direction: column;
+   max-height: var(--dialog-max-height)` (85vh) with `overflow: auto`, and its
+   `.modal-content` is `flex: 1 1 auto` — but with no `min-height: 0`. A flex
+   item's automatic minimum size is its content height, so `.modal-content`
+   could never shrink below the total height of everything in it: once the
+   breadcrumb, toolbar, list, hint and footer added up past 85vh, the modal
+   itself scrolled instead, and the footer went off the bottom edge where a
+   long list pushed it. The fix is entirely on this side — declaring the
+   min-height Obsidian's rule omits, so the content column can shrink and
+   hand that shrinking to the one child built to absorb it (`.eoe-list`,
+   which already scrolls). Scoped by `.eoe-modal`, a class this dialog puts
+   on its own `modalEl`, so no other modal in the app is touched. */
+.eoe-modal .modal-content {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+/* Everything in the content column except the list holds its natural height:
+   the list is the only part that can usefully give ground, and a shrinking
+   footer or breadcrumb would be a worse outcome than a shorter list. */
+.eoe-breadcrumb,
+.eoe-toolbar,
+.eoe-hint,
+.eoe-footer {
+	flex-shrink: 0;
+}
+
 .eoe-breadcrumb {
 	display: flex;
 	flex-direction: column;
@@ -189,10 +219,81 @@
 	font-size: inherit;
 }
 
+/* "Sort by" toolbar, directly above .eoe-list — see OrderModal.ts's
+   renderSortByToolbar for why it exists only there (not on the empty/
+   single-item screens) and why it's a button that opens a Menu rather than
+   a <select>. justify-content: flex-end because there's exactly one control
+   in here today; a right-aligned button reads as "acts on the list below",
+   the same relationship the hint text under the list has to it. */
+.eoe-toolbar {
+	display: flex;
+	justify-content: flex-end;
+	margin-top: var(--size-4-2);
+}
+
+/* Flat and muted, the same treatment as .eoe-breadcrumb-crumb and for the
+   same specificity reason: Obsidian's own modal button styling
+   (`.modal button`, 0-1-1) outranks a lone class (0-1-0) and would leave
+   this looking like one of Obsidian's own boxy dialog buttons — heavier
+   than a one-shot rearrangement control has any business looking. Written
+   as a descendant selector (0-2-0) purely to win that specificity fight
+   without `!important`; see .eoe-breadcrumb-crumb's comment for the fuller
+   story of the bug this pattern works around.
+
+   No flex/inner-span split here unlike .eoe-breadcrumb-crumb: this button's
+   label is the fixed, short string "Sort by" — nothing here ever truncates
+   or needs text-align, so there's no anonymous-box bug to route around in
+   the first place (see .eoe-breadcrumb-crumb's own comment above for what
+   that bug looks like when it does bite: a shrunken button rendering as the
+   *middle* of its text, with no ellipsis, because text-overflow/text-align
+   set directly on a <button> are silently ignored by the browser). */
+.eoe-toolbar .eoe-sort-by-button {
+	height: auto;
+	min-height: 0;
+	padding: var(--size-2-1) var(--size-4-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	font-family: inherit;
+	font-size: var(--font-ui-small);
+	cursor: pointer;
+}
+
+.eoe-toolbar .eoe-sort-by-button:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+	box-shadow: none;
+}
+
+/* Restores the focus ring the two rules above take away. Obsidian draws it as
+   `button:focus-visible { box-shadow: 0 0 0 3px ... }` — specificity 0-1-1,
+   which the 0-2-0 selectors above outrank, so their `box-shadow: none` (there
+   to strip the raised look off Obsidian's default modal button) silently
+   stripped the keyboard focus indicator along with it. Tabbing to this button
+   changed nothing on screen, which for a control whose whole purpose is to
+   open a menu meant a keyboard user could not tell it was selected.
+
+   Declared after `:hover` rather than before, both being 0-3-0: a button that
+   is focused *and* hovered has to keep its ring, and at equal specificity the
+   later rule is the one that wins. */
+.eoe-toolbar .eoe-sort-by-button:focus-visible {
+	box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
+}
+
+/* `flex: 0 1 auto` + `min-height: 0`: never grows past its content (a
+   three-item folder still gets a three-item dialog), but is the one thing in
+   the content column allowed to shrink when the whole dialog would otherwise
+   outgrow 85vh — see the `.eoe-modal .modal-content` comment above. The 60vh
+   cap stays as the everyday ceiling; the flex shrinking only takes over below
+   it, when the rest of the chrome needs the room. */
 .eoe-list {
 	display: flex;
 	flex-direction: column;
+	flex: 0 1 auto;
 	gap: var(--size-2-1);
+	min-height: 0;
 	max-height: 60vh;
 	margin-top: var(--size-4-2);
 	overflow-y: auto;

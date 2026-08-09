@@ -1,5 +1,6 @@
-import { App, ButtonComponent, Modal, Notice, normalizePath, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
+import { App, ButtonComponent, Menu, Modal, Notice, normalizePath, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
 import Sortable from 'sortablejs';
+import { SORT_CHOICES, sortEntries, type SortChoice, type SortableEntry } from './entrySort';
 import { explorerOrderNames } from './explorerSort';
 import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
@@ -7,7 +8,7 @@ import { mergeOrder, setOrder } from './orderIndex';
 import { targetIndexFor, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
 import { entriesFor } from './folderEntries';
-import { displayLabel, type Entry } from './types';
+import { displayLabel } from './types';
 
 const ICON_FOLDER = 'lucide-folder';
 const ICON_FILE = 'lucide-file-text';
@@ -87,10 +88,12 @@ const HINT_LINES: readonly (readonly HintPart[])[] = Platform.isMobile
 
 /**
  * One row in the reorder list. `entry` is the immutable identity (name +
- * kind) that gets handed to `orderIndex.ts` on save.
+ * kind, plus the timestamps `entrySort.ts`'s "sort by" needs) that gets
+ * handed to `orderIndex.ts` on save — the save path only ever reads `.name`
+ * off it, so carrying the wider `SortableEntry` here costs it nothing.
  */
 interface OrderRow {
-	readonly entry: Entry;
+	readonly entry: SortableEntry;
 }
 
 /**
@@ -105,7 +108,7 @@ type SaveOutcome = 'saved' | 'unchanged' | 'blocked' | 'failed';
 export class OrderModal extends Modal {
 	private listEl: HTMLElement | null = null;
 	private sortable: Sortable | null = null;
-	private readonly entryByRowEl = new Map<HTMLElement, Entry>();
+	private readonly entryByRowEl = new Map<HTMLElement, SortableEntry>();
 	/**
 	 * The move-to-top/move-to-bottom buttons for each sortable row, keyed the
 	 * same way `entryByRowEl` is. Needed so `refreshRowActionsDisabled` can
@@ -161,7 +164,7 @@ export class OrderModal extends Modal {
 	 * save-if-dirty. Reset to `[]` by `resetContent` and set again at the end
 	 * of every `render()`.
 	 */
-	private initialOrder: readonly Entry[] = [];
+	private initialOrder: readonly SortableEntry[] = [];
 	private folder: TFolder;
 
 	constructor(
@@ -174,7 +177,16 @@ export class OrderModal extends Modal {
 		this.folder = folder;
 	}
 
+	/**
+	 * The class is what lets `styles.css` reach `.modal-content` without
+	 * restyling every other modal in the app — Obsidian gives that element no
+	 * hook of its own, and this dialog needs it to be a flex column that can
+	 * shrink (see the `.eoe-modal .modal-content` rule for the full reason).
+	 * Set on `modalEl` rather than `contentEl` because the rule has to select
+	 * `.modal-content` as a descendant.
+	 */
 	onOpen(): void {
+		this.modalEl.addClass('eoe-modal');
 		void this.render();
 	}
 
@@ -259,6 +271,14 @@ export class OrderModal extends Modal {
 		const rows: OrderRow[] = orderedEntries.map((entry) => ({ entry }));
 
 		if (rows.length > 0) {
+			// Reached only when this folder has at least two entries — the
+			// zero-and-one cases returned above — so there is always something
+			// a sort could actually reorder. Same reasoning as why the
+			// move-to-top/bottom buttons and the grip are gated on `sortable`
+			// in `renderRow` below: a control that provably cannot change
+			// anything is not offered at all.
+			this.renderSortByToolbar(this.contentEl);
+
 			const listEl = this.contentEl.createDiv({ cls: 'eoe-list' });
 			this.listEl = listEl;
 
@@ -351,7 +371,7 @@ export class OrderModal extends Modal {
 	 * the old approximation rather than leaving the dialog with no order at
 	 * all.
 	 */
-	private orderedEntriesFor(siblings: readonly Entry[]): Entry[] {
+	private orderedEntriesFor(siblings: readonly SortableEntry[]): SortableEntry[] {
 		const siblingByName = new Map(siblings.map((entry) => [entry.name, entry]));
 		const explorerNames = explorerOrderNames(this.app, this.folder);
 
@@ -362,11 +382,11 @@ export class OrderModal extends Modal {
 				siblings.map((entry) => entry.name),
 			)
 				.map((name) => siblingByName.get(name))
-				.filter((entry): entry is Entry => entry !== undefined);
+				.filter((entry): entry is SortableEntry => entry !== undefined);
 		}
 
 		const seen = new Set<string>();
-		const ordered: Entry[] = [];
+		const ordered: SortableEntry[] = [];
 		for (const name of explorerNames) {
 			const entry = siblingByName.get(name);
 			// Not found for the index note (excluded from `siblings` on
@@ -582,11 +602,11 @@ export class OrderModal extends Modal {
 	}
 
 	/**
-	 * Reads the on-screen order back into `Entry[]`: the sortable rows in
-	 * their current on-screen order, after any dragging.
+	 * Reads the on-screen order back into `SortableEntry[]`: the sortable rows
+	 * in their current on-screen order, after any dragging.
 	 */
-	private collectOrderedEntries(): Entry[] {
-		const entries: Entry[] = [];
+	private collectOrderedEntries(): SortableEntry[] {
+		const entries: SortableEntry[] = [];
 		const listEl = this.listEl;
 		if (listEl) {
 			for (const child of Array.from(listEl.children)) {
@@ -596,6 +616,100 @@ export class OrderModal extends Modal {
 			}
 		}
 		return entries;
+	}
+
+	/**
+	 * The "sort by" toolbar sitting directly above the sortable list. Only
+	 * ever called from the branch that renders that list (`rows.length > 0`
+	 * in `render()`) — a folder with zero or one entries has nothing a sort
+	 * could reorder, so it gets no toolbar at all rather than one whose menu
+	 * would do nothing.
+	 *
+	 * The control is a button that opens a `Menu`, not a `<select>`, because
+	 * a choice here is a one-shot action — "rearrange the rows right now" —
+	 * not a persistent piece of state describing the current order. A
+	 * `<select>` would keep showing the last choice picked long after it
+	 * stopped being true: the moment a row is dragged, or a *different* sort
+	 * choice is applied and then a row moved, the dropdown would still claim
+	 * the list is sorted by whatever it last displayed. A button has no such
+	 * memory to go stale.
+	 *
+	 * Applying a choice never writes to the index — see `applySortChoice`.
+	 * The dialog's existing Save/Cancel footer is the confirmation for that:
+	 * without it, picking an item in this menu would silently discard
+	 * whatever hand-made arrangement was on screen, with no undo.
+	 */
+	private renderSortByToolbar(container: HTMLElement): void {
+		const toolbar = container.createDiv({ cls: 'eoe-toolbar' });
+		const button = toolbar.createEl('button', { cls: 'eoe-sort-by-button', text: 'Sort by', attr: { type: 'button' } });
+		button.addEventListener('click', () => this.openSortByMenu(button));
+	}
+
+	/**
+	 * Builds and opens the "sort by" menu from `SORT_CHOICES`, in the order
+	 * that array lists them.
+	 *
+	 * Positioned via `showAtPosition`, computed from `button`'s own
+	 * `getBoundingClientRect()` — deliberately not `showAtMouseEvent(evt)`.
+	 * This button is reachable and activatable from the keyboard (it's a
+	 * plain `<button>`), and a `click` event synthesized by keyboard
+	 * activation (Enter/Space) carries `clientX`/`clientY` of `(0, 0)` —
+	 * `showAtMouseEvent` would happily open the menu in the screen's top-left
+	 * corner for anyone who never touched a mouse to trigger it.
+	 */
+	private openSortByMenu(button: HTMLElement): void {
+		const menu = new Menu();
+		for (const choice of SORT_CHOICES) {
+			menu.addItem((item) => item.setTitle(choice.label).onClick(() => this.applySortChoice(choice)));
+		}
+		const rect = button.getBoundingClientRect();
+		menu.showAtPosition({ x: rect.left, y: rect.bottom });
+	}
+
+	/**
+	 * Rearranges the on-screen rows to match `choice` — and only that: no
+	 * write to the index happens here (see `renderSortByToolbar`'s doc
+	 * comment for why that's deliberate). The user still has to press Save
+	 * for this to stick, same as a drag.
+	 *
+	 * Pairs each current row element with its `SortableEntry` via
+	 * `entryByRowEl`, asks `entrySort.ts`'s `sortEntries` for the new order,
+	 * then re-appends every row element to `listEl` in that order.
+	 * `Node.appendChild` moves a node that is already a child rather than
+	 * duplicating it, so one pass of appends is sufficient — no separate
+	 * removal step, and nothing here touches the live SortableJS instance
+	 * (no destroy/rebuild), exactly like `moveRow`'s top/bottom jump already
+	 * doesn't.
+	 *
+	 * If a row element has no entry in `entryByRowEl` — should be impossible,
+	 * every row is registered there in `renderRow` and never removed from the
+	 * map until the whole level is torn down — this returns before touching
+	 * the DOM at all, leaving the on-screen order exactly as it was, rather
+	 * than throwing or silently dropping a row from the list.
+	 */
+	private applySortChoice(choice: SortChoice): void {
+		const listEl = this.listEl;
+		if (listEl === null) return;
+
+		const rows = this.sortableRows();
+		const entries: SortableEntry[] = [];
+		const rowElByEntry = new Map<SortableEntry, HTMLElement>();
+		for (const rowEl of rows) {
+			const entry = this.entryByRowEl.get(rowEl);
+			if (entry === undefined) return; // see doc comment above: trust the contract, don't crash or drop a row
+			entries.push(entry);
+			rowElByEntry.set(entry, rowEl);
+		}
+
+		// sortEntries only permutes its input (see its doc comment), so every
+		// entry it hands back is one of the very objects `rowElByEntry` was
+		// just built from — the lookup below always resolves.
+		for (const entry of sortEntries(entries, choice.key, choice.descending)) {
+			const rowEl = rowElByEntry.get(entry);
+			if (rowEl !== undefined) listEl.appendChild(rowEl);
+		}
+
+		this.afterOrderChanged();
 	}
 
 	/**
