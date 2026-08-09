@@ -6,12 +6,6 @@
 	text-align: center;
 }
 
-/* Breadcrumb trail (M8c): a stepped vertical hierarchy, one folder per line,
-   each indented one step past the one above — replacing M8b's single
-   horizontal line, which had no good answer for a long ancestor sitting next
-   to a long current folder (see .eoe-breadcrumb-crumb below for the specific
-   bug that forced the rewrite). Compact — var(--font-ui-small) and a tight
-   line-height — because up to five of these lines sit above the row list. */
 /* Keeps Save/Cancel on screen in a folder with many items.
 
    Obsidian's own `.modal` is already `display: flex; flex-direction: column;
@@ -36,12 +30,17 @@
    the list is the only part that can usefully give ground, and a shrinking
    footer or breadcrumb would be a worse outcome than a shorter list. */
 .eoe-breadcrumb,
-.eoe-toolbar,
 .eoe-hint,
 .eoe-footer {
 	flex-shrink: 0;
 }
 
+/* Breadcrumb trail (M8c): a stepped vertical hierarchy, one folder per line,
+   each indented one step past the one above — replacing M8b's single
+   horizontal line, which had no good answer for a long ancestor sitting next
+   to a long current folder (see .eoe-breadcrumb-crumb below for the specific
+   bug that forced the rewrite). Compact — var(--font-ui-small) and a tight
+   line-height — because up to five of these lines sit above the row list. */
 .eoe-breadcrumb {
 	display: flex;
 	flex-direction: column;
@@ -219,19 +218,20 @@
 	font-size: inherit;
 }
 
-/* "Sort by" toolbar, directly above .eoe-list — see OrderModal.ts's
-   renderSortByToolbar for why it exists only there (not on the empty/
-   single-item screens) and why it's a button that opens a Menu rather than
-   a <select>. justify-content: flex-end because there's exactly one control
-   in here today; a right-aligned button reads as "acts on the list below",
-   the same relationship the hint text under the list has to it. */
-.eoe-toolbar {
-	display: flex;
-	justify-content: flex-end;
-	margin-top: var(--size-4-2);
-}
+/* The "sort by" control, living at the right-hand end of the breadcrumb
+   trail's last row rather than in a strip of its own — see OrderModal.ts's
+   renderSortByButton for why (that strip cost ~33px of the dialog's scarcest
+   dimension to hold one button, while this line sat half empty right above
+   it) and for why it opens a Menu rather than being a <select>.
 
-/* Flat and muted, the same treatment as .eoe-breadcrumb-crumb and for the
+   `margin-left: auto` is what pins it to the right end: the row is a flex
+   line holding the current folder's label, which is free to grow, so without
+   this the button would sit immediately after the text. The label already
+   carries `overflow: hidden` + `min-width: 0` + ellipsis (see
+   `.eoe-breadcrumb-current`), so a long folder name truncates rather than
+   pushing the button out of the dialog.
+
+   Flat and muted, the same treatment as .eoe-breadcrumb-crumb and for the
    same specificity reason: Obsidian's own modal button styling
    (`.modal button`, 0-1-1) outranks a lone class (0-1-0) and would leave
    this looking like one of Obsidian's own boxy dialog buttons — heavier
@@ -247,9 +247,10 @@
    that bug looks like when it does bite: a shrunken button rendering as the
    *middle* of its text, with no ellipsis, because text-overflow/text-align
    set directly on a <button> are silently ignored by the browser). */
-.eoe-toolbar .eoe-sort-by-button {
+.eoe-breadcrumb-row .eoe-sort-by-button {
 	height: auto;
 	min-height: 0;
+	margin-left: auto;
 	padding: var(--size-2-1) var(--size-4-2);
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-s);
@@ -261,7 +262,7 @@
 	cursor: pointer;
 }
 
-.eoe-toolbar .eoe-sort-by-button:hover {
+.eoe-breadcrumb-row .eoe-sort-by-button:hover {
 	background-color: var(--background-modifier-hover);
 	color: var(--text-normal);
 	box-shadow: none;
@@ -278,7 +279,7 @@
    Declared after `:hover` rather than before, both being 0-3-0: a button that
    is focused *and* hovered has to keep its ring, and at equal specificity the
    later rule is the one that wins. */
-.eoe-toolbar .eoe-sort-by-button:focus-visible {
+.eoe-breadcrumb-row .eoe-sort-by-button:focus-visible {
 	box-shadow: 0 0 0 3px var(--background-modifier-border-focus);
 }
 
@@ -295,7 +296,12 @@
 	gap: var(--size-2-1);
 	min-height: 0;
 	max-height: 60vh;
-	margin-top: var(--size-4-2);
+	/* No margin-top: `.eoe-breadcrumb` sits directly above and already carries
+	   a margin-bottom. Since `.eoe-modal .modal-content` is a flex column,
+	   adjacent margins do not collapse the way they would in a block
+	   container, so one declared here would stack on top of the breadcrumb's
+	   rather than merging with it — which is exactly the 8px this dialog
+	   silently gained when that rule was introduced. */
 	overflow-y: auto;
 }
 
@@ -352,11 +358,52 @@
 	color: var(--text-muted);
 }
 
+/* Holds the name and, once a date sort has been applied, the date beside it.
+   `flex-wrap: wrap` is what lets the date drop to a second line rather than
+   eat into the name — see `.eoe-row-name`'s min-width below, which is what
+   actually provokes the wrap. Baseline alignment so the smaller date sits on
+   the name's baseline instead of being centred against it. */
+.eoe-row-text {
+	display: flex;
+	flex: 1 1 auto;
+	flex-wrap: wrap;
+	align-items: baseline;
+	column-gap: var(--size-4-2);
+	min-width: 0;
+}
+
+/* The min-width is the whole wrapping mechanism, and it is not decoration: a
+   flex item that may shrink to 0 never causes its container to wrap, it just
+   truncates itself. With a floor, the row runs out of space for the date
+   first and the date wraps, which is the behaviour we want — the name is what
+   is being read, the date is an annotation on it. `min()` keeps that floor
+   from becoming an overflow on a viewport narrower than the floor itself
+   (mobile), where continuing to shrink is better than bursting the row. */
 .eoe-row-name {
 	overflow: hidden;
 	flex: 1 1 auto;
+	min-width: min(8rem, 100%);
 	white-space: nowrap;
 	text-overflow: ellipsis;
+}
+
+/* Only ever non-empty while a date sort is showing (`showDatesFor`), so an
+   empty span costs nothing here: no padding, no min-width, and `column-gap`
+   on the parent contributes nothing when there is no second item to gap
+   against. `tabular-nums` so the dates line up as a column down the list
+   instead of jittering with each digit's natural width. */
+.eoe-row-date {
+	flex: 0 0 auto;
+	/* Right-aligns the date on whichever line it lands on. On the first line
+	   `.eoe-row-name`'s `flex: 1 1 auto` would push it right anyway, but on a
+	   wrapped second line the date is alone with nothing to push it, and it
+	   would sit at the left edge — breaking the column the dates otherwise
+	   form. An auto margin absorbs the free space on either line, so both
+	   cases end up flush right. */
+	margin-left: auto;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	font-variant-numeric: tabular-nums;
 }
 
 /* Move-to-top/move-to-bottom buttons. flex-shrink: 0 keeps them from being

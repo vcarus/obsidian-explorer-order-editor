@@ -1,6 +1,6 @@
 import { App, ButtonComponent, Menu, Modal, Notice, normalizePath, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
 import Sortable from 'sortablejs';
-import { SORT_CHOICES, sortEntries, type SortChoice, type SortableEntry } from './entrySort';
+import { SORT_CHOICES, sortEntries, timestampFor, type SortChoice, type SortableEntry, type SortKey } from './entrySort';
 import { explorerOrderNames } from './explorerSort';
 import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
@@ -117,6 +117,14 @@ export class OrderModal extends Modal {
 	 */
 	private readonly rowActionsByRowEl = new Map<HTMLElement, { readonly top: HTMLButtonElement; readonly bottom: HTMLButtonElement }>();
 	/**
+	 * The date element for each row, keyed the same way `entryByRowEl` is.
+	 * Created empty with every row and filled in (or emptied again) by
+	 * `applySortChoice` — rather than being created and destroyed as sorts
+	 * come and go, so that showing a date never changes the row's structure,
+	 * only its text.
+	 */
+	private readonly dateByRowEl = new Map<HTMLElement, HTMLElement>();
+	/**
 	 * This level's child folders, keyed by name, rebuilt at the top of every
 	 * `render()`. Folder names are unique within a folder, so name is an
 	 * exact key. Used only to decide which orderable folder rows get an
@@ -225,7 +233,7 @@ export class OrderModal extends Modal {
 		// including the `siblings.length <= 1` early return — so that even
 		// an empty subfolder still has a way back out, rather than being a
 		// dead end only reachable by navigating into it in the first place.
-		this.renderBreadcrumbs();
+		const breadcrumbTail = this.renderBreadcrumbs();
 
 		const siblings = entriesFor(this.folder, normalizePath(this.settings.indexPath));
 		const soleEntry = siblings.length === 1 ? siblings[0] : undefined;
@@ -277,7 +285,7 @@ export class OrderModal extends Modal {
 			// move-to-top/bottom buttons and the grip are gated on `sortable`
 			// in `renderRow` below: a control that provably cannot change
 			// anything is not offered at all.
-			this.renderSortByToolbar(this.contentEl);
+			if (breadcrumbTail !== null) this.renderSortByButton(breadcrumbTail);
 
 			const listEl = this.contentEl.createDiv({ cls: 'eoe-list' });
 			this.listEl = listEl;
@@ -445,6 +453,7 @@ export class OrderModal extends Modal {
 		this.listEl = null;
 		this.entryByRowEl.clear();
 		this.rowActionsByRowEl.clear();
+		this.dateByRowEl.clear();
 		this.childFolderByName.clear();
 		this.navControls = [];
 		this.initialOrder = [];
@@ -540,10 +549,18 @@ export class OrderModal extends Modal {
 	 * next to a long current folder. Rendered unconditionally, including for
 	 * the vault root itself — a one-line trail is still "you are here".
 	 */
-	private renderBreadcrumbs(): void {
+	/**
+	 * Returns the trail's last row — always the current folder's — so the
+	 * caller can hang the "sort by" control off its right-hand end (see
+	 * `renderSortByButton`). `null` only if there were no segments at all,
+	 * which `breadcrumbSegments` cannot produce for a chain that always
+	 * contains at least the current folder; handled rather than asserted.
+	 */
+	private renderBreadcrumbs(): HTMLElement | null {
 		const container = this.contentEl.createDiv({ cls: 'eoe-breadcrumb' });
 		const chain = this.folderChain();
 		const segments = breadcrumbSegments(chain.length, MAX_VISIBLE_CRUMBS);
+		let tail: HTMLElement | null = null;
 
 		segments.forEach((segment, position) => {
 			// `position` is the *rendered* position, not the folder's real depth
@@ -557,7 +574,10 @@ export class OrderModal extends Modal {
 				row.createSpan({ cls: 'eoe-breadcrumb-tee', text: '└', attr: { 'aria-hidden': 'true' } });
 			}
 			this.renderBreadcrumbSegment(row, chain, segment);
+			tail = row;
 		});
+
+		return tail;
 	}
 
 	/**
@@ -619,11 +639,21 @@ export class OrderModal extends Modal {
 	}
 
 	/**
-	 * The "sort by" toolbar sitting directly above the sortable list. Only
-	 * ever called from the branch that renders that list (`rows.length > 0`
-	 * in `render()`) — a folder with zero or one entries has nothing a sort
-	 * could reorder, so it gets no toolbar at all rather than one whose menu
-	 * would do nothing.
+	 * The "sort by" control, hung off the right-hand end of the breadcrumb
+	 * trail's last row — the current folder's row, which is exactly what the
+	 * sort acts on.
+	 *
+	 * It had its own toolbar strip above the list at first, and that strip
+	 * cost about 33px of a dialog whose height is its scarcest resource: its
+	 * own margin, the button, and a gap under it, all to hold one control
+	 * while the breadcrumb's last line sat half empty right above. Reusing
+	 * that line spends no vertical space at all — the row is already as tall
+	 * as this button, so it does not even grow.
+	 *
+	 * Only ever called from the branch that renders the sortable list
+	 * (`rows.length > 0` in `render()`, reached only when the folder holds at
+	 * least two entries) — a folder with nothing to reorder gets no control at
+	 * all rather than one whose menu would do nothing.
 	 *
 	 * The control is a button that opens a `Menu`, not a `<select>`, because
 	 * a choice here is a one-shot action — "rearrange the rows right now" —
@@ -639,9 +669,8 @@ export class OrderModal extends Modal {
 	 * without it, picking an item in this menu would silently discard
 	 * whatever hand-made arrangement was on screen, with no undo.
 	 */
-	private renderSortByToolbar(container: HTMLElement): void {
-		const toolbar = container.createDiv({ cls: 'eoe-toolbar' });
-		const button = toolbar.createEl('button', { cls: 'eoe-sort-by-button', text: 'Sort by', attr: { type: 'button' } });
+	private renderSortByButton(row: HTMLElement): void {
+		const button = row.createEl('button', { cls: 'eoe-sort-by-button', text: 'Sort by', attr: { type: 'button' } });
 		button.addEventListener('click', () => this.openSortByMenu(button));
 	}
 
@@ -668,7 +697,7 @@ export class OrderModal extends Modal {
 
 	/**
 	 * Rearranges the on-screen rows to match `choice` — and only that: no
-	 * write to the index happens here (see `renderSortByToolbar`'s doc
+	 * write to the index happens here (see `renderSortByButton`'s doc
 	 * comment for why that's deliberate). The user still has to press Save
 	 * for this to stick, same as a drag.
 	 *
@@ -709,7 +738,48 @@ export class OrderModal extends Modal {
 			if (rowEl !== undefined) listEl.appendChild(rowEl);
 		}
 
+		this.showDatesFor(choice.key);
 		this.afterOrderChanged();
+	}
+
+	/**
+	 * Annotates every row with the timestamp the arrangement was just sorted
+	 * by, or clears the annotation when `key` has no date to show (see
+	 * `timestampFor` in `entrySort.ts` for exactly when that is: a name sort,
+	 * a folder, or a file with no `stat` value for the chosen key).
+	 *
+	 * The point is that a date sort can be *checked*. An order produced by
+	 * comparing numbers nobody can see is one the user has to take on faith,
+	 * and the first time it disagrees with their expectation there is no way
+	 * to tell a bug from a file whose modification time is not what they
+	 * assumed.
+	 *
+	 * The dates deliberately survive a subsequent drag. They describe the
+	 * files, not the arrangement, so moving a row does not make them stale —
+	 * and seeing "this one is out of date order because I put it there" is
+	 * exactly the state a user who has just hand-adjusted a sorted list is in.
+	 *
+	 * Two formats, both locale-resolved by the runtime rather than pinned
+	 * here, the same choice `fallbackEntryOrder` documents for collation: a
+	 * short one on screen, where the column has to stay narrow enough to
+	 * leave the name room, and a full one in the tooltip, where the short
+	 * form's two-digit year and absent seconds would otherwise be lost.
+	 */
+	private showDatesFor(key: SortKey): void {
+		for (const [rowEl, dateEl] of this.dateByRowEl) {
+			const entry = this.entryByRowEl.get(rowEl);
+			const stamp = entry === undefined ? null : timestampFor(entry, key);
+
+			if (stamp === null) {
+				dateEl.setText('');
+				setTooltip(dateEl, '');
+				continue;
+			}
+
+			const when = new Date(stamp);
+			dateEl.setText(when.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }));
+			setTooltip(dateEl, when.toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'medium' }));
+		}
 	}
 
 	/**
@@ -737,7 +807,16 @@ export class OrderModal extends Modal {
 		const icon = rowEl.createDiv({ cls: 'eoe-row-icon' });
 		setIcon(icon, row.entry.kind === 'folder' ? ICON_FOLDER : ICON_FILE);
 
-		rowEl.createSpan({ cls: 'eoe-row-name', text: displayLabel(row.entry) });
+		// Name and date share a wrapper rather than sitting directly in the
+		// row, so that a name too long to leave room for the date pushes the
+		// date onto its own line instead of being truncated to make space for
+		// it. The name is the thing the user is reading; the date is an
+		// annotation on it, and an annotation must not cost the name its
+		// characters. See `.eoe-row-text` in styles.css for how the wrap is
+		// actually provoked.
+		const text = rowEl.createDiv({ cls: 'eoe-row-text' });
+		text.createSpan({ cls: 'eoe-row-name', text: displayLabel(row.entry) });
+		this.dateByRowEl.set(rowEl, text.createSpan({ cls: 'eoe-row-date' }));
 
 		// Created for every row, even one that ends up holding only the
 		// "enter" control (or nothing at all): it is what keeps the row's
