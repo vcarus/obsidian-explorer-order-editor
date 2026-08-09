@@ -30,10 +30,14 @@ edge you get, so a long move doesn't have to be done in stages.
 
 ### Arrange a whole folder in one dialog
 
-Right-click a folder and choose **Set explorer order** to get a dialog listing
-its direct children; drag them into the order you want and **Save**. **Clear
-explorer order**, in the same menu, removes it again — it only appears when
-that folder actually has an order to remove.
+Right-click a folder and choose **Explorer order → Set order** to get a dialog
+listing its direct children; drag them into the order you want and **Save**.
+**Clear order**, beside it, removes the order again — it only appears when
+that folder actually has one to remove.
+
+Everything this plugin puts in a right-click menu lives under that one
+**Explorer order** entry, so it costs a single line in a menu you opened to do
+something else.
 
 ![Right-clicking the file explorer, dragging the vault's top-level folders into a chosen order, and saving — after which the file explorer shows that order instead of the alphabetical one](docs/images/reorder.gif)
 
@@ -65,16 +69,18 @@ touched anything, opening a folder writes nothing at all.
 file or folder. Only the ones that would actually do something are offered, so
 an item already at the top gets two entries rather than four.
 
-These are **off by default**: four extra items is a lot to add to a menu you
+These are **off by default**: four extra entries is a lot to add to a menu you
 open constantly, now that dragging a row does the same job without any menu.
-**Show move actions in the file explorer menu** turns them on.
+**Show move actions in the file explorer menu** turns them on, below **Set
+order** and **Clear order** under the same **Explorer order** entry.
 
 ### Nudge one item with a hotkey
 
 The same four are commands, so they can be bound to keys whether or not the
-menu shows them. They act on the note you currently have open rather than on
-whatever the file explorer has selected, so a hotkey reorders the note you are
-reading without your hands leaving the keyboard.
+menu shows them. Which item a hotkey moves follows the keyboard: the row the
+file explorer has focused while you are in the tree, and the note you have
+open otherwise. That is also what lets a hotkey move a **folder**, since the
+note you have open never is one.
 
 ## What an order covers
 
@@ -150,10 +156,10 @@ A few things worth knowing about that block:
 - **Drag to reorder in the file explorer** (on by default) — turn it off to
   leave the tree's drag-and-drop exactly as Obsidian ships it.
 - **Show move actions in the file explorer menu** (off by default) — turn it
-  on to get the four move entries in the right-click menu. The commands stay
-  bindable to hotkeys either way.
+  on to get the four move entries under **Explorer order** in the right-click
+  menu. The commands stay bindable to hotkeys either way.
 
-Three more rows appear only when there is something for them to do, and are
+Four more rows appear only when there is something for them to do, and are
 absent otherwise:
 
 - **Repair the order note** — shown when the note cannot be read. See below.
@@ -162,6 +168,10 @@ absent otherwise:
 - **Remove orders for missing folders** — shown when the note holds an order
   for a folder that is no longer in the vault. These are never removed
   automatically; see [Known limitations](#known-limitations) for why.
+- **Clear every saved order** — shown when any order is saved at all. Clears
+  all of them at once, after a confirmation naming how many folders are
+  affected, for undoing a pass over a whole tree without revisiting each
+  folder. Your files and folders are not touched, and there is no undo.
 
 ## If the order note can't be read
 
