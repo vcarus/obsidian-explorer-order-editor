@@ -39,7 +39,7 @@ Everything this plugin puts in a right-click menu lives under that one
 **Explorer order** entry, so it costs a single line in a menu you opened to do
 something else.
 
-![Right-clicking the file explorer, dragging the vault's top-level folders into a chosen order, and saving — after which the file explorer shows that order instead of the alphabetical one](docs/images/reorder.gif)
+![Opening the dialog from the right-click menu, opening a subfolder from inside it so the path at the top gains a level, sorting that folder by modification date so every row gains its date, and saving](docs/images/subfolders.gif)
 
 For the vault root, right-click empty space below the last item in the file
 explorer. There are also **Set explorer order for vault root** and **Clear
@@ -71,8 +71,6 @@ four levels deep back to the vault root is one click rather than four. Nothing
 is saved behind your back: if you have dragged rows, the control you are about
 to click says **Save and open "…"** and does exactly that; if you have not
 touched anything, opening a folder writes nothing at all.
-
-![Opening the dialog from the right-click menu, then opening a subfolder from inside it: the path at the top gains a level, the folder's own contents are listed ready to arrange, and sorting by modification date puts a date on every row](docs/images/subfolders.gif)
 
 ### Nudge one item from the right-click menu
 
