@@ -36,3 +36,37 @@ jobs:
             # and exits non-zero on a syntax error, which nothing else catches.
             - name: Build
               run: npm run build
+
+    # The job above proves nothing about the lockfile, because it runs the one
+    # npm that forgives a broken one. npm 11 skips lockfile entries flagged
+    # `extraneous` and treats an unsatisfiable optional peer as absent; npm 9
+    # and 10 reify the first and demand a nested copy for the second, and stop.
+    #
+    # The community scorecard's scanner installs with an older npm, and a
+    # lockfile it cannot install does not surface as an install failure. It
+    # lints anyway, with `obsidian` and `@types/node` unresolved, so every
+    # symbol from them degrades to the TypeScript error type and the plugin
+    # page fills with hundreds of `no-unsafe-*` findings about code that is
+    # fine. That is how 1.4.2 shipped a lockfile no scanner could install
+    # while this workflow stayed green.
+    #
+    # Installing is the whole assertion; nothing is run against the result.
+    lockfile:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v6
+
+            - name: Use Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
+            # Deliberately not the bundled npm. Deliberately no cache: a warm
+            # cache is not what is under test, a cold resolve is.
+            - name: Install with the oldest npm the scanner may use
+              run: npx -y npm@9 ci --ignore-scripts
+
+            # Unresolved types are the actual failure mode, and npm can exit 0
+            # having skipped a package it decided was optional.
+            - name: Assert the typings the scanner needs are on disk
+              run: test -f node_modules/obsidian/obsidian.d.ts
