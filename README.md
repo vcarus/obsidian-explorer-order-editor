@@ -65,14 +65,14 @@ other item the order doesn't mention.
 
 Because an order covers one folder at a time (see below), arranging a whole
 tree means visiting each folder in turn — so the dialog lets you walk the tree
-without closing it. Every folder row has a **›** button that opens that
+without closing it. Every folder row has an arrow button that opens that
 folder, and each level of the path at the top is clickable, so getting from
 four levels deep back to the vault root is one click rather than four. Nothing
 is saved behind your back: if you have dragged rows, the control you are about
 to click says **Save and open "…"** and does exactly that; if you have not
 touched anything, opening a folder writes nothing at all.
 
-![Opening a subfolder from inside the dialog: the path at the top gains a level, and the folder's own contents are listed ready to arrange](docs/images/subfolders.gif)
+![Opening the dialog from the right-click menu, then opening a subfolder from inside it: the path at the top gains a level, the folder's own contents are listed ready to arrange, and sorting by modification date puts a date on every row](docs/images/subfolders.gif)
 
 ### Nudge one item from the right-click menu
 
