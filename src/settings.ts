@@ -13,9 +13,9 @@
  */
 import { App, normalizePath, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
 import { ConfirmModal } from './ConfirmModal';
-import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
+import { requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { pruneMissing } from './orderIndex';
-import { isQuarantinePath } from './quarantine';
+import { isQuarantinePath, quarantineFolderPath } from './quarantine';
 
 export interface ExplorerOrderEditorSettings {
 	/**
@@ -234,27 +234,48 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 
 	/**
 	 * Guards every action row on this tab while any one of them is running:
-	 * several walk the whole vault, and two overlapping passes would race
-	 * each other's writes (to the vault, or to the order note itself).
+	 * two overlapping passes would race each other's writes (to the vault, or
+	 * to the order note itself).
 	 */
 	private busy = false;
 
-	/** Every kept copy of an unreadable order note currently in the vault. */
+	/**
+	 * Every kept copy of an unreadable order note currently in the vault.
+	 *
+	 * Only the index note's own folder is read, never the whole vault, and
+	 * that is not an optimization that trades away correctness: a quarantine
+	 * copy is always a sibling of the note it was made from, and
+	 * `isQuarantinePath` rejects on `note.folder !== candidate.folder` before
+	 * it looks at anything else. Enumerating the vault only ever produced
+	 * candidates that check was about to throw away.
+	 *
+	 * The folder is resolved from the configured path rather than from the
+	 * note itself, because a copy outliving its note is exactly the state this
+	 * row exists to clean up — the note can have been deleted by hand since.
+	 */
 	private quarantineFiles(): readonly TFile[] {
 		const notePath = normalizePath(this.plugin.settings.indexPath);
-		return this.app.vault.getFiles().filter((file) => isQuarantinePath(notePath, file.path));
+		const folderPath = quarantineFolderPath(notePath);
+		const folder = folderPath === null ? this.app.vault.getRoot() : this.app.vault.getFolderByPath(folderPath);
+		if (folder === null) return [];
+		return folder.children.filter((child): child is TFile => child instanceof TFile && isQuarantinePath(notePath, child.path));
 	}
 
 	/**
-	 * Every folder currently in the vault, keyed exactly the way the index
-	 * keys its own entries — via `folderIndexKey`, not raw `TFolder.path` —
-	 * so this set and the index can never disagree about what the vault root
-	 * is called. `getAllFolders(true)` includes the root itself, which is why
-	 * this doesn't also need to special-case it the way `folderIndexKey`'s own
-	 * callers elsewhere do.
+	 * Whether an index key still names a folder in the vault.
+	 *
+	 * Asked per key rather than by listing every folder and searching that
+	 * list, which means the question costs one `fileMap` lookup and the whole
+	 * answer costs one per saved order — no term in it grows with the vault.
+	 *
+	 * The inversion is exact, not approximate: `folderIndexKey` is
+	 * `isRoot() ? '/' : folder.path`, so `/` is the vault root, which exists
+	 * by definition, and every other key is a folder path verbatim. Should
+	 * that function ever key folders any other way, this has to move with it —
+	 * they are two directions of one mapping.
 	 */
-	private existingFolderKeys(): ReadonlySet<string> {
-		return new Set(this.app.vault.getAllFolders(true).map((folder) => folderIndexKey(folder)));
+	private folderExists(key: string): boolean {
+		return key === '/' || this.app.vault.getFolderByPath(key) !== null;
 	}
 
 	/**
@@ -265,8 +286,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 * prune removes the last one.
 	 */
 	private staleKeys(): readonly string[] {
-		const existing = this.existingFolderKeys();
-		return [...this.plugin.store.keys()].filter((key) => !existing.has(key));
+		return [...this.plugin.store.keys()].filter((key) => !this.folderExists(key));
 	}
 
 	private async runDeleteQuarantines(): Promise<void> {
@@ -331,9 +351,15 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		this.busy = true;
 		this.update();
 		try {
-			const existing = this.existingFolderKeys();
 			let removed = 0;
 			const ok = await this.plugin.store.updateOrRepair((index) => {
+				// `pruneMissing` only ever asks this set about keys already in
+				// the index, so restricting it to those is not a shortcut with
+				// a different meaning — it is the same set, minus the folders
+				// the question was never going to be asked about. Built inside
+				// the mutation function so it describes the index actually
+				// being pruned, not one read before the confirmation dialog.
+				const existing = new Set([...index.keys()].filter((key) => this.folderExists(key)));
 				const pruned = pruneMissing(index, existing);
 				removed = index.size - pruned.size;
 				return pruned;

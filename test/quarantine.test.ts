@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findFreeQuarantinePath, isQuarantinePath, quarantinePath } from '../src/quarantine';
+import { findFreeQuarantinePath, isQuarantinePath, quarantineFolderPath, quarantinePath } from '../src/quarantine';
 
 const TIMESTAMP = new Date(2026, 7, 8, 14, 3); // 2026-08-08 14:03 local time, month is 0-indexed
 
@@ -108,5 +108,35 @@ describe('isQuarantinePath', () => {
 	it('matches inside a subfolder, and respects the extension', () => {
 		expect(isQuarantinePath('config/explorer-order.md', 'config/explorer-order (unreadable 2026-08-08 1729).md')).toBe(true);
 		expect(isQuarantinePath('explorer-order.md', 'explorer-order (unreadable 2026-08-08 1729).txt')).toBe(false);
+	});
+});
+
+describe('quarantineFolderPath', () => {
+	it('reports the vault root as null rather than as an empty path', () => {
+		expect(quarantineFolderPath('explorer-order.md')).toBe(null);
+	});
+
+	it('reports the note\'s own folder, however deep', () => {
+		expect(quarantineFolderPath('config/explorer-order.md')).toBe('config');
+		expect(quarantineFolderPath('meta/plugins/config/explorer-order.md')).toBe('meta/plugins/config');
+	});
+
+	// The reason this function is allowed to exist: a caller may read only
+	// this one folder instead of the whole vault. That is a correct swap only
+	// while every path `quarantinePath` can produce lands in it, so assert the
+	// two functions against each other rather than against a literal.
+	it('contains every path quarantinePath can produce for that note', () => {
+		const when = new Date(2026, 7, 8, 17, 29);
+		for (const notePath of ['explorer-order.md', 'config/explorer-order.md', 'meta/plugins/order.md']) {
+			const folder = quarantineFolderPath(notePath);
+			for (const suffix of [0, 1, 7]) {
+				const copy = quarantinePath(notePath, when, suffix);
+				const copyFolder = copy.includes('/') ? copy.slice(0, copy.lastIndexOf('/')) : null;
+				expect(copyFolder).toBe(folder);
+				// And the copy is one this module would recognise, so reading
+				// that folder and filtering with `isQuarantinePath` loses none.
+				expect(isQuarantinePath(notePath, copy)).toBe(true);
+			}
+		}
 	});
 });

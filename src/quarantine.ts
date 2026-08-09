@@ -90,6 +90,28 @@ export function findFreeQuarantinePath(notePath: string, timestamp: Date, isTake
 }
 
 /**
+ * The folder every quarantine copy of `notePath` lives in, or `null` when
+ * that is the vault root — `quarantinePath` above only ever varies the
+ * basename, so this is the same folder as the note's own, always.
+ *
+ * Exists so a caller can look in one folder instead of enumerating the whole
+ * vault and filtering with `isQuarantinePath`, which would only ever discard
+ * what it found: that predicate's first test is `note.folder !==
+ * candidate.folder`. Kept here rather than at the call site for the reason
+ * given below — where the copies go and where they are looked for are one
+ * fact, and it is only true while it is written once.
+ *
+ * `null` rather than `''` for the root: a caller has to resolve this through
+ * a different vault call either way (`getRoot()` vs `getFolderByPath()`), so
+ * the type makes it say which, instead of passing an empty string to a lookup
+ * that would answer `null` and be indistinguishable from a missing folder.
+ */
+export function quarantineFolderPath(notePath: string): string | null {
+	const { folder } = splitPath(notePath);
+	return folder === '' ? null : folder;
+}
+
+/**
  * Whether `candidatePath` is a quarantine copy this module would have made
  * for `notePath` — same folder, same basename, the marker in the same place,
  * same extension. Used to find copies to offer for deletion, so the pattern
