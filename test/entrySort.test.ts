@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SORT_CHOICES, sortEntries, type SortableEntry, type SortKey } from '../src/entrySort';
+import { SORT_CHOICES, sortEntries, timestampFor, type SortableEntry, type SortKey } from '../src/entrySort';
 import { fallbackEntryOrder } from '../src/types';
 
 const file = (name: string, ctime: number | null = null, mtime: number | null = null): SortableEntry => ({
@@ -208,5 +208,36 @@ describe('sortEntries', () => {
 		const snapshot = [...input];
 		sortEntries(input, 'created', true);
 		expect(input).toEqual(snapshot);
+	});
+});
+
+describe('timestampFor', () => {
+	it('created: a file reports its ctime', () => {
+		expect(timestampFor(file('a.md', 10, 20), 'created')).toBe(10);
+	});
+
+	it('modified: a file reports its mtime', () => {
+		expect(timestampFor(file('a.md', 10, 20), 'modified')).toBe(20);
+	});
+
+	it('name: nothing to show, the names on screen are already the sort key', () => {
+		expect(timestampFor(file('a.md', 10, 20), 'name')).toBeNull();
+		expect(timestampFor(folder('sub'), 'name')).toBeNull();
+	});
+
+	it('a folder reports nothing under either date key: it carries no stat', () => {
+		expect(timestampFor(folder('sub'), 'created')).toBeNull();
+		expect(timestampFor(folder('sub'), 'modified')).toBeNull();
+	});
+
+	it('a file with a null timestamp for the chosen key reports nothing', () => {
+		expect(timestampFor(file('a.md', null, 20), 'created')).toBeNull();
+		expect(timestampFor(file('a.md', 10, null), 'modified')).toBeNull();
+	});
+
+	it('reports a real 0 timestamp rather than treating it as missing', () => {
+		// The epoch is a legitimate value; only `null` means "no value".
+		expect(timestampFor(file('a.md', 0, 0), 'created')).toBe(0);
+		expect(timestampFor(file('a.md', 0, 0), 'modified')).toBe(0);
 	});
 });

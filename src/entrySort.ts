@@ -155,6 +155,33 @@ export function sortEntries(entries: readonly SortableEntry[], key: SortKey, des
 	return [...entries].sort((a, b) => compareEntries(a, b, key, descending));
 }
 
+/**
+ * The timestamp a row should display alongside its name once the list has
+ * been sorted by `key`, or `null` when it should display nothing.
+ *
+ * The dialog annotates each row with the value the current arrangement was
+ * derived from, so that a date sort can be checked rather than taken on
+ * faith — an ordering by a number nobody can see is one the user has to
+ * trust blindly. Which is also why this returns `null` for `key === 'name'`:
+ * there the visible names *are* the sort key, and a date column would be
+ * unrelated data competing with them.
+ *
+ * `null` for folders too, for the reason given throughout this module: they
+ * carry no `stat`, so there is no date to show. That absence is useful on
+ * screen rather than merely honest — an empty date beside every folder is
+ * the plainest available explanation of why folders always sort first.
+ *
+ * Only "which value, or none" lives here. Turning the number into text is
+ * the caller's job (`OrderModal.ts`): that is locale- and
+ * environment-dependent formatting, not a decision, and pinning it down
+ * enough to unit-test would mean testing `Intl` rather than this plugin.
+ */
+export function timestampFor(entry: SortableEntry, key: SortKey): number | null {
+	if (key === 'name') return null;
+	if (entry.kind === 'folder') return null;
+	return key === 'created' ? entry.ctime : entry.mtime;
+}
+
 function compareEntries(a: SortableEntry, b: SortableEntry, key: SortKey, descending: boolean): number {
 	if (a.kind !== b.kind) return isFolder(a.kind) ? -1 : 1;
 
