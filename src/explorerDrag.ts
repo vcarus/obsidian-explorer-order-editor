@@ -252,12 +252,22 @@ class DropIndicator {
 	private el: HTMLElement | null = null;
 	private side: DropSide | null = null;
 
-	show(rowEl: HTMLElement, side: DropSide): void {
-		if (this.el === rowEl && this.side === side) return;
+	/**
+	 * Returns whether this call actually changed anything — i.e. whether the
+	 * pointer just arrived at a new row/side rather than staying put on one
+	 * already lit. `dragover` fires per mouse message, which on a high polling
+	 * rate mouse is several hundred a second, and all but a handful of those
+	 * describe a position this indicator is already showing. Callers use the
+	 * return value to skip the work that only makes sense on an actual
+	 * transition.
+	 */
+	show(rowEl: HTMLElement, side: DropSide): boolean {
+		if (this.el === rowEl && this.side === side) return false;
 		this.clear();
 		rowEl.classList.add(side === 'before' ? 'eoe-drop-before' : 'eoe-drop-after');
 		this.el = rowEl;
 		this.side = side;
+		return true;
 	}
 
 	clear(): void {
@@ -461,19 +471,28 @@ function handleDragOverLike(host: MoveItemHost, indicator: DropIndicator, scroll
 
 	evt.preventDefault();
 	if (evt.dataTransfer !== null) evt.dataTransfer.dropEffect = 'move';
-	indicator.show(resolved.rowEl, resolved.side);
 
-	// Once `preventDefault()` above has run, the file explorer's own
-	// `dragenter`/`dragover` handlers for this element never execute at all
-	// for this event (see the module doc comment) — which means whatever
-	// `is-being-dragged-over` highlight one of *those* handlers painted on a
-	// previous frame is never revisited by them, and never gets cleared.
-	// Left alone, that highlight and this plugin's own indicator line would
-	// show at once — one saying "drop into this folder," the other "insert
-	// here" — which is a direct contradiction, not just visual noise.
-	// `updateHover(null, '')` is DragManager's own way of saying "nothing is
-	// currently hovered," which is the accurate state once this has taken
-	// the event over.
+	// Only on an actual transition, not on every event. Once `preventDefault()`
+	// above has run, the file explorer's own `dragenter`/`dragover` handlers
+	// for this element never execute at all for this event (see the module doc
+	// comment) — which means whatever `is-being-dragged-over` highlight one of
+	// *those* handlers painted on a previous frame is never revisited by them,
+	// and never gets cleared. Left alone, that highlight and this plugin's own
+	// indicator line would show at once — one saying "drop into this folder,"
+	// the other "insert here" — which is a direct contradiction, not just
+	// visual noise. `updateHover(null, '')` is DragManager's own way of saying
+	// "nothing is currently hovered," which is the accurate state once this has
+	// taken the event over.
+	//
+	// Clearing it once is enough, and calling it per event was measurably
+	// harmful: `dragover` arrives per mouse message — 392/s measured on a
+	// high-polling-rate mouse, over eight seconds of hovering — and this is a
+	// DOM write interleaved with the `getBoundingClientRect()` `resolveDrop`
+	// does just above, which is the classic shape of layout thrashing. While
+	// this plugin keeps intercepting, nothing repaints that highlight anyway:
+	// the handlers that would are the ones `preventDefault()` is stopping.
+	if (!indicator.show(resolved.rowEl, resolved.side)) return;
+
 	const dragManager = (host.app as AppWithDragManager).dragManager;
 	if (typeof dragManager?.updateHover === 'function') {
 		dragManager.updateHover(null, '');
