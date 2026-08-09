@@ -160,13 +160,16 @@ export class IndexFileStore {
 	 * neither is a fault. `status: 'empty'` is subtler — see `applyParsed`.
 	 */
 	async load(): Promise<void> {
-		const file = this.host.app.vault.getFileByPath(this.notePath());
-		if (file === null) {
+		const path = this.notePath();
+		const text = await this.readNote(path);
+		if (text === null) {
+			// Genuinely absent, confirmed against the filesystem — not merely
+			// missing from a `Vault` index that may not be built yet. See
+			// `readNote`.
 			this.index = new Map();
 			this.markUsable();
 			return;
 		}
-		const text = await this.host.app.vault.cachedRead(file);
 		const result = parseIndex(text);
 		// The backup is only consulted for the one judgment `applyParsed`
 		// cannot make on its own at startup, where nothing is loaded yet: is
@@ -174,6 +177,36 @@ export class IndexFileStore {
 		// destroyed? Read only when that question actually arises.
 		const hadBlockBefore = result.status === 'empty' ? (await this.readBackup()).size > 0 : false;
 		this.applyParsed(result, text, hadBlockBefore);
+	}
+
+	/**
+	 * The index note's text, or `null` only when the note genuinely is not
+	 * there.
+	 *
+	 * `vault.getFileByPath` answers from the `Vault`'s in-memory file map, and
+	 * **that map is not populated yet while `onload` runs during a cold app
+	 * start**. `load()` used to treat its `null` as "no note has been written
+	 * yet", which on every cold start produced an empty index that reported
+	 * itself perfectly healthy: no orders rendered, no repair row, nothing in
+	 * the console — and the next write would then have persisted that emptiness
+	 * over a note that still held every order. Reported as issue #1, and
+	 * invisible to every hand test this project ever ran, because reloading the
+	 * plugin from the settings toggle or via hot-reload re-enters `onload` at a
+	 * point where the map *is* built. Only quitting and reopening Obsidian
+	 * reaches the broken path.
+	 *
+	 * So a `null` from the file map is not evidence of absence: it is checked
+	 * against the vault adapter, which reads the filesystem directly and needs
+	 * no index. `cachedRead` is still preferred when the map does have the
+	 * file, since that is the warm path and shares Obsidian's own cache.
+	 */
+	private async readNote(path: string): Promise<string | null> {
+		const file = this.host.app.vault.getFileByPath(path);
+		if (file !== null) return this.host.app.vault.cachedRead(file);
+
+		const { adapter } = this.host.app.vault;
+		if (!(await adapter.exists(path))) return null;
+		return adapter.read(path);
 	}
 
 	/**
