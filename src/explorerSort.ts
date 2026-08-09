@@ -21,10 +21,9 @@
  * monkey-patches `leaf.view.constructor.prototype.getSortedFolderItems` with
  * its own `around`-style helper — the same contract `patch.ts` reimplements)
  * — the one deliberate exception to this project's usual "no monkey-patching
- * the file tree" rule (see CLAUDE.md). Everything else in that rule still
- * stands: this never touches the DOM the file explorer builds, never calls a
- * private renderer, and always falls back to the explorer's own result on
- * any error.
+ * the file tree" rule. Everything else in that rule still stands: this never
+ * touches the DOM the file explorer builds, never calls a private renderer,
+ * and always falls back to the explorer's own result on any error.
  */
 import { App, normalizePath, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
 import { folderIndexKey, type IndexFileStore } from './indexFile';

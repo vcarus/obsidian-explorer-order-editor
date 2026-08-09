@@ -68,8 +68,8 @@ const SCROLL_MAX_STEP_PX = 12;
  * this codebase reaches for an internal: never a bare `as any`, and nothing
  * declared as a `declare module 'obsidian'` augmentation of `App` itself
  * (that would make every *other* consumer of `App` believe it always has a
- * `dragManager`, which is exactly the mistake CLAUDE.md's `View`-augmentation
- * warning is about, applied to a different class).
+ * `dragManager` — the same trap a `View` augmentation sets for every view
+ * that isn't the file explorer, applied here to a different class).
  *
  * Only the two members this file actually reads: `draggable`, to identify
  * what's being dragged (see `resolveDrop`'s judgment below), and
