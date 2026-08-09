@@ -1,12 +1,12 @@
 /**
  * Pure path arithmetic for the "quarantine" copy `IndexFileStore` creates
- * beside the order index note when it heals an unreadable one (M10e): the
+ * beside the order index note when it heals an unreadable one: the
  * unreadable text is preserved under a sibling name before the note is
  * rebuilt, so healing can never destroy the only copy of whatever the broken
  * note held.
  *
- * Zero imports, synchronous — same discipline as `orderIndex.ts` and
- * `frontmatter.ts`: this module never touches `obsidian`. The actual
+ * Zero imports, synchronous — same discipline as `orderIndex.ts`: this module
+ * never touches `obsidian`. The actual
  * `vault.create`/`vault.getAbstractFileByPath` calls this feeds live in
  * `indexFile.ts`.
  */

@@ -1,5 +1,5 @@
 /**
- * Pure judgments for the reorder modal's in-dialog navigation (M8): walking
+ * Pure judgments for the reorder modal's in-dialog navigation: walking
  * into a subfolder, or back out to any ancestor, without closing the dialog.
  * Kept free of any import besides `Entry`'s type — `OrderModal.ts` imports
  * `obsidian` and so has no unit-test surface at all, the same reason

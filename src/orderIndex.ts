@@ -7,13 +7,12 @@
  * Zero imports, synchronous, no I/O — this module never touches `obsidian`.
  * Everything here operates on the note's full text (the string a caller read
  * from/will write to the note file); locating and splicing the fenced block
- * within that text is this module's job, same as `frontmatter.ts` does for
- * sortspec.md's YAML key, but far simpler: there is exactly one block to
- * find, and its content is JSON we parse with `JSON.parse`, not a bespoke
- * grammar.
+ * within that text is this module's job, and a simple one: there is exactly
+ * one block to find, and its content is JSON we parse with `JSON.parse`,
+ * rather than a bespoke grammar.
  *
- * Format contract (see the M10a brief): the block's JSON is one folder per
- * line, keys sorted, e.g.:
+ * Format contract: the block's JSON is one folder per line, keys sorted,
+ * e.g.:
  *
  *   {
  *     "Projects/Alpha": ["Design.md", "Notes", "TODO.md"],
@@ -207,8 +206,8 @@ function appendBlock(noteText: string, index: OrderIndex): string {
  * safe (see `findJsonBlock`). Callers already have to handle `parseIndex`
  * reporting the same note `invalid`; this makes the write side refuse in
  * exactly the cases the read side does, rather than quietly producing a note
- * that can never be read back. Same shape as `frontmatter.ts` throwing rather
- * than rewriting a file whose front matter it cannot delimit.
+ * that can never be read back: refusing to write is the only answer that
+ * cannot lose what the note already holds.
  */
 export function serializeIndex(noteText: string, index: OrderIndex): string {
 	if (noteText === '') {
@@ -233,7 +232,7 @@ export function serializeIndex(noteText: string, index: OrderIndex): string {
 }
 
 // ---------------------------------------------------------------------------
-// Salvage & recovery (M10e) — never destroy unreadable content, only ever
+// Salvage & recovery — never destroy unreadable content, only ever
 // try to recover from it. See indexFile.ts's `IndexFileStore` for how this
 // is actually invoked; everything here is pure and needs no vault I/O.
 // ---------------------------------------------------------------------------
@@ -407,7 +406,7 @@ export interface RecoveryResult {
 }
 
 /**
- * Builds the index `IndexFileStore` heals with (M10e), as a union of three
+ * Builds the index `IndexFileStore` heals with, as a union of three
  * sources rather than a choice between them, in this precedence:
  *
  * 1. `salvageIndex(unreadableText)` — what the broken note's text actually

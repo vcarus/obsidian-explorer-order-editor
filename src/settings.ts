@@ -35,8 +35,8 @@ export interface ExplorerOrderEditorSettings {
 	 */
 	readonly hideIndexFile: boolean;
 	/**
-	 * Let dragging a row in the file explorer itself reorder it (M12b,
-	 * `explorerDrag.ts`) — same-folder reordering and dropping onto a
+	 * Let dragging a row in the file explorer itself reorder it
+	 * (`explorerDrag.ts`) — same-folder reordering and dropping onto a
 	 * specific position in a different folder, without opening "Set explorer
 	 * order" first. Read at the moment each drag event fires
 	 * (`explorerDrag.ts`'s judgment checks it first, before anything else),
@@ -127,7 +127,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				desc: 'Add move up, move down, move to top and move to bottom to the right-click menu. The four commands stay available for hotkeys either way.',
 				control: { type: 'toggle', key: 'showMoveActions' },
 			},
-			// The cold-start repair action (M10e part 5): only ever visible
+			// The cold-start repair action: only ever visible
 			// while the store is unusable, so a healthy vault never shows it.
 			// Saving or clearing an order already attempts this same repair
 			// automatically the moment it needs to write — this row exists for
@@ -441,13 +441,12 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	}
 
 	/**
-	 * "Repair the order note" (M10e part 5). Only ever visible while the
-	 * store is unusable, so this row is the explicit, discoverable action for
-	 * the cold-start case: a bad note found at load time leaves nothing in
-	 * memory, and healing automatically at that point would risk clobbering
-	 * an edit the user made deliberately while Obsidian was closed — so
-	 * nothing repairs until this (or a save/clear/migration row) is actually
-	 * clicked. `store.repair()` runs the identical recovery machinery those
+	 * "Repair the order note". Only ever visible while the store is unusable,
+	 * so this row is the explicit, discoverable action for the cold-start
+	 * case: a bad note found at load time leaves nothing in memory, and
+	 * healing automatically at that point would risk clobbering an edit the
+	 * user made deliberately while Obsidian was closed — so nothing repairs
+	 * until this, a save or a clear is actually clicked. `store.repair()` runs the identical recovery machinery those
 	 * other actions trigger automatically, already reports its own outcome
 	 * via a Notice (success naming the quarantine note, failure logged), so
 	 * this only has to redraw the tab — the row disappears on success because

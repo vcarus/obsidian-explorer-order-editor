@@ -586,7 +586,7 @@ describe('mergeOrder', () => {
 });
 
 // ---------------------------------------------------------------------------
-// salvageIndex (M10e)
+// salvageIndex
 // ---------------------------------------------------------------------------
 
 describe('salvageIndex', () => {
@@ -716,7 +716,7 @@ describe('salvageIndex without a fence', () => {
 });
 
 // ---------------------------------------------------------------------------
-// recoverIndex (M10e) — also the only remaining coverage of the internal
+// recoverIndex — also the only remaining coverage of the internal
 // `mergeIndexesByPrecedence` helper it's built on: that function is no
 // longer exported (recoverIndex is its only caller in src/, always with the
 // same fixed three-source [salvage, memory, backup] shape), so the general

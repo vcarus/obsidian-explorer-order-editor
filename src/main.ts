@@ -10,7 +10,7 @@ import { moveNameInOrder, type RowMove } from './rowMove';
 import { DEFAULT_SETTINGS, ExplorerOrderEditorSettingTab, type ExplorerOrderEditorSettings } from './settings';
 
 /**
- * The four direct move actions (M11), each as `[move, title, icon]` — one
+ * The four direct move actions, each as `[move, title, icon]` — one
  * source of truth shared by the context menu items (`addMoveMenuItems`) and
  * the commands (`onload`), so the two entry points can never drift into
  * different labels or a different set of moves.
@@ -112,7 +112,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		this.app.workspace.onLayoutReady(() => installExplorerSort(this));
 
 		// Same reasoning, same retry-until-success shape, for the tree's own
-		// drag-and-drop (M12b): installExplorerDrag needs the same file
+		// drag-and-drop: installExplorerDrag needs the same file
 		// explorer leaf/view installExplorerSort does, and is independent of
 		// it otherwise, so it gets its own onLayoutReady call rather than
 		// being folded into the one above.
@@ -147,7 +147,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			},
 		});
 
-		// One command per direct move action (M11), so each can be given a
+		// One command per direct move action, so each can be given a
 		// hotkey — the context menu items above cover the mouse case, but
 		// hotkeys need commands regardless.
 		//
@@ -200,7 +200,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	private async loadSettings(): Promise<void> {
 		const data = (await this.loadData()) as Partial<ExplorerOrderEditorSettings> | null;
 		// Picked field by field, not `{...DEFAULT_SETTINGS, ...data}`: `data`
-		// is whatever `data.json` currently holds, which since M10e can also
+		// is whatever `data.json` currently holds, which can also
 		// carry `IndexFileStore`'s index backup (see `saveSettings` below).
 		// Spreading the whole object would leak that stray key into
 		// `this.settings` at runtime (the `Partial<...>` cast doesn't strip it),
@@ -217,7 +217,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		// Read-modify-write, not a blind `saveData(this.settings)`: `data.json`
-		// is shared with `IndexFileStore`'s index backup (M10e part 2) under a
+		// is shared with `IndexFileStore`'s index backup under a
 		// key this settings object doesn't know about, and a wholesale
 		// overwrite from this stale-by-construction object would erase it.
 		const data = (await this.loadData()) as Record<string, unknown> | null;
@@ -236,7 +236,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		}
 
 		// `updateOrRepair`, not `update`: if the order note has since become
-		// unreadable, this is one of the three explicit user actions M10e
+		// unreadable, this is one of the three explicit user actions the store
 		// heals on, so it gets a chance to repair the note before completing
 		// the clear rather than refusing outright. Still checked, not
 		// assumed — a repair with nothing left to recover still refuses, and
@@ -372,7 +372,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	}
 
 	/**
-	 * Whichever of the four direct move actions (M11) would actually do
+	 * Whichever of the four direct move actions would actually do
 	 * something for `file` — a move that is already a no-op is omitted rather
 	 * than offered as a dead click.
 	 *

@@ -20,7 +20,7 @@
  * worth keeping: `store.update()` is synchronous, but wrapping each
  * reaction in the same `enqueue`/`chain` shape as before still isolates one
  * failing op from blocking the ones queued after it, and keeps this module's
- * shape stable for whatever M10c does next.
+ * shape stable for whatever builds on it next.
  *
  * Explicitly out of scope, not bugs:
  * - A rename that happens while this plugin isn't running (e.g. another
@@ -34,7 +34,7 @@
  *   rename this module sees on its own, with no other signal attached, still
  *   has no way to know where in the destination the user would want the item,
  *   so it joins every other child that folder's order doesn't mention,
- *   exactly where a brand-new file would land. Since M12b that is no longer
+ *   exactly where a brand-new file would land. Since 1.2 that is no longer
  *   the only way an item can end up moved: `moveItem.ts`'s `applyDrop` is a
  *   signal for exactly that (a tree drag dropped on a specific row), and it
  *   supplies the position itself — by writing the destination folder's order
@@ -67,7 +67,7 @@ class OrderSyncCoordinator {
 	// mutation or refuses and logs), but chaining every reaction onto one
 	// FIFO promise still means an op that somehow throws can never leave a
 	// later op running out of order, and keeps this module's shape stable
-	// for whatever M10c builds on top of it.
+	// for whatever builds on top of it.
 	private chain: Promise<void> = Promise.resolve();
 
 	private failureCount = 0;

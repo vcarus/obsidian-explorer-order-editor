@@ -1,7 +1,7 @@
 /**
  * Patches the file explorer to render the order this plugin stores.
  *
- * Since M10b there is a single vault-level order index (`orderIndex.ts`,
+ * Since 1.0 there is a single vault-level order index (`orderIndex.ts`,
  * held in memory by `IndexFileStore`) and this is the only thing that ever
  * renders it — there is no longer a separately-installed renderer (the old
  * custom-sort integration) to defer to, so the rule is simply "override

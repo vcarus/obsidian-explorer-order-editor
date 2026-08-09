@@ -16,7 +16,7 @@ const ICON_GRIP = 'lucide-grip-vertical';
 const ICON_MOVE_TOP = 'lucide-chevrons-up';
 const ICON_MOVE_BOTTOM = 'lucide-chevrons-down';
 /**
- * The per-row "enter subfolder" control (M8). Circled rather than the bare
+ * The per-row "enter subfolder" control. Circled rather than the bare
  * `lucide-chevron-right` it used to be, and that is what lets the row's
  * action group drop its separator line.
  *
@@ -36,7 +36,7 @@ const ICON_ENTER = 'lucide-circle-chevron-right';
 /**
  * How many breadcrumb positions (folders plus, when truncated, the ellipsis
  * that stands in for the rest) the trail ever renders. The budget this
- * bounds is no longer horizontal width but *rendered lines* (M8c): each
+ * bounds is no longer horizontal width but *rendered lines*: each
  * position gets its own row now, and a line is cheap in a way a share of one
  * shared line's width never was — that's the whole reason for going
  * vertical. 5 keeps the vault root, two real ancestors and the current
@@ -171,7 +171,7 @@ export class OrderModal extends Modal {
 	 *
 	 * The one piece of state `resetContent` must *not* clear: everything else
 	 * there belongs to a single level, whereas this deliberately survives
-	 * every level switch — that is the entire mechanism. Since M10b there is
+	 * every level switch — that is the entire mechanism. Since 1.0 there is
 	 * no metadata cache to wait for (the index is ours, already updated in
 	 * memory the moment `save()` returns), so this is a plain boolean rather
 	 * than an armed promise.
@@ -556,8 +556,8 @@ export class OrderModal extends Modal {
 	}
 
 	/**
-	 * The breadcrumb trail (M8c), a stepped vertical hierarchy replacing the
-	 * single horizontal line of M8b: one folder per rendered line, each
+	 * The breadcrumb trail, a stepped vertical hierarchy replacing the
+	 * single horizontal line it grew out of: one folder per rendered line, each
 	 * indented one step past the one above, so every level gets essentially
 	 * the full modal width instead of several names fighting over one line —
 	 * the horizontal version had no good answer for a long ancestor sitting
@@ -902,7 +902,7 @@ export class OrderModal extends Modal {
 	}
 
 	/**
-	 * The per-row "enter subfolder" control (M8). No SortableJS `filter`
+	 * The per-row "enter subfolder" control. No SortableJS `filter`
 	 * option is needed to keep this from starting a drag: dragging is already
 	 * restricted to `.eoe-row-handle` (the `handle` option in `render`), and
 	 * this button isn't part of it.
@@ -1079,7 +1079,7 @@ export class OrderModal extends Modal {
 	 * success, the latter needs the modal to stay open so it can then switch
 	 * levels), so that decision is left to the caller.
 	 *
-	 * Genuinely `async` now (M10e): `store.updateOrRepair` heals the order
+	 * Genuinely `async`: `store.updateOrRepair` heals the order
 	 * note first when it's unusable, rather than refusing outright, which
 	 * needs real I/O (quarantining the unreadable text, rebuilding the
 	 * note). There is no cheap pre-check to short-circuit on any more — the

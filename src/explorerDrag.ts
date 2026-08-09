@@ -1,7 +1,7 @@
 /**
  * Lets a drag started inside the file explorer itself reorder rows, instead
  * of only ever moving the dragged item *into* whatever folder it's dropped
- * on (M12b).
+ * on.
  *
  * Same shape as `explorerSort.ts`: locate the file explorer leaf once from
  * `onLayoutReady`, retry on `layout-change` until it exists, then patch
@@ -16,7 +16,7 @@
  * alongside it.
  *
  * How the interception actually works (verified against obsidian.asar, not
- * guessed — see the git history for the M12 spec this implements):
+ * guessed):
  * `DragManager.handleDrop` registers its `dragover`/`dragenter`/`drop`
  * listeners on each drop target in the *bubbling* phase, and every one of
  * those wrapped callbacks bails out immediately if the event already arrives
@@ -49,7 +49,7 @@ import { requestFileExplorerResort } from './indexFile';
 import { applyDrop, type MoveItemHost } from './moveItem';
 
 /**
- * Auto-scroll tuning (M12c). `SCROLL_ZONE_PX` is the band, measured from
+ * Auto-scroll tuning. `SCROLL_ZONE_PX` is the band, measured from
  * each edge of the scroll container, that counts as "close enough to the
  * edge to start scrolling" — passed straight through to `scrollStepFor`
  * (`dropZone.ts`), which is also where it gets shrunk if the container
@@ -127,8 +127,8 @@ interface ResolvedDrop {
 }
 
 /**
- * The one judgment shared by `dragover`, `dragenter`, and `drop` (per the
- * M12 spec — deliberately not three separate copies, so a future change to
+ * The one judgment shared by `dragover`, `dragenter`, and `drop` — one
+ * function deliberately, not three separate copies, so a future change to
  * any of these checks can't drift between the events that decide whether to
  * intercept and the one that actually acts). Returns `null` for "do not
  * intercept this event — let Obsidian's native drag-and-drop handle it
@@ -151,7 +151,7 @@ function resolveDrop(host: MoveItemHost, evt: DragEvent): ResolvedDrop | null {
 	// carries a `.file`) and multi-select drags (`type: 'files'`, no `.file`
 	// at all) — treating a dropped *link* as a request to move the file it
 	// points at would move a file the user never picked up, and multi-select
-	// is out of scope for this milestone (M12c).
+	// is out of scope.
 	const draggedFile: unknown = draggable.file;
 	if (!(draggedFile instanceof TFile) && !(draggedFile instanceof TFolder)) return null;
 	const dragged: TFile | TFolder = draggedFile;
@@ -311,7 +311,7 @@ function findScrollContainer(target: Element, boundaryEl: HTMLElement): HTMLElem
 /**
  * Drives auto-scrolling the file explorer while a self-rendered drag's
  * pointer sits near the top or bottom edge of whatever scroll container it's
- * over (M12c). Owns exactly one drag's worth of state, mirroring
+ * over. Owns exactly one drag's worth of state, mirroring
  * `DropIndicator`'s lifecycle: `update()` on every `dragover`/`dragenter`,
  * `stop()` on every path that ends a drag.
  *

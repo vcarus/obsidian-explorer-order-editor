@@ -84,7 +84,7 @@ export function dropSideFor(pointerY: number, rowTop: number, rowHeight: number,
 }
 
 /**
- * How many pixels the drag-driven auto-scroll (M12c, `explorerDrag.ts`)
+ * How many pixels the drag-driven auto-scroll (`explorerDrag.ts`)
  * should move a scroll container by this frame, given the pointer's current
  * `pointerY` and the container's own `[rectTop, rectBottom)` — negative
  * scrolls up, positive scrolls down, `0` means "don't scroll." Same

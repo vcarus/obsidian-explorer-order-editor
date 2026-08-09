@@ -1,5 +1,5 @@
 /**
- * The thin obsidian layer behind the direct move actions (M11: "move up" /
+ * The thin obsidian layer behind the direct move actions ("move up" /
  * "move down" / "move to top" / "move to bottom") — the context menu items
  * and commands in `main.ts` both funnel through `applyMove` below, the same
  * way the reorder modal's own move buttons funnel through `rowMove.ts`'s
@@ -72,7 +72,7 @@ export type MoveOutcome = 'moved' | 'unchanged' | 'refused';
  * Resolves `file`'s parent folder, computes its `effectiveOrder`, and moves
  * `file.name` within it (`moveNameInOrder`, `rowMove.ts`). Writes the result
  * with `store.updateOrRepair` — not `update` — because a move is an explicit
- * user action (a context-menu click or a command), exactly the kind M10e
+ * user action (a context-menu click or a command), exactly the kind the store
  * heals an unreadable order note for, the same way `main.ts`'s
  * `clearOrderFor` already does for "Clear explorer order".
  *
@@ -118,7 +118,7 @@ export async function applyMove(host: MoveItemHost, file: TFile | TFolder, move:
 export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed';
 
 /**
- * The write side of the self-rendered tree drag-and-drop (M12b): places
+ * The write side of the self-rendered tree drag-and-drop: places
  * `dragged` immediately before/after `anchor` in `anchor.parent`'s saved
  * order (`insertNameBeside`, `rowMove.ts`), moving `dragged` into that folder
  * first when it isn't there already.

@@ -16,7 +16,7 @@
  * every judgment that doesn't need the vault — parsing, serializing, the
  * pure mutations themselves — already lives in `orderIndex.ts`.
  *
- * M10e — healing: detecting that the note is unreadable never, by itself,
+ * Healing: detecting that the note is unreadable never, by itself,
  * changes anything on disk (see `applyParsed`/`markUnusable` — a hand edit
  * inside Obsidian necessarily passes through "not valid JSON yet" on every
  * autosave, and a store that healed at that moment would clobber the user
@@ -308,10 +308,9 @@ export class IndexFileStore {
 	 * it — the action the user asked for actually happens, not just the
 	 * repair.
 	 *
-	 * This is the entry point for the three explicit user actions M10e heals
+	 * This is the entry point for the three explicit user actions it heals
 	 * on: the order modal's save, "Clear explorer order", and (indirectly,
-	 * via `repair()`) the settings tab's migration rows and its own "Repair
-	 * the order note" row. `orderSync.ts`'s background rename/delete
+	 * via `repair()`) the settings tab's own "Repair the order note" row. `orderSync.ts`'s background rename/delete
 	 * reactions deliberately keep calling plain `update()` instead — a
 	 * rename elsewhere in the vault is not the user asking this plugin to
 	 * repair anything, and healing must only ever happen in response to one
@@ -324,7 +323,7 @@ export class IndexFileStore {
 
 	/**
 	 * Attempts to heal without any accompanying edit — the settings tab's
-	 * "Repair the order note" row (M10e part 5), for the cold-start case
+	 * "Repair the order note" row, for the cold-start case
 	 * where a bad note left nothing in memory and there is no in-flight edit
 	 * to complete alongside the repair. A no-op returning `true` when the
 	 * store is already usable. Identical machinery to what `updateOrRepair`
@@ -337,7 +336,7 @@ export class IndexFileStore {
 	}
 
 	/**
-	 * The healing sequence itself (M10e parts 3–4), reachable only through
+	 * The healing sequence itself, reachable only through
 	 * `updateOrRepair`/`repair` and only while `!this.usable` — never from
 	 * detection (`applyParsed`/`markUnusable`), which must never by itself
 	 * change anything on disk.
@@ -522,7 +521,7 @@ export class IndexFileStore {
 
 	/**
 	 * Persists a copy of `index` into this plugin's own `data.json`, merged
-	 * into the same stored object as the settings (M10e part 2) — read
+	 * into the same stored object as the settings — read
 	 * fresh and written back with only `INDEX_BACKUP_KEY` changed, rather
 	 * than overwriting the whole object from a stale in-memory copy, so this
 	 * never fights `main.ts`'s `saveSettings()` (which merges the same way)
