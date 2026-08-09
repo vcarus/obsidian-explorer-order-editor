@@ -43,6 +43,8 @@ const INDEX_BACKUP_KEY = 'indexBackup';
 
 /** Milliseconds a burst of `update()` calls is given to settle before the debounced write actually runs. */
 const WRITE_DEBOUNCE_MS = 200;
+/** See `awaitIndexing`: ~5s of retries at `WRITE_DEBOUNCE_MS` apiece. */
+const MAX_INDEXING_RETRIES = 25;
 
 /**
  * Structural slice of `Plugin`, matching `ExplorerSortHost`/`OrderSyncHost`
@@ -123,6 +125,8 @@ export class IndexFileStore {
 	/** The exact text this store itself last wrote, so the `modify` listener below can tell its own write apart from an external one. `null` until the first write. */
 	private lastWrittenText: string | null = null;
 	private writeTimerId: number | null = null;
+	/** See `awaitIndexing`. Reset on every successful write. */
+	private indexingRetries = 0;
 	/** Serializes writes so two overlapping `Vault.process` calls on the index note can never interleave — same reason `orderSync.ts`'s coordinator chains its own ops. */
 	private writeChain: Promise<void> = Promise.resolve();
 	private disposed = false;
@@ -613,6 +617,30 @@ export class IndexFileStore {
 	 * the change in memory regardless, so nothing the caller already did is
 	 * undone, only the persistence of it is delayed.
 	 */
+	/**
+	 * Re-arms the debounce so `performWrite` can try again once the vault has
+	 * indexed a note it can already see on disk.
+	 *
+	 * Bounded, and not out of superstition: `indexPath` could name something
+	 * Obsidian will never index — a backslash in the filename is the known case
+	 * — and then `getFileByPath` stays null while `adapter.exists` stays true,
+	 * forever. Unbounded retries would spin a timer for the life of the
+	 * session. The counter resets on every successful write, so an ordinary
+	 * startup gap (a few hundred milliseconds at most) never approaches the
+	 * limit, and a permanent one says so once and stops.
+	 */
+	private awaitIndexing(): void {
+		this.indexingRetries += 1;
+		if (this.indexingRetries > MAX_INDEXING_RETRIES) {
+			console.error(
+				`[explorer-order-editor] ${this.notePath()} exists on disk but the vault never indexed it, so the order could not be written. ` +
+					'A filename Obsidian refuses to index (a backslash, for instance) would do this.',
+			);
+			return;
+		}
+		this.scheduleWrite();
+	}
+
 	private async performWrite(): Promise<void> {
 		// Deliberately NOT guarded on `disposed`. `main.ts`'s `onunload` calls
 		// `flush()` precisely so a change made moments before the plugin is
@@ -631,9 +659,28 @@ export class IndexFileStore {
 		try {
 			const existing = app.vault.getFileByPath(path);
 			if (existing === null) {
+				// Same trap `readNote` documents, on the write side: a `null`
+				// here can mean "not indexed yet" rather than "not there". The
+				// consequence is milder — `Vault.create` checks the filesystem
+				// itself and throws "File already exists." rather than
+				// overwriting, so the note is never in danger — but the write
+				// would be lost to a caught exception while the in-memory index
+				// still shows the change, so the UI would look correct until the
+				// next restart.
+				//
+				// Waiting is the right response, not writing through the
+				// adapter: `Vault.process` is what makes this a real atomic
+				// read-modify-write, and skipping it to dodge a transient
+				// indexing gap would trade a delay for a class of lost
+				// concurrent edit.
+				if (await app.vault.adapter.exists(path)) {
+					this.awaitIndexing();
+					return;
+				}
 				const text = serializeIndex('', this.index);
 				this.lastWrittenText = text;
 				await app.vault.create(path, text);
+				this.indexingRetries = 0;
 				await this.persistBackup(this.index);
 				return;
 			}
@@ -670,6 +717,7 @@ export class IndexFileStore {
 			if (becameUnusable !== null) {
 				this.markUnusable(becameUnusable, becameUnusableText);
 			} else {
+				this.indexingRetries = 0;
 				await this.persistBackup(this.index);
 			}
 		} catch (err) {
@@ -691,7 +739,17 @@ export class IndexFileStore {
 		if (this.disposed) return;
 		const text = await this.host.app.vault.cachedRead(file);
 		if (text === this.lastWrittenText) return;
-		this.applyParsed(parseIndex(text), text);
+		const result = parseIndex(text);
+		// Same question `load()` asks, and for the same reason: "no json block"
+		// is only benign if nothing was ever stored here. The in-memory index
+		// answers that on its own most of the time, but not when it is
+		// legitimately empty — a vault that has saved no order yet, or one just
+		// after "Clear every saved order" — and that is exactly when a sync
+		// client landing a block-less copy of a note that *did* hold orders
+		// would otherwise be accepted as normal. The backup is the other half of
+		// the proof, so this path consults it too.
+		const hadBlockBefore = result.status === 'empty' ? (await this.readBackup()).size > 0 : false;
+		this.applyParsed(result, text, hadBlockBefore);
 		requestFileExplorerResort(this.host.app);
 	}
 
