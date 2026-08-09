@@ -15,8 +15,23 @@ const ICON_FILE = 'lucide-file-text';
 const ICON_GRIP = 'lucide-grip-vertical';
 const ICON_MOVE_TOP = 'lucide-chevrons-up';
 const ICON_MOVE_BOTTOM = 'lucide-chevrons-down';
-/** The per-row "enter subfolder" control (M8). */
-const ICON_ENTER = 'lucide-chevron-right';
+/**
+ * The per-row "enter subfolder" control (M8). Circled rather than the bare
+ * `lucide-chevron-right` it used to be, and that is what lets the row's
+ * action group drop its separator line.
+ *
+ * The move buttons are `chevrons-up`/`chevrons-down`; a bare `chevron-right`
+ * beside them is the same shape family in a third direction, which is why
+ * "navigate into this folder" and "move this row" needed a hairline rule
+ * between them to stay distinguishable at all. A chevron inside a circle is
+ * a different shape at a glance, so the distinction is carried by the icons
+ * themselves and the rule has nothing left to do.
+ *
+ * Verified present in Obsidian's bundled icon set rather than assumed — a
+ * wrong id is accepted by `IconName` (a bare `string` alias), passes tsc and
+ * eslint, and then silently renders nothing.
+ */
+const ICON_ENTER = 'lucide-circle-chevron-right';
 
 /**
  * How many breadcrumb positions (folders plus, when truncated, the ellipsis

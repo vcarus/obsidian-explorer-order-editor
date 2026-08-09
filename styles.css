@@ -435,13 +435,55 @@
 }
 
 /* The per-row "enter subfolder" control (M8). It sits in the same
-   .eoe-row-actions group as move-to-top/move-to-bottom, but it's a different
-   kind of action — navigating away, not reordering in place — so it gets a
-   hairline separator instead of just the gap the other two share. */
+   .eoe-row-actions group as move-to-top/move-to-bottom but is a different
+   kind of action — navigating away, not reordering in place — and used to
+   carry a `border-left` hairline to say so.
+
+   That line is gone, and the distinction now lives in the icon itself (a
+   circled chevron against two bare ones — see `ICON_ENTER` in OrderModal.ts).
+   The line never worked: drawn down one side of a small square button at
+   exactly the button's own height, it read as one edge of a box whose other
+   three sides had failed to render. Only the theme had been hiding it —
+   `--background-modifier-border` is #333333 in dark mode, near-invisible
+   against the row, and #e4e4e4 in light, where the shape was finally legible
+   enough to look wrong. Shortening it just traded "a broken edge" for "a
+   floating tick"; the shape was the wrong tool for the job either way. All
+   that is left is a slightly wider gap than the other two buttons share. */
 .eoe-row-enter {
 	margin-left: var(--size-4-1);
-	padding-left: var(--size-4-2);
-	border-left: 1px solid var(--background-modifier-border);
+}
+
+/* Nudges the chevron toward the folder it opens. Deliberately an enhancement
+   to an already-complete resting state rather than a reveal: this dialog runs
+   on mobile, where nothing is ever hovered, so an icon that only becomes
+   meaningful on hover would be permanently meaningless on touch. `:focus-
+   visible` is included for the same reason in the other direction — a
+   keyboard user never hovers either. */
+.eoe-row-enter svg {
+	transition: transform 120ms ease-out;
+}
+
+.eoe-row-enter:hover svg,
+.eoe-row-enter:focus-visible svg {
+	transform: translateX(2px);
+}
+
+/* The OS-level setting, honored here on its own merits rather than to match
+   the host: `obsidian.asar` contains no `prefers-reduced-motion` at all (0
+   occurrences against 176 `@media` and 8 `prefers-color-scheme`), so this
+   goes further than Obsidian's own UI does. A purely decorative nudge is
+   exactly the kind of motion someone enables that setting to be rid of. The
+   end state is dropped rather than made instant, since the movement *is* the
+   effect — with `transform` left applied there would be nothing to reduce. */
+@media (prefers-reduced-motion: reduce) {
+	.eoe-row-enter svg {
+		transition: none;
+	}
+
+	.eoe-row-enter:hover svg,
+	.eoe-row-enter:focus-visible svg {
+		transform: none;
+	}
 }
 
 /* Footnote under the sortable list naming the keyboard shortcuts. Muted,
@@ -519,25 +561,6 @@
 	justify-content: flex-end;
 	gap: var(--size-4-2);
 	margin-top: var(--size-4-4);
-}
-
-/* Action button inside a Notice fragment (e.g. "Open sortspec.md"). */
-.eoe-notice-action {
-	display: block;
-	margin-top: var(--size-4-2);
-}
-
-/* Dependency status row in the settings tab. The missing state is a real
-   warning: nothing this plugin writes will be visible until it is resolved. */
-/*
- * There used to be an `.eoe-dependency-missing` rule painting this row
- * `--text-warning`: a missing custom-sort meant saved orders had no visible
- * effect. Since the plugin renders the order itself, its absence is not a
- * problem to flag, so the row is muted in both states and the warning
- * variant is gone.
- */
-.eoe-dependency-ok .setting-item-description {
-	color: var(--text-muted);
 }
 
 /* Drag-and-drop indicator line (M12b, explorerDrag.ts) — marks the row a
