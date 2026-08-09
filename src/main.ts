@@ -1,4 +1,4 @@
-import { Menu, normalizePath, Notice, Plugin, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { App, Menu, MenuItem, normalizePath, Notice, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
 import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
 import { folderIndexKey, IndexFileStore, requestFileExplorerResort } from './indexFile';
@@ -21,6 +21,69 @@ const MOVE_MENU_ITEMS: readonly (readonly [RowMove, string, string])[] = [
 	['top', 'Move to top', 'lucide-chevrons-up'],
 	['bottom', 'Move to bottom', 'lucide-chevrons-down'],
 ];
+
+/**
+ * `MenuItem.setSubmenu()` — present at runtime since well before this
+ * plugin's `minAppVersion` (Obsidian's own menus build submenus with it, and
+ * its section-grouping code calls it to turn a registered section into one),
+ * but absent from the published typings, checked against `obsidian` 1.13.1.
+ * Declared here rather than reached for with a cast, and never used without
+ * `menuSupportsSubmenus()` having answered first.
+ */
+interface MenuItemWithSubmenu extends MenuItem {
+	setSubmenu(): Menu;
+}
+
+/**
+ * The file explorer view's currently focused row. Undocumented, so it is
+ * declared locally and the value that comes out of it is re-checked with
+ * `instanceof` before use — `file` is typed `unknown` on purpose, so that
+ * checking it is the only way to get anything out of it.
+ */
+interface FileExplorerFocus extends View {
+	tree?: { focusedItem?: { file?: unknown } | null } | null;
+}
+
+/**
+ * Whether a menu item can hold a submenu. Called twice per menu, for two
+ * different reasons: once on `MenuItem.prototype`, which needs no instance and
+ * so can answer before the parent item is created at all, and once on the item
+ * itself, which is what narrows the type enough to make the call. A build
+ * where the method has gone away degrades to the flat layout this plugin
+ * shipped through 1.2.x rather than producing a parent item that opens onto
+ * nothing.
+ */
+function hasSubmenu(item: MenuItem): item is MenuItemWithSubmenu {
+	const candidate = item as Partial<MenuItemWithSubmenu>;
+	return typeof candidate.setSubmenu === 'function';
+}
+
+/**
+ * The file explorer's focused row, but only while the explorer actually holds
+ * keyboard focus.
+ *
+ * That condition is the whole point of this function. Reading `focusedItem`
+ * unconditionally is what a competitor does, and it means a hotkey pressed
+ * while editing a note moves whatever row the explorer happened to be left
+ * on — the wrong item, silently, with no way for the user to connect cause to
+ * effect. Scoping it to "the explorer has focus" makes the rule one sentence
+ * long: the hotkey moves the row you are on when you are in the tree, and the
+ * note you are in otherwise.
+ *
+ * Focus is read through `containerEl.ownerDocument` rather than the global
+ * `document` so this still answers correctly in a popped-out window.
+ */
+function explorerFocusedItem(app: App): TFile | TFolder | null {
+	const leaf = app.workspace.getLeavesOfType('file-explorer')[0];
+	if (leaf === undefined) return null;
+
+	const { containerEl } = leaf.view;
+	if (!containerEl.contains(containerEl.ownerDocument.activeElement)) return null;
+
+	const view = leaf.view as Partial<FileExplorerFocus>;
+	const file: unknown = view.tree?.focusedItem?.file;
+	return file instanceof TFile || file instanceof TFolder ? file : null;
+}
 
 export default class ExplorerOrderEditorPlugin extends Plugin {
 	settings: ExplorerOrderEditorSettings = DEFAULT_SETTINGS;
@@ -57,38 +120,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {
-				if (file instanceof TFolder) {
-					menu.addItem((item) => {
-						item.setTitle('Set explorer order')
-							// The file explorer context menu renders no icons at all —
-							// not even for Obsidian's own items — so this only shows
-							// up in menu contexts that do. Registered ids carry a
-							// `lucide-` prefix (see getIconIds()); bare Lucide names
-							// are not in the map.
-							.setIcon('lucide-arrow-up-down')
-							.setSection('action')
-							.onClick(() => {
-								new OrderModal(this.app, file, this.settings, this.store).open();
-							});
-					});
-
-					// Only offered when there is actually something of ours to
-					// remove — a folder with no saved order gets no menu item at
-					// all, rather than one that clicks through to "nothing to
-					// clear".
-					if (this.store.get(folderIndexKey(file)) !== undefined) {
-						menu.addItem((item) => {
-							item.setTitle('Clear explorer order')
-								.setIcon('lucide-list-x')
-								.setSection('action')
-								.onClick(() => {
-									void this.clearOrderFor(file);
-								});
-						});
-					}
-				}
-
-				this.addMoveMenuItems(menu, file);
+				this.addOrderMenu(menu, file);
 			}),
 		);
 
@@ -119,28 +151,36 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		// hotkey — the context menu items above cover the mouse case, but
 		// hotkeys need commands regardless.
 		//
-		// The target is always `app.workspace.getActiveFile()` — the note
-		// currently open — never the file explorer's focused/selected row.
-		// Reaching for that would mean depending on two more undocumented
-		// internals (`view.tree.focusedItem`, `view.activeDom`), on top of
-		// the ones `explorerSort.ts`/`OrderModal.ts` already carry, for a case
-		// the context menu already handles well. This project takes on
-		// undocumented API only where there's no public alternative — that's
-		// not true here, so the commands stay scoped to the active file.
+		// The target is the file explorer's focused row while the explorer has
+		// keyboard focus, and `app.workspace.getActiveFile()` otherwise.
+		//
+		// Through 1.2.x it was the active file alone, on the stated principle
+		// that this project takes on undocumented API only where there is no
+		// public alternative. The principle stands; the claim that a public
+		// alternative existed here does not. `getActiveFile()` returns a
+		// `TFile`, so no folder can ever be its target — which left every one
+		// of these commands, and therefore every hotkey, unable to move a
+		// folder at all. There is no public way to name a folder the user is
+		// looking at, so this is exactly the case the principle admits.
 		for (const [move, name] of MOVE_MENU_ITEMS) {
 			this.addCommand({
 				id: `move-${move}`,
 				name,
 				checkCallback: (checking) => {
-					const activeFile = this.app.workspace.getActiveFile();
-					if (activeFile === null) return false;
-					const parent = activeFile.parent;
+					const target = explorerFocusedItem(this.app) ?? this.app.workspace.getActiveFile();
+					if (target === null) return false;
+					const parent = target.parent;
 					if (parent === null) return false;
 
-					const order = effectiveOrder(this, parent);
-					if (moveNameInOrder(order, activeFile.name, move) === null) return false;
+					// The index note is never orderable. `effectiveOrder`
+					// already leaves it out, so this only turns "the move would
+					// be a no-op" into "the command is not offered".
+					if (target instanceof TFile && target.path === normalizePath(this.settings.indexPath)) return false;
 
-					if (!checking) void this.moveFile(activeFile, move);
+					const order = effectiveOrder(this, parent);
+					if (moveNameInOrder(order, target.name, move) === null) return false;
+
+					if (!checking) void this.moveFile(target, move);
 					return true;
 				},
 			});
@@ -225,50 +265,143 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	}
 
 	/**
-	 * Adds whichever of the four direct move items (M11) would actually do
-	 * something for `file`, grouped in their own section (`setSection`, not
-	 * `MenuItem.setSubmenu()` — that method isn't in the public typings and
-	 * would need a cast to reach, where a section achieves the same visual
-	 * grouping with public API only) so they read as one group instead of
-	 * crowding "Set explorer order"/"Clear explorer order" above.
+	 * Everything this plugin contributes to a right-click menu, behind a
+	 * single parent item.
 	 *
-	 * Silently adds nothing for: anything that isn't a `TFile`/`TFolder`, the
-	 * vault root (no parent to move it within), and the order index note
-	 * itself (never orderable — see `moveItem.ts`'s `effectiveOrder`).
+	 * This reverses an earlier decision, and the note is kept because what
+	 * changed is the reasoning, not the API. These items used to be added flat
+	 * and merely grouped with `setSection`, on the grounds that
+	 * `MenuItem.setSubmenu()` is absent from the public typings and reaching
+	 * for it would need a cast. It is still absent (1.13.1) — but it is
+	 * present at runtime and Obsidian's own menus are built with it, so the
+	 * honest shape is a local interface plus a runtime guard, which is the
+	 * treatment every other undocumented internal here already gets. The
+	 * reason to want it: since 1.2 most reordering happens by dragging in the
+	 * tree, so this plugin should cost one line in a menu the user opened to
+	 * do something else, not six.
+	 *
+	 * Adds nothing at all when nothing of ours applies, rather than a parent
+	 * item that opens onto an empty submenu.
+	 */
+	private addOrderMenu(menu: Menu, file: TAbstractFile): void {
+		const folder = file instanceof TFolder ? file : null;
+		// Narrowed once here rather than inside `fillOrderMenu`: `moves` is
+		// non-empty only for a `TFile`/`TFolder` (see `availableMoves`), but
+		// that is a fact about two functions agreeing, not one the compiler can
+		// see, so the narrowed value is what gets passed.
+		const movable = file instanceof TFile || file instanceof TFolder ? file : null;
+		const moves = this.availableMoves(file);
+
+		if (folder === null && moves.length === 0) return;
+
+		if (!hasSubmenu(MenuItem.prototype)) {
+			this.fillOrderMenu(menu, folder, movable, moves, false);
+			return;
+		}
+
+		menu.addItem((item) => {
+			item.setTitle('Explorer order')
+				// The file explorer context menu renders no icons at all — not
+				// even for Obsidian's own items — so this only shows up in menu
+				// contexts that do. Registered ids carry a `lucide-` prefix
+				// (see getIconIds()); bare Lucide names are not in the map.
+				.setIcon('lucide-arrow-up-down')
+				.setSection('action');
+
+			if (hasSubmenu(item)) this.fillOrderMenu(item.setSubmenu(), folder, movable, moves, true);
+		});
+	}
+
+	/**
+	 * Fills either the submenu or, if this build has no submenus, the
+	 * right-click menu itself.
+	 *
+	 * `inSubmenu` decides two things that differ between those cases and
+	 * nothing else. Titles: inside a parent item already named "Explorer
+	 * order", repeating the word would read as "Explorer order ▸ Set explorer
+	 * order", while flat among Obsidian's own items the short titles would
+	 * belong to no one. Grouping: a submenu holds only our items, so a plain
+	 * separator divides them, where the flat layout needs `setSection` to keep
+	 * them together among items this plugin did not add.
+	 */
+	private fillOrderMenu(
+		menu: Menu,
+		folder: TFolder | null,
+		file: TFile | TFolder | null,
+		moves: readonly (readonly [RowMove, string, string])[],
+		inSubmenu: boolean,
+	): void {
+		if (folder !== null) {
+			menu.addItem((item) => {
+				item.setTitle(inSubmenu ? 'Set order' : 'Set explorer order')
+					.setIcon('lucide-arrow-up-down')
+					.onClick(() => {
+						new OrderModal(this.app, folder, this.settings, this.store).open();
+					});
+				if (!inSubmenu) item.setSection('action');
+			});
+
+			// Only offered when there is actually something of ours to remove —
+			// a folder with no saved order gets no menu item at all, rather
+			// than one that clicks through to "nothing to clear".
+			if (this.store.get(folderIndexKey(folder)) !== undefined) {
+				menu.addItem((item) => {
+					item.setTitle(inSubmenu ? 'Clear order' : 'Clear explorer order')
+						.setIcon('lucide-list-x')
+						.onClick(() => {
+							void this.clearOrderFor(folder);
+						});
+					if (!inSubmenu) item.setSection('action');
+				});
+			}
+		}
+
+		if (moves.length === 0 || file === null) return;
+		if (inSubmenu && folder !== null) menu.addSeparator();
+
+		for (const [move, title, icon] of moves) {
+			menu.addItem((item) => {
+				item.setTitle(title)
+					.setIcon(icon)
+					.onClick(() => {
+						void this.moveFile(file, move);
+					});
+				if (!inSubmenu) item.setSection('explorer-order-editor-move');
+			});
+		}
+	}
+
+	/**
+	 * Whichever of the four direct move actions (M11) would actually do
+	 * something for `file` — a move that is already a no-op is omitted rather
+	 * than offered as a dead click.
+	 *
+	 * Empty for: the setting being off, anything that isn't a `TFile`/
+	 * `TFolder`, the vault root (no parent to move it within), and the order
+	 * index note itself (never orderable — see `moveItem.ts`'s
+	 * `effectiveOrder`).
 	 *
 	 * `effectiveOrder` is computed once here and reused for all four
-	 * decisions below, rather than recomputed per item — it can read through
-	 * the live file explorer, and there's no reason to pay for that four
-	 * times to build one menu.
+	 * decisions, rather than recomputed per item — it can read through the
+	 * live file explorer, and there's no reason to pay for that four times to
+	 * build one menu.
 	 */
-	private addMoveMenuItems(menu: Menu, file: TAbstractFile): void {
+	private availableMoves(file: TAbstractFile): readonly (readonly [RowMove, string, string])[] {
 		// Off by default (see `showMoveActions` in `settings.ts`). Read here,
 		// per menu, rather than gating the `file-menu` registration itself:
 		// a menu is built fresh on every right-click, so toggling the setting
 		// takes effect on the very next one with no event to re-register.
-		if (!this.settings.showMoveActions) return;
+		if (!this.settings.showMoveActions) return [];
 
-		if (!(file instanceof TFile) && !(file instanceof TFolder)) return;
+		if (!(file instanceof TFile) && !(file instanceof TFolder)) return [];
 
 		const parent = file.parent;
-		if (parent === null) return;
+		if (parent === null) return [];
 
-		if (file instanceof TFile && file.path === normalizePath(this.settings.indexPath)) return;
+		if (file instanceof TFile && file.path === normalizePath(this.settings.indexPath)) return [];
 
 		const order = effectiveOrder(this, parent);
-
-		for (const [move, title, icon] of MOVE_MENU_ITEMS) {
-			if (moveNameInOrder(order, file.name, move) === null) continue; // would be a no-op — omit rather than offer a dead click
-
-			menu.addItem((item) => {
-				item.setTitle(title)
-					.setIcon(icon)
-					.setSection('explorer-order-editor-move')
-					.onClick(() => {
-						void this.moveFile(file, move);
-					});
-			});
-		}
+		return MOVE_MENU_ITEMS.filter(([move]) => moveNameInOrder(order, file.name, move) !== null);
 	}
 
 	/**
