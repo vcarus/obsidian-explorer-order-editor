@@ -44,6 +44,14 @@ const unsalvageable = '```json\n{\n  totally broken\n}\n```\n';
 /** A note whose fence is broken but whose folder lines survive line-by-line salvage. */
 const salvageable = '```json\n{\n  "navtest": ["a.md"],\n  "weird": ["b.md"\n}\n```\n';
 
+/**
+ * A *different* broken version, of the shape a half-synced note produces:
+ * still invalid, so nothing can adopt it, but carrying orders that
+ * line-by-line salvage would recover. Writing over this without preserving it
+ * is what the snapshot check exists to prevent.
+ */
+const newerBroken = '```json\n{\n  "navtest": ["landed-a.md","landed-b.md"],\n  "weird": ["landed-c.md"\n}\n```\n';
+
 async function loadedStore(noteText: string, backup?: string): Promise<{ store: IndexFileStore; stub: StubPlugin }> {
 	const { host, stub } = makeHost();
 	stub.app.vault.files.set(NOTE, noteText);
@@ -98,6 +106,22 @@ describe('repair() distinguishes why it could not repair', () => {
 		expect(await store.repair()).toBe('healed');
 		expect(store.get('navtest')).toEqual(['landed.md']);
 		expect(stub.app.vault.files.get(NOTE)).toBe(arrived);
+	});
+
+	it('re-plans from a newer still-invalid version rather than from the snapshot it started with', async () => {
+		// Recovery has to be derived from the text actually being replaced.
+		// Planning from the older snapshot would write `a.md` over a note whose
+		// own salvageable lines say `landed-a.md`, and preserve the wrong one.
+		const { store, stub } = await loadedStore(salvageable);
+		expect(store.isUsable()).toBe(false);
+
+		stub.app.vault.files.set(NOTE, newerBroken);
+
+		expect(await store.repair()).toBe('healed');
+		expect(store.get('navtest')).toEqual(['landed-a.md', 'landed-b.md']);
+
+		const kept = [...stub.app.vault.files.entries()].filter(([p]) => p !== NOTE);
+		expect(kept.map(([, text]) => text)).toEqual([newerBroken]);
 	});
 
 	it('is a no-op answering healed when the store was never unusable', async () => {
@@ -171,6 +195,25 @@ describe('startOver()', () => {
 		expect(store.isUsable()).toBe(true);
 		expect(store.get('navtest')).toEqual(['landed.md']);
 		expect(stub.app.vault.files.get(NOTE)).toBe(arrived);
+	});
+
+	it('preserves a newer still-invalid version instead of writing over it', async () => {
+		// The case an "is it readable now?" check cannot catch: the note is
+		// replaced by a *differently* broken one, so `usable` never goes true
+		// and no adoption is possible — but its lines are salvageable, and the
+		// quarantine copy taken from the older snapshot would not have held
+		// them.
+		const { store, stub } = await loadedStore(unsalvageable);
+		expect(store.isUsable()).toBe(false);
+
+		stub.app.vault.files.set(NOTE, newerBroken);
+
+		expect(await store.startOver()).toBe(true);
+		expect(store.keys().size).toBe(0);
+
+		// The bytes that were actually replaced are the bytes that were kept.
+		const kept = [...stub.app.vault.files.entries()].filter(([p]) => p !== NOTE);
+		expect(kept.map(([, text]) => text)).toEqual([newerBroken]);
 	});
 
 	it('does not wipe anything if the store became usable first', async () => {

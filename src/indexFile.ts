@@ -67,6 +67,27 @@ const MISSING_BLOCK_REASON = 'Its json block is missing';
  */
 export type RepairOutcome = 'healed' | 'nothing-to-recover' | 'failed';
 
+/** See `quarantineThenRebuild`: how many read-plan-write rounds it will spend before deciding the note is being rewritten faster than it can be repaired. */
+const MAX_REBUILD_ATTEMPTS = 3;
+
+/** What `quarantineThenRebuild`'s caller wants written, and how much of the text it planned from could not be salvaged. */
+interface RebuildPlan {
+	readonly index: OrderIndex;
+	readonly droppedLines: number;
+}
+
+/**
+ * How a rebuild ended. Every member means something different to the caller,
+ * which is why this is not a boolean: three of them leave the store usable and
+ * two of them do not, and only `'rebuilt'` actually replaced the note.
+ */
+type RebuildOutcome =
+	| { kind: 'rebuilt'; quarantinePath: string | null; droppedLines: number }
+	| { kind: 'adopted' }
+	| { kind: 'already-usable' }
+	| { kind: 'nothing-to-recover' }
+	| { kind: 'gave-up' };
+
 /** Milliseconds a burst of `update()` calls is given to settle before the debounced write actually runs. */
 const WRITE_DEBOUNCE_MS = 200;
 /** See `awaitIndexing`: ~5s of retries at `WRITE_DEBOUNCE_MS` apiece. */
@@ -140,14 +161,6 @@ export class IndexFileStore {
 	private noticeShown = false;
 	/** Why the store went unusable, kept so `unusableReason` can name it at the moment of a refused action. */
 	private reason: string | null = null;
-	/**
-	 * The note's own text at the moment it was last found unreadable — kept
-	 * up to date on every re-detection (a further external edit while
-	 * already unusable re-parses and updates this too), so healing always
-	 * salvages from the newest known state, not a stale snapshot from the
-	 * first time this went unusable. `null` while usable.
-	 */
-	private unreadableText: string | null = null;
 	/** The exact text this store itself last wrote, so the `modify` listener below can tell its own write apart from an external one. `null` until the first write. */
 	private lastWrittenText: string | null = null;
 	private writeTimerId: number | null = null;
@@ -206,7 +219,7 @@ export class IndexFileStore {
 		// "this note has no json block" a fresh note, or a note whose block was
 		// destroyed? Read only when that question actually arises.
 		const hadBlockBefore = result.status === 'empty' ? (await this.readBackup()).size > 0 : false;
-		this.applyParsed(result, text, hadBlockBefore);
+		this.applyParsed(result, hadBlockBefore);
 	}
 
 	/**
@@ -260,13 +273,13 @@ export class IndexFileStore {
 	 * what routes it to `salvageIndex` and the repair path — and salvage reads
 	 * whatever survived, fence or no fence.
 	 */
-	private applyParsed(result: ParseResult, rawText: string, hadBlockBefore = false): void {
+	private applyParsed(result: ParseResult, hadBlockBefore = false): void {
 		if (result.status === 'invalid') {
-			this.markUnusable(result.reason, rawText);
+			this.markUnusable(result.reason);
 			return;
 		}
 		if (result.status === 'empty' && (this.index.size > 0 || hadBlockBefore)) {
-			this.markUnusable(MISSING_BLOCK_REASON, rawText);
+			this.markUnusable(MISSING_BLOCK_REASON);
 			return;
 		}
 		this.index = result.status === 'ok' ? result.index : new Map();
@@ -393,32 +406,43 @@ export class IndexFileStore {
 	 * the rebuilt note have actually landed.
 	 */
 	private async healThenUpdate(mutate: (index: OrderIndex) => OrderIndex): Promise<RepairOutcome> {
-		const unreadableText = this.unreadableText ?? '';
 		const backup = await this.readBackup();
-		const { index: recovered, droppedLines } = recoverIndex(unreadableText, this.index, backup);
-
-		if (recovered.size === 0) {
-			console.error(
-				`[explorer-order-editor] cannot repair the order index (${this.notePath()}): nothing recoverable in the note, what is loaded, or the last backup`,
-			);
-			return 'nothing-to-recover';
-		}
-
-		const next = mutate(recovered);
 
 		try {
-			const { rebuilt, quarantinePath } = await this.quarantineThenRebuild(unreadableText, next);
+			// Recovery is re-derived per attempt, from whatever the note holds
+			// at that moment, rather than once from the snapshot taken when it
+			// went unusable. A differently-broken version that arrives in
+			// between carries its own salvageable lines, and planning from the
+			// older text would discard them while claiming to repair.
+			const outcome = await this.quarantineThenRebuild((text) => {
+				const { index: recovered, droppedLines } = recoverIndex(text, this.index, backup);
+				if (recovered.size === 0) return null;
+				return { index: mutate(recovered), droppedLines };
+			});
 
-			if (!rebuilt) return this.update(mutate) ? 'healed' : 'failed';
-
-			const lines = [`Explorer order editor: repaired ${this.notePath()}.`];
-			if (quarantinePath !== null) lines.push(`The unreadable copy was kept as "${quarantinePath}".`);
-			if (droppedLines > 0) {
-				lines.push(`${droppedLines} line${droppedLines === 1 ? '' : 's'} in it could not be salvaged.`);
+			switch (outcome.kind) {
+				case 'nothing-to-recover':
+					console.error(
+						`[explorer-order-editor] cannot repair the order index (${this.notePath()}): nothing recoverable in the note, what is loaded, or the last backup`,
+					);
+					return 'nothing-to-recover';
+				case 'gave-up':
+					return 'failed';
+				// Both leave the store usable without this call having written
+				// anything, so the edit the caller came for still has to land.
+				case 'already-usable':
+				case 'adopted':
+					return this.update(mutate) ? 'healed' : 'failed';
+				case 'rebuilt': {
+					const lines = [`Explorer order editor: repaired ${this.notePath()}.`];
+					if (outcome.quarantinePath !== null) lines.push(`The unreadable copy was kept as "${outcome.quarantinePath}".`);
+					if (outcome.droppedLines > 0) {
+						lines.push(`${outcome.droppedLines} line${outcome.droppedLines === 1 ? '' : 's'} in it could not be salvaged.`);
+					}
+					new Notice(lines.join(' '));
+					return 'healed';
+				}
 			}
-			new Notice(lines.join(' '));
-
-			return 'healed';
 		} catch (err) {
 			console.error('[explorer-order-editor] failed to repair the order index', err);
 			return 'failed';
@@ -432,24 +456,34 @@ export class IndexFileStore {
 	 * *before* the original is touched, and `this.index`/`usable` only move
 	 * after both that copy and the rebuilt note have actually been written.
 	 *
-	 * Reports two independent facts, which is why this is not just a path or
-	 * `null`: `rebuilt` says whether this call is the one that replaced the
-	 * note, and `quarantinePath` says whether a copy was kept.
+	 * Plans and writes in a loop, because the note is not held still while any
+	 * of this runs. Each attempt reads the note as it is *now*, plans from that
+	 * text, quarantines that text, and then writes only if the note still holds
+	 * it — `Vault.process`'s change function re-reads, which is the one place
+	 * that comparison is atomic against the write it guards.
 	 *
-	 * `rebuilt: false` has two causes, and callers want the same thing from
-	 * both — the store is usable and the note was left alone. Either another
-	 * explicit action healed it before this got its turn on the chain (the
-	 * re-check below), or the note itself turned readable between the snapshot
-	 * and the write, and `rebuildNoteFrom` adopted it instead of writing over
-	 * it. They are independent because there is one case that
-	 * rebuilds without keeping anything: an index note emptied to nothing at
-	 * all, which `applyParsed` marks unusable on the strength of the backup.
-	 * Copying zero bytes preserves nothing and would only leave a note the
-	 * "delete the kept copies" row then offers to tidy away, so the copy is
-	 * skipped — "preserve before replacing" is satisfied vacuously when there
-	 * is nothing to preserve.
+	 * Planning from a snapshot taken earlier is what made this necessary. A
+	 * sync client can replace a broken note with a *differently* broken one
+	 * whose lines are perfectly salvageable, and `usable` does not go true for
+	 * it — `applyParsed` marks it unusable again — so no "has someone healed
+	 * this?" check can see it. Writing the old plan over it destroyed those
+	 * orders, and the quarantine copy held the *older* text, so they survived
+	 * nowhere. Quarantining exactly the bytes about to be replaced is the
+	 * invariant that fixes it; re-planning from them is what keeps the write
+	 * meaningful rather than merely safe.
 	 *
-
+	 * `planFor` returns `null` for "nothing here is worth recovering", which
+	 * only `healThenUpdate` ever says — `startOver` plans an empty index
+	 * whatever it finds, since that is precisely what the user confirmed. Note
+	 * that it plans from the *newest* text even so, and that text is preserved
+	 * before it goes: starting over costs the orders and keeps the bytes.
+	 *
+	 * Bounded rather than `while (true)`. A note being rewritten faster than
+	 * this can read-plan-write is a sync client mid-burst, and spinning on the
+	 * vault for the duration would be worse than stopping and saying so. Each
+	 * attempt that quarantined something kept a real version, so giving up
+	 * leaves more preserved than it started with, never less.
+	 *
 	 * Runs on `writeChain` (`runExclusive`), the same queue `performWrite`
 	 * uses: a write that was already scheduled *before* the note went unusable
 	 * (armed by an earlier, then-valid `update()`) could still be in flight
@@ -457,44 +491,53 @@ export class IndexFileStore {
 	 * interleave with the rebuild's own — exactly the overlap `writeChain`
 	 * exists to prevent.
 	 */
-	private async quarantineThenRebuild(
-		unreadableText: string,
-		next: OrderIndex,
-	): Promise<{ rebuilt: boolean; quarantinePath: string | null }> {
+	private async quarantineThenRebuild(planFor: (text: string) => RebuildPlan | null): Promise<RebuildOutcome> {
 		return this.runExclusive(async () => {
-			// Re-checked after taking the chain, not just at entry: two
-			// explicit actions can reach here before either has run — a
-			// double-click on "Clear explorer order", a save landing while a
-			// repair is queued. Each captured its own copy of `unreadableText`
-			// while the store was still unusable, so without this the second
-			// would quarantine the same content a second time and hand the user
-			// two "preserved copy" notes for one broken file.
-			//
-			// This is also what keeps `startOver` from being able to discard
-			// anything: if a heal recovered real orders while the confirmation
-			// dialog was open, the store is usable by now and the rebuild from
-			// an empty index never happens.
-			if (this.usable) return { rebuilt: false, quarantinePath: null };
-			const quarantinePath = unreadableText === '' ? null : await this.quarantineUnreadableNote(unreadableText);
+			for (let attempt = 0; attempt < MAX_REBUILD_ATTEMPTS; attempt++) {
+				// Re-checked after taking the chain, not just at entry: two
+				// explicit actions can reach here before either has run — a
+				// double-click on "Clear explorer order", a save landing while
+				// a repair is queued. The first healed everything; the second
+				// would otherwise quarantine the same content again and hand
+				// the user two "preserved copy" notes for one broken file.
+				if (this.usable) return { kind: 'already-usable' };
 
-			// `rebuildNoteFrom` answers with what it found when it declined to
-			// write, having seen a readable note where a broken one was
-			// planned for. Adopt it rather than the plan: those orders are
-			// newer than anything this heal reconstructed, and overwriting
-			// them is the one outcome worth all of this machinery to avoid.
-			//
-			// The copy above was already written by then, so declining can
-			// leave a quarantine note for a problem that resolved itself. That
-			// is the accepted side of the trade: the copy has to precede the
-			// write, or there is a window where the original is replaced
-			// before anything preserved it. An extra note is recoverable from;
-			// that window is not.
-			const found = await this.rebuildNoteFrom(next);
-			const adopted = found ?? next;
-			this.index = adopted;
-			this.markUsable();
-			await this.persistBackup(adopted);
-			return { rebuilt: found === null, quarantinePath };
+				const current = (await this.readNote(this.notePath())) ?? '';
+
+				// The note fixed itself while this was queued or while a
+				// confirmation dialog was open. Adopt it — that is only what
+				// `onExternalModify` was about to do — rather than write a plan
+				// derived from the broken version over orders that are strictly
+				// newer.
+				const parsed = parseIndex(current);
+				if (parsed.status === 'ok') {
+					this.index = parsed.index;
+					this.markUsable();
+					await this.persistBackup(parsed.index);
+					return { kind: 'adopted' };
+				}
+
+				const plan = planFor(current);
+				if (plan === null) return { kind: 'nothing-to-recover' };
+
+				// Zero bytes preserve nothing, and the copy would only leave a
+				// note the "delete the kept copies" row then offers to tidy
+				// away — "preserve before replacing" is satisfied vacuously
+				// when there is nothing to preserve.
+				const quarantinePath = current === '' ? null : await this.quarantineUnreadableNote(current);
+
+				if (!(await this.rebuildNoteFrom(plan.index, current))) continue;
+
+				this.index = plan.index;
+				this.markUsable();
+				await this.persistBackup(plan.index);
+				return { kind: 'rebuilt', quarantinePath, droppedLines: plan.droppedLines };
+			}
+
+			console.error(
+				`[explorer-order-editor] gave up rebuilding ${this.notePath()}: it kept changing between reading it and writing it`,
+			);
+			return { kind: 'gave-up' };
 		});
 	}
 
@@ -519,25 +562,42 @@ export class IndexFileStore {
 	 */
 	async startOver(): Promise<boolean> {
 		if (this.usable) return true;
-		const unreadableText = this.unreadableText ?? '';
 
 		try {
-			const { rebuilt, quarantinePath } = await this.quarantineThenRebuild(unreadableText, new Map());
-			if (!rebuilt) {
+			// Plans an empty index whatever the note turns out to hold, which
+			// is exactly what was confirmed — but the loop still re-reads, so
+			// the text actually being replaced is the text that gets preserved.
+			// A newer, differently-broken version arriving while the dialog was
+			// open is kept as its own copy rather than being written over on
+			// the strength of a snapshot from before it existed.
+			const outcome = await this.quarantineThenRebuild(() => ({ index: new Map(), droppedLines: 0 }));
+
+			switch (outcome.kind) {
+				case 'gave-up':
+					return false;
+				// `planFor` above never returns `null`, so recovery can never
+				// be the reason this stopped. Handled rather than assumed away:
+				// the compiler asks for it, and an unhandled member later
+				// would otherwise become a silent `true`.
+				case 'nothing-to-recover':
+					return false;
 				// A confirmed destructive action that quietly did nothing is
 				// its own kind of failure to report: the orders are back, and
-				// somebody who just agreed to lose them needs telling that
-				// they did not.
-				new Notice(
-					`Explorer order editor: ${this.notePath()} became readable again before starting over, so nothing was cleared.`,
-				);
-				return true;
+				// somebody who just agreed to lose them needs telling that they
+				// did not.
+				case 'already-usable':
+				case 'adopted':
+					new Notice(
+						`Explorer order editor: ${this.notePath()} became readable again before starting over, so nothing was cleared.`,
+					);
+					return true;
+				case 'rebuilt': {
+					const lines = [`Explorer order editor: ${this.notePath()} was rebuilt with no saved orders.`];
+					if (outcome.quarantinePath !== null) lines.push(`The unreadable copy was kept as "${outcome.quarantinePath}".`);
+					new Notice(lines.join(' '));
+					return true;
+				}
 			}
-
-			const lines = [`Explorer order editor: ${this.notePath()} was rebuilt with no saved orders.`];
-			if (quarantinePath !== null) lines.push(`The unreadable copy was kept as "${quarantinePath}".`);
-			new Notice(lines.join(' '));
-			return true;
 		} catch (err) {
 			console.error('[explorer-order-editor] failed to start over with an empty order index', err);
 			return false;
@@ -617,7 +677,7 @@ export class IndexFileStore {
 	 * original text this is replacing is already safe in the quarantine
 	 * note.
 	 */
-	private async rebuildNoteFrom(index: OrderIndex): Promise<OrderIndex | null> {
+	private async rebuildNoteFrom(index: OrderIndex, expected: string): Promise<boolean> {
 		const { app } = this.host;
 		const path = this.notePath();
 		const file = app.vault.getFileByPath(path);
@@ -628,37 +688,31 @@ export class IndexFileStore {
 			const text = serializeIndex('', index);
 			this.lastWrittenText = text;
 			await app.vault.create(path, text);
-			return null;
+			return true;
 		}
 
-		let found: OrderIndex | null = null;
+		let wrote = false;
 		await app.vault.process(file, (data) => {
-			// Everything above was planned against a snapshot taken when the
-			// note was last found unreadable. `data` is the first genuinely
-			// current read since — `Vault.process` re-reads here — and the note
-			// can have been replaced in between by a sync client or a hand
-			// edit that fixed it.
+			// One condition, and it is deliberately identity rather than
+			// anything cleverer: write only if the note still holds the exact
+			// text the caller planned from and has already preserved.
 			//
-			// `usable` does not rule that out. It only turns true once
-			// `onExternalModify` has run, and that listener is not on
-			// `writeChain`: it starts with its own `await`, so there is a real
-			// window where the disk already holds good orders and nothing has
-			// told this store yet. Writing through it would put an empty (or
-			// stale-recovered) block over real orders — and the quarantine copy
-			// beside it holds the *old* text, so those orders would survive
-			// nowhere.
+			// `Vault.process` re-reads here, which makes this the only place
+			// the comparison is atomic against the write it guards. Everything
+			// else — `usable`, a parse of the note, the snapshot taken when it
+			// was last found unreadable — can be stale by the time the write
+			// lands.
 			//
-			// Declining is not enough on its own, since the store would stay
-			// unusable with a perfectly good note on disk. So this adopts what
-			// it found, which is exactly what `onExternalModify` was about to
-			// do anyway. Only `ok` counts: content that changed but is still
-			// unreadable is the very thing being repaired, and proceeding over
-			// that is correct.
-			const parsed = parseIndex(data);
-			if (parsed.status === 'ok') {
-				found = parsed.index;
-				return data; // unchanged
-			}
+			// Judging the *content* instead was the earlier mistake. Refusing
+			// only when the note had become readable let a differently-broken
+			// version through, and its salvageable lines were replaced by a
+			// plan derived from text that no longer existed, while the
+			// quarantine copy preserved that older text rather than the one
+			// being destroyed. Identity cannot make that distinction wrong,
+			// because it does not make a distinction: anything but the bytes
+			// that were preserved is somebody else's write, and the caller
+			// re-reads and re-plans around it.
+			if (data !== expected) return data; // unchanged
 
 			let text: string;
 			try {
@@ -667,9 +721,10 @@ export class IndexFileStore {
 				text = serializeIndex('', index);
 			}
 			this.lastWrittenText = text;
+			wrote = true;
 			return text;
 		});
-		return found;
+		return wrote;
 	}
 
 	/**
@@ -850,7 +905,6 @@ export class IndexFileStore {
 			const blockWasStored = this.index.size > 0 || (await this.readBackup()).size > 0;
 
 			let becameUnusable: string | null = null;
-			let becameUnusableText = '';
 			await app.vault.process(existing, (data) => {
 				// The disk may have changed since `load()` (or since the last
 				// write) — a sync client could have landed a corrupt or
@@ -866,7 +920,6 @@ export class IndexFileStore {
 				const parsed = parseIndex(data);
 				if (parsed.status === 'invalid') {
 					becameUnusable = parsed.reason;
-					becameUnusableText = data;
 					return data; // unchanged
 				}
 				// `empty` is the other half of that distinction, and it has to
@@ -882,7 +935,6 @@ export class IndexFileStore {
 				// path is never entered at all.
 				if (parsed.status === 'empty' && blockWasStored) {
 					becameUnusable = MISSING_BLOCK_REASON;
-					becameUnusableText = data;
 					return data; // unchanged
 				}
 				const next = serializeIndex(data, this.index);
@@ -895,7 +947,7 @@ export class IndexFileStore {
 			});
 
 			if (becameUnusable !== null) {
-				this.markUnusable(becameUnusable, becameUnusableText);
+				this.markUnusable(becameUnusable);
 			} else {
 				this.indexingRetries = 0;
 				await this.persistBackup(this.index);
@@ -929,15 +981,17 @@ export class IndexFileStore {
 		// would otherwise be accepted as normal. The backup is the other half of
 		// the proof, so this path consults it too.
 		const hadBlockBefore = result.status === 'empty' ? (await this.readBackup()).size > 0 : false;
-		this.applyParsed(result, text, hadBlockBefore);
+		this.applyParsed(result, hadBlockBefore);
 		requestFileExplorerResort(this.host.app);
 	}
 
 	/**
 	 * Detection only — never writes, never heals (see the module doc
-	 * comment). `rawText` is kept as `unreadableText` so a later explicit
-	 * heal (`healThenUpdate`) salvages from exactly what was found here,
-	 * without having to re-read the file itself.
+	 * comment). It deliberately keeps no copy of the text it found
+	 * unreadable: healing re-reads the note itself, inside the write that
+	 * replaces it, because any copy taken here can be superseded before that
+	 * write lands — and acting on a superseded one is what destroyed
+	 * salvageable orders before `quarantineThenRebuild` was made to re-plan.
 	 *
 	 * Also cancels any debounced write still armed from before this ran: it
 	 * would only find `!this.usable` and no-op when it fired anyway
@@ -945,10 +999,9 @@ export class IndexFileStore {
 	 * fewer thing that could still be pending if a heal starts before it
 	 * would have fired.
 	 */
-	private markUnusable(reason: string, rawText: string): void {
+	private markUnusable(reason: string): void {
 		this.usable = false;
 		this.reason = reason;
-		this.unreadableText = rawText;
 		if (this.writeTimerId !== null) {
 			window.clearTimeout(this.writeTimerId);
 			this.writeTimerId = null;
@@ -966,7 +1019,6 @@ export class IndexFileStore {
 	private markUsable(): void {
 		this.usable = true;
 		this.reason = null;
-		this.unreadableText = null;
 		this.noticeShown = false;
 	}
 }
