@@ -115,7 +115,15 @@ export async function applyMove(host: MoveItemHost, file: TFile | TFolder, move:
 	return accepted ? 'moved' : 'refused';
 }
 
-export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed';
+/**
+ * `'moved-unsaved'` is the one outcome with no counterpart in `MoveOutcome`,
+ * and it exists because only this function performs a step that cannot be
+ * taken back: the file is at its new path, but its position within it was not
+ * written. It has to stay distinct from `'refused'` — which promises nothing
+ * happened — because telling somebody "could not move" about a file that has
+ * already moved sends them looking for it where it no longer is.
+ */
+export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed' | 'moved-unsaved';
 
 /**
  * The write side of the self-rendered tree drag-and-drop: places
@@ -139,10 +147,15 @@ export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed';
  * write it — no rename involved, so this is `applyMove`'s shape exactly,
  * `insertNameBeside` standing in for `moveNameInOrder`.
  *
- * Cross folder: order matters here, and it is deliberately "compute the
- * destination order, *then* rename, and only write the order after the
- * rename actually lands":
+ * Cross folder: order matters here, and it is deliberately "make sure the
+ * store can be written at all, *then* compute the destination order, *then*
+ * rename, and only write the order after the rename actually lands":
  *
+ * 0. `store.repair()` — a no-op when the store is already usable, an attempt
+ *    to heal when it is not, and a `'refused'` return when it cannot be
+ *    healed. Doing this up front is what keeps step 3's irreversible rename
+ *    from running when step 4 is already known to be impossible; the comment
+ *    at the call site covers why it also has to precede step 1.
  * 1. `insertNameBeside(effectiveOrder(host, dest), dragged.name, anchor.name,
  *    side)` is computed against `dest`'s *current* order, before `dragged`
  *    has moved anywhere — `insertNameBeside` tolerates `dragged.name` not yet
@@ -162,7 +175,10 @@ export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed';
  *    keeping the on-disk move and the saved order from ever disagreeing
  *    about whether it happened.
  * 4. Only once the rename has actually succeeded is the destination's order
- *    written, using the order computed in step 1.
+ *    written, using the order computed in step 1. Step 0 makes a refusal here
+ *    unlikely but not impossible — the store can go unusable in between — so
+ *    this reports `'moved-unsaved'` rather than `'refused'`, the file having
+ *    moved either way.
  *
  * Computing the destination order *before* the rename, rather than after, is
  * what keeps this from racing `orderSync.ts`: that module reacts to the same
@@ -194,6 +210,33 @@ export async function applyDrop(
 		return { outcome: accepted ? 'moved' : 'refused' };
 	}
 
+	// Heal first, before either the order is computed or the rename runs.
+	//
+	// Before the rename, because `renameFile` is the one step in this function
+	// that cannot be undone: finding out afterwards that the store will not
+	// accept the write leaves the file moved with nothing recording where it
+	// belongs, which is precisely the state the step-3 note above claims this
+	// ordering prevents.
+	//
+	// Before `effectiveOrder` too, and that part is not merely tidiness: while
+	// the store is unusable `store.get` has nothing for `dest`, so
+	// `effectiveOrder` falls back to whatever the explorer is rendering.
+	// Computing the new order from that and writing it after a heal would
+	// overwrite the order the heal just recovered with one derived from the
+	// fallback view.
+	//
+	// Not a new healing trigger — the `updateOrRepair` at the foot of this
+	// function already healed on a drop, one of the three explicit user
+	// actions healing is allowed to run for. This only moves that same heal
+	// earlier in the sequence. `repair()` is a no-op returning `true` when the
+	// store is already usable, so the ordinary drop pays nothing for it.
+	//
+	// The same-folder branch above deliberately keeps the original order: it
+	// renames nothing, so a refused write there leaves no on-disk state
+	// disagreeing with the saved order, and `'refused'` remains the honest
+	// answer.
+	if (!(await host.store.repair())) return { outcome: 'refused' };
+
 	const next = insertNameBeside(effectiveOrder(host, dest), dragged.name, anchor.name, side);
 	if (next === null) return { outcome: 'unchanged' };
 
@@ -205,6 +248,10 @@ export async function applyDrop(
 		return { outcome: 'move-failed', error: message };
 	}
 
+	// `'moved-unsaved'`, not `'refused'`: the rename above already landed. The
+	// heal makes this branch unlikely rather than impossible — the store can
+	// still go unusable between it and here, since `onExternalModify` is free
+	// to run across either await.
 	const accepted = await host.store.updateOrRepair((index) => setOrder(index, folderIndexKey(dest), next));
-	return { outcome: accepted ? 'moved' : 'refused' };
+	return { outcome: accepted ? 'moved' : 'moved-unsaved' };
 }

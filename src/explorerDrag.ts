@@ -543,10 +543,11 @@ function handleDrop(host: MoveItemHost, indicator: DropIndicator, scroller: Auto
  * separate from `main.ts`'s `moveFile`, which this otherwise mirrors
  * outcome-by-outcome (same auto-refresh/no-leaf handling for `'moved'`, same
  * `unusableReason()`-based text for `'refused'`): a drag-and-drop failure
- * needs its own `'move-failed'` case (a cross-folder drop whose
- * `renameFile` call failed, most often a name collision at the destination)
- * that `moveFile`'s four move actions can never produce, since they never
- * rename anything.
+ * needs two cases of its own that `moveFile`'s four move actions can never
+ * produce, since they never rename anything — `'move-failed'` (a cross-folder
+ * drop whose `renameFile` call failed, most often a name collision at the
+ * destination) and `'moved-unsaved'` (the rename landed but the order behind
+ * it did not).
  */
 async function performDrop(host: MoveItemHost, dragged: TFile | TFolder, anchor: TFile | TFolder, side: DropSide): Promise<void> {
 	const { outcome, error } = await applyDrop(host, dragged, anchor, side);
@@ -568,6 +569,21 @@ async function performDrop(host: MoveItemHost, dragged: TFile | TFolder, anchor:
 		const dest = anchor.parent;
 		const destLabel = dest === null || dest.isRoot() ? 'the vault root' : dest.name;
 		new Notice(`Could not move ${dragged.name} into ${destLabel}. ${error ?? 'See the console for details.'}`);
+		return;
+	}
+
+	// Deliberately not worded as a failure, unlike the two above: the file is
+	// at its destination and will stay there. Saying "could not move" here
+	// would send somebody looking for it where it no longer is, so this names
+	// what did happen first and what was lost second.
+	if (outcome === 'moved-unsaved') {
+		const dest = anchor.parent;
+		const destLabel = dest === null || dest.isRoot() ? 'the vault root' : dest.name;
+		new Notice(
+			`Moved ${dragged.name} into ${destLabel}, but its position there could not be saved: ` +
+				`the order note ${host.store.unusableReason() ?? 'could not be repaired'}. ` +
+				'Use "Repair the order note" in settings, then drag it again.',
+		);
 		return;
 	}
 
