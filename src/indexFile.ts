@@ -41,6 +41,16 @@ import type { ExplorerOrderEditorSettings } from './settings';
 /** The top-level key this plugin's `data.json` stores the index backup under, alongside settings — see `persistBackup`/`readBackup`. */
 const INDEX_BACKUP_KEY = 'indexBackup';
 
+/**
+ * Recorded when a note that provably held a json block comes back without
+ * one. Shared rather than written twice: `applyParsed` (the read side) and
+ * `performWrite` (the write side) have to reach the same verdict about a
+ * missing block, and two copies of the wording would let them drift apart
+ * silently — the write side once checked only `invalid`, which is exactly
+ * the drift this guards against recurring.
+ */
+const MISSING_BLOCK_REASON = 'Its json block is missing';
+
 /** Milliseconds a burst of `update()` calls is given to settle before the debounced write actually runs. */
 const WRITE_DEBOUNCE_MS = 200;
 /** See `awaitIndexing`: ~5s of retries at `WRITE_DEBOUNCE_MS` apiece. */
@@ -240,7 +250,7 @@ export class IndexFileStore {
 			return;
 		}
 		if (result.status === 'empty' && (this.index.size > 0 || hadBlockBefore)) {
-			this.markUnusable('Its json block is missing', rawText);
+			this.markUnusable(MISSING_BLOCK_REASON, rawText);
 			return;
 		}
 		this.index = result.status === 'ok' ? result.index : new Map();
@@ -684,6 +694,18 @@ export class IndexFileStore {
 				return;
 			}
 
+			// The `empty` half of the judgment below needs the same evidence
+			// `applyParsed` uses, and `Vault.process`'s change function is
+			// synchronous — so the one await it depends on happens here, before
+			// the process call rather than inside it.
+			//
+			// Only consults the backup when the in-memory index is empty: a
+			// non-empty one is already proof on its own that a block was
+			// written at this path, so the ordinary write path (which is what
+			// runs after every reorder) keeps costing zero extra `data.json`
+			// reads.
+			const blockWasStored = this.index.size > 0 || (await this.readBackup()).size > 0;
+
 			let becameUnusable: string | null = null;
 			let becameUnusableText = '';
 			await app.vault.process(existing, (data) => {
@@ -701,6 +723,22 @@ export class IndexFileStore {
 				const parsed = parseIndex(data);
 				if (parsed.status === 'invalid') {
 					becameUnusable = parsed.reason;
+					becameUnusableText = data;
+					return data; // unchanged
+				}
+				// `empty` is the other half of that distinction, and it has to
+				// be refused here for the same reason `applyParsed` refuses it:
+				// the block vanishing from a note that provably held one is a
+				// change to be quarantined and repaired, not a blank slate to
+				// append to. Without this, `serializeIndex` takes the `none`
+				// branch and re-appends a block built from the in-memory index —
+				// silently reverting whatever removed it (a sync client landing
+				// another device's "Clear every saved order", say) and, because
+				// `lastWrittenText` is set below, making `onExternalModify`
+				// dismiss the resulting event as our own write, so the repair
+				// path is never entered at all.
+				if (parsed.status === 'empty' && blockWasStored) {
+					becameUnusable = MISSING_BLOCK_REASON;
 					becameUnusableText = data;
 					return data; // unchanged
 				}
