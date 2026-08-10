@@ -45,8 +45,8 @@
  */
 import { App, normalizePath, Notice, TFile, TFolder, type View } from 'obsidian';
 import { dropSideFor, scrollStepFor, type DropSide, type RowKind } from './dropZone';
-import { requestFileExplorerResort } from './indexFile';
 import { applyDrop, type MoveItemHost } from './moveItem';
+import { reportApplied, repairPointer, unusableClause } from './notices';
 
 /**
  * Auto-scroll tuning. `SCROLL_ZONE_PX` is the band, measured from
@@ -558,16 +558,16 @@ async function performDrop(host: MoveItemHost, dragged: TFile | TFolder, anchor:
 	if (outcome === 'unchanged') return;
 
 	if (outcome === 'refused') {
-		new Notice(
-			`Could not move: the order note ${host.store.unusableReason() ?? 'could not be repaired'}. ` +
-				'Use "Repair the order note" in settings, or check the console for details.',
-		);
+		new Notice(`Could not move: ${unusableClause(host.store)}. ${repairPointer('from elsewhere')}`);
 		return;
 	}
 
+	// Named once for both outcomes below, which are the two that mention where
+	// the drop was headed.
+	const dest = anchor.parent;
+	const destLabel = dest === null || dest.isRoot() ? 'the vault root' : dest.name;
+
 	if (outcome === 'move-failed') {
-		const dest = anchor.parent;
-		const destLabel = dest === null || dest.isRoot() ? 'the vault root' : dest.name;
 		new Notice(`Could not move ${dragged.name} into ${destLabel}. ${error ?? 'See the console for details.'}`);
 		return;
 	}
@@ -577,25 +577,15 @@ async function performDrop(host: MoveItemHost, dragged: TFile | TFolder, anchor:
 	// would send somebody looking for it where it no longer is, so this names
 	// what did happen first and what was lost second.
 	if (outcome === 'moved-unsaved') {
-		const dest = anchor.parent;
-		const destLabel = dest === null || dest.isRoot() ? 'the vault root' : dest.name;
 		new Notice(
 			`Moved ${dragged.name} into ${destLabel}, but its position there could not be saved: ` +
-				`the order note ${host.store.unusableReason() ?? 'could not be repaired'}. ` +
-				'Use "Repair the order note" in settings, then drag it again.',
+				`${unusableClause(host.store)}. ${repairPointer('from elsewhere')}`,
 		);
 		return;
 	}
 
 	// 'moved'
-	if (!host.settings.autoRefresh) {
-		new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
-		return;
-	}
-
-	if (!requestFileExplorerResort(host.app)) {
-		new Notice('Saved. The file explorer will show this when you next open it.');
-	}
+	reportApplied(host.app, host.settings.autoRefresh, 'Saved');
 }
 
 /**

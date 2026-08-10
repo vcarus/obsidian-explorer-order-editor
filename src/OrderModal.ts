@@ -2,7 +2,8 @@ import { App, ButtonComponent, Menu, Modal, Notice, normalizePath, Platform, set
 import Sortable from 'sortablejs';
 import { SORT_CHOICES, sortEntries, timestampFor, type SortChoice, type SortableEntry, type SortKey } from './entrySort';
 import { explorerOrderNames } from './explorerSort';
-import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
+import { folderIndexKey, type IndexFileStore } from './indexFile';
+import { reportApplied, repairPointer, unusableClause } from './notices';
 import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
 import { mergeOrder, setOrder } from './orderIndex';
 import { targetIndexFor, type RowMove } from './rowMove';
@@ -605,10 +606,12 @@ export class OrderModal extends Modal {
 	private renderBreadcrumbSegment(row: HTMLElement, chain: TFolder[], segment: BreadcrumbSegment): void {
 		if (segment.kind === 'ellipsis') {
 			const ellipsis = row.createSpan({ cls: 'eoe-breadcrumb-ellipsis', text: '…' });
-			const hiddenNames = segment.hiddenIndices
-				.map((index) => chain[index])
-				.filter((f): f is TFolder => f !== undefined)
-				.map((f) => folderShortName(f.name, f.isRoot(), this.app.vault.getName()));
+			const vaultName = this.app.vault.getName();
+			const hiddenNames: string[] = [];
+			for (const index of segment.hiddenIndices) {
+				const hidden = chain[index];
+				if (hidden !== undefined) hiddenNames.push(folderShortName(hidden.name, hidden.isRoot(), vaultName));
+			}
 			setTooltip(ellipsis, hiddenNames.join(' › '));
 			return;
 		}
@@ -1110,10 +1113,7 @@ export class OrderModal extends Modal {
 			// nothing recoverable, which is the only way this is reachable
 			// now — said here and now regardless, since silence at the point
 			// of action reads as "nothing happened", not "this was refused".
-			new Notice(
-				`Could not save: the order note ${this.store.unusableReason() ?? 'could not be repaired'}. ` +
-					'Use "Repair the order note" in settings, or check the console for details.',
-			);
+			new Notice(`Could not save: ${unusableClause(this.store)}. ${repairPointer('from elsewhere')}`);
 			return 'blocked';
 		}
 
@@ -1138,15 +1138,6 @@ export class OrderModal extends Modal {
 	 * the still-open modal, would be work nobody could see the result of.
 	 */
 	private flushRefresh(): void {
-		if (!this.settings.autoRefresh) {
-			new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
-			return;
-		}
-		if (!requestFileExplorerResort(this.app)) {
-			// No file explorer leaf to ask — genuinely rare, but still
-			// reported so a save that silently isn't visible anywhere isn't
-			// mistaken for one that is.
-			new Notice('Saved. The file explorer will show this when you next open it.');
-		}
+		reportApplied(this.app, this.settings.autoRefresh, 'Saved');
 	}
 }

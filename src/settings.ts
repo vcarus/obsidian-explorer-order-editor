@@ -14,6 +14,7 @@
 import { App, normalizePath, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
 import { ConfirmModal } from './ConfirmModal';
 import { requestFileExplorerResort, type IndexFileStore, type RepairOutcome } from './indexFile';
+import { reportApplied, repairPointer, unusableClause } from './notices';
 import { pruneMissing } from './orderIndex';
 import { isQuarantinePath, quarantineFolderPath } from './quarantine';
 
@@ -381,8 +382,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 
 			if (!ok) {
 				new Notice(
-					`Could not remove stale entries: the order note ${this.plugin.store.unusableReason() ?? 'could not be repaired'}. ` +
-						'Use "Repair the order note" above, or check the console for details.',
+					`Could not remove stale entries: ${unusableClause(this.plugin.store)}. ${repairPointer('in the settings tab')}`,
 				);
 				return;
 			}
@@ -434,20 +434,13 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 
 			if (!ok) {
 				new Notice(
-					`Could not clear: the order note ${this.plugin.store.unusableReason() ?? 'could not be repaired'}. ` +
-						'Use "Repair the order note" above, or check the console for details.',
+					`Could not clear: ${unusableClause(this.plugin.store)}. ${repairPointer('in the settings tab')}`,
 				);
 				return;
 			}
 			new Notice(`Cleared ${cleared} saved order${cleared === 1 ? '' : 's'}.`);
 
-			if (!this.plugin.settings.autoRefresh) {
-				new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
-				return;
-			}
-			if (!requestFileExplorerResort(this.app)) {
-				new Notice('Cleared. The file explorer will show this when you next open it.');
-			}
+			reportApplied(this.app, this.plugin.settings.autoRefresh, 'Cleared');
 		} finally {
 			this.busy = false;
 			this.update();

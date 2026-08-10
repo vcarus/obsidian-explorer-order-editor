@@ -1,7 +1,8 @@
 import { App, Menu, MenuItem, normalizePath, Notice, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
 import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
-import { folderIndexKey, IndexFileStore, requestFileExplorerResort } from './indexFile';
+import { folderIndexKey, IndexFileStore } from './indexFile';
+import { reportApplied, repairPointer, unusableClause } from './notices';
 import { applyMove, effectiveOrder } from './moveItem';
 import { OrderModal } from './OrderModal';
 import { registerOrderSync } from './orderSync';
@@ -243,25 +244,11 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		// claiming "cleared" over that would be a plain lie about the user's
 		// data.
 		if (!(await this.store.updateOrRepair((index) => removeOrder(index, key)))) {
-			new Notice(
-				`Could not clear: the order note ${this.store.unusableReason() ?? 'could not be repaired'}. ` +
-					'Use "Repair the order note" in settings, or check the console for details.',
-			);
+			new Notice(`Could not clear: ${unusableClause(this.store)}. ${repairPointer('from elsewhere')}`);
 			return;
 		}
 		new Notice('Explorer order cleared.');
-
-		if (!this.settings.autoRefresh) {
-			new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
-			return;
-		}
-
-		if (!requestFileExplorerResort(this.app)) {
-			// No file explorer leaf to ask — genuinely rare, but still
-			// reported so a change that silently isn't visible anywhere isn't
-			// mistaken for one that is.
-			new Notice('Saved. The file explorer will show this when you next open it.');
-		}
+		reportApplied(this.app, this.settings.autoRefresh, 'Saved');
 	}
 
 	/**
@@ -428,20 +415,10 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		if (outcome === 'unchanged') return;
 
 		if (outcome === 'refused') {
-			new Notice(
-				`Could not move: the order note ${this.store.unusableReason() ?? 'could not be repaired'}. ` +
-					'Use "Repair the order note" in settings, or check the console for details.',
-			);
+			new Notice(`Could not move: ${unusableClause(this.store)}. ${repairPointer('from elsewhere')}`);
 			return;
 		}
 
-		if (!this.settings.autoRefresh) {
-			new Notice('Automatic refresh is off. The file explorer will show this on its next refresh.');
-			return;
-		}
-
-		if (!requestFileExplorerResort(this.app)) {
-			new Notice('Saved. The file explorer will show this when you next open it.');
-		}
+		reportApplied(this.app, this.settings.autoRefresh, 'Saved');
 	}
 }
