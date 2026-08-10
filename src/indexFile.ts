@@ -161,6 +161,24 @@ export class IndexFileStore {
 	private noticeShown = false;
 	/** Why the store went unusable, kept so `unusableReason` can name it at the moment of a refused action. */
 	private reason: string | null = null;
+	/**
+	 * Whether a json block has ever actually been seen at this path — set when
+	 * a read parses as `ok`, which is the only positive evidence a read can
+	 * give. Together with `lastWrittenText` (non-null exactly when this store
+	 * has written a note, and every note it writes has a block) it is what
+	 * `performWrite` may treat as proof that a block-less note lost one.
+	 *
+	 * The in-memory index is emphatically *not* that proof on the write side,
+	 * however well it serves as proof on the read side. `applyParsed` runs
+	 * after a read, where a non-empty index can only have come from the note;
+	 * `performWrite` runs after the user's edit has already been applied to
+	 * that index, so it is non-empty because somebody just ordered a folder.
+	 * Reading it as evidence there refused the first write into an existing
+	 * note that never had a block, left the order unwritten and marked the
+	 * store unusable — silently, since nothing throws and the note looks
+	 * untouched.
+	 */
+	private sawBlock = false;
 	/** The exact text this store itself last wrote, so the `modify` listener below can tell its own write apart from an external one. `null` until the first write. */
 	private lastWrittenText: string | null = null;
 	private writeTimerId: number | null = null;
@@ -282,6 +300,10 @@ export class IndexFileStore {
 			this.markUnusable(MISSING_BLOCK_REASON);
 			return;
 		}
+		// The one place a read can prove a block is really there. Recorded even
+		// when the block parsed to an empty index: what matters later is that a
+		// fence existed at this path, not what was inside it.
+		if (result.status === 'ok') this.sawBlock = true;
 		this.index = result.status === 'ok' ? result.index : new Map();
 		this.markUsable();
 	}
@@ -897,12 +919,13 @@ export class IndexFileStore {
 			// synchronous — so the one await it depends on happens here, before
 			// the process call rather than inside it.
 			//
-			// Only consults the backup when the in-memory index is empty: a
-			// non-empty one is already proof on its own that a block was
-			// written at this path, so the ordinary write path (which is what
-			// runs after every reorder) keeps costing zero extra `data.json`
-			// reads.
-			const blockWasStored = this.index.size > 0 || (await this.readBackup()).size > 0;
+			// The evidence is deliberately about the *note*, never about the
+			// in-memory index — see `sawBlock`'s doc comment for the regression
+			// that distinction cost. Both cheap terms are tried first, so the
+			// ordinary write path (which is what runs after every reorder, and
+			// has written this note at least once by definition) keeps costing
+			// zero extra `data.json` reads.
+			const blockWasStored = this.sawBlock || this.lastWrittenText !== null || (await this.readBackup()).size > 0;
 
 			let becameUnusable: string | null = null;
 			await app.vault.process(existing, (data) => {

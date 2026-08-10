@@ -27,6 +27,23 @@
  * intuition about the real thing.
  */
 
+/**
+ * `IndexFileStore` schedules its debounced writes through `window.setTimeout`,
+ * so without this the whole write path throws `ReferenceError` on the first
+ * `update()` and no test can reach it. That gap is not hypothetical: it is why
+ * a guard that refused every first write into a block-less note went in green.
+ *
+ * Node's own timers, only reachable under the name the plugin uses.
+ */
+export function installTimers(): void {
+	(globalThis as { window?: unknown }).window ??= {
+		setTimeout: (fn: () => void, ms?: number) => setTimeout(fn, ms),
+		clearTimeout: (id: number) => {
+			clearTimeout(id);
+		},
+	};
+}
+
 /** Captures every `Notice` raised during a test, so a silent path is distinguishable from a reporting one. */
 export const notices: string[] = [];
 
