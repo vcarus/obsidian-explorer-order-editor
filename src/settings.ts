@@ -447,17 +447,35 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 * healing automatically at that point would risk clobbering an edit the
 	 * user made deliberately while Obsidian was closed — so nothing repairs
 	 * until this, a save or a clear is actually clicked. `store.repair()` runs the identical recovery machinery those
-	 * other actions trigger automatically, already reports its own outcome
-	 * via a Notice (success naming the quarantine note, failure logged), so
-	 * this only has to redraw the tab — the row disappears on success because
-	 * `visible` is re-evaluated — and ask the file explorer to re-sort.
+	 * other actions trigger automatically and announces its own success with a
+	 * Notice naming the copy it kept, so on that path this only has to redraw
+	 * the tab — the row disappears because `visible` is re-evaluated — and ask
+	 * the file explorer to re-sort.
+	 *
+	 * Failure it does not announce: `healThenUpdate` only reaches the console
+	 * when there is nothing to recover. Reporting that here is not a nicety.
+	 * This row is the one control offered for an unusable note, and a click
+	 * that repairs nothing leaves the tab looking exactly as it did — the row
+	 * stays (the store is still unusable), so the button reads as broken
+	 * rather than as having answered. It is also the moment the user most
+	 * needs to be told something, because the only other row that can still be
+	 * visible in this state deletes the kept copies of unreadable notes, which
+	 * repairs nothing and, when recovery found nothing, may be deleting the
+	 * last surviving copy of the orders.
 	 */
 	private async runRepair(): Promise<void> {
 		this.busy = true;
 		this.update();
 		try {
 			const healed = await this.plugin.store.repair();
-			if (healed) requestFileExplorerResort(this.app);
+			if (healed) {
+				requestFileExplorerResort(this.app);
+			} else {
+				new Notice(
+					'Could not repair the order note: nothing readable survived in it, and there is no backup to fall back on. ' +
+						'It has been left exactly as it was — fix its json block by hand, or delete the block to start over with no saved orders.',
+				);
+			}
 		} finally {
 			this.busy = false;
 			this.update();
