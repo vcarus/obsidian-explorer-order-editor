@@ -84,6 +84,22 @@ describe('repair() distinguishes why it could not repair', () => {
 		expect(kept).toHaveLength(1);
 	});
 
+	it('adopts a note that turned readable mid-flight rather than overwriting it with what it salvaged', async () => {
+		// Same race as the one under startOver, on the heal path — which is
+		// where it predates all of this: the recovered index is reconstructed
+		// from the stale snapshot, and writing it would replace orders that are
+		// strictly newer.
+		const { store, stub } = await loadedStore(salvageable);
+		expect(store.isUsable()).toBe(false);
+
+		const arrived = serializeIndex('', new Map([['navtest', ['landed.md']]]));
+		stub.app.vault.files.set(NOTE, arrived);
+
+		expect(await store.repair()).toBe('healed');
+		expect(store.get('navtest')).toEqual(['landed.md']);
+		expect(stub.app.vault.files.get(NOTE)).toBe(arrived);
+	});
+
 	it('is a no-op answering healed when the store was never unusable', async () => {
 		const { store } = await loadedStore(serializeIndex('', new Map([['navtest', ['a.md']]])));
 		expect(store.isUsable()).toBe(true);
@@ -132,6 +148,29 @@ describe('startOver()', () => {
 
 		expect(await store.startOver()).toBe(false);
 		expect(store.isUsable()).toBe(false);
+	});
+
+	it('adopts the note instead of wiping it when it turned readable mid-flight', async () => {
+		// The window Codex found: a sync client replaces the broken note with a
+		// good one, and `onExternalModify` has not run yet — it is not on the
+		// write chain and starts with its own await — so `usable` is still
+		// false while the disk already holds real orders. Writing through that
+		// would put an empty block over them, and the quarantine copy beside it
+		// holds the *old* text, so they would survive nowhere.
+		//
+		// The stub reproduces it without any timing games: it registers the
+		// `modify` handler and never fires it, which is exactly "the disk
+		// changed and nothing has told the store".
+		const { store, stub } = await loadedStore(unsalvageable);
+		expect(store.isUsable()).toBe(false);
+
+		const arrived = serializeIndex('', new Map([['navtest', ['landed.md']]]));
+		stub.app.vault.files.set(NOTE, arrived);
+
+		expect(await store.startOver()).toBe(true);
+		expect(store.isUsable()).toBe(true);
+		expect(store.get('navtest')).toEqual(['landed.md']);
+		expect(stub.app.vault.files.get(NOTE)).toBe(arrived);
 	});
 
 	it('does not wipe anything if the store became usable first', async () => {
