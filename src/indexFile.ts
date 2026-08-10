@@ -51,6 +51,22 @@ const INDEX_BACKUP_KEY = 'indexBackup';
  */
 const MISSING_BLOCK_REASON = 'Its json block is missing';
 
+/**
+ * Why a repair attempt ended where it did.
+ *
+ * Three-valued rather than a boolean because the settings tab acts on the
+ * difference and a caller that cannot see it will say something false:
+ * `'nothing-to-recover'` is the only outcome for which offering to start over
+ * is honest, while `'failed'` means the attempt itself broke — the orders may
+ * be perfectly recoverable, and a wipe offered on that footing would discard
+ * them on a false premise.
+ *
+ * Anything reading this as a boolean gets the wrong answer silently, since
+ * every member is a non-empty string and therefore truthy. Compare against
+ * `'healed'` explicitly.
+ */
+export type RepairOutcome = 'healed' | 'nothing-to-recover' | 'failed';
+
 /** Milliseconds a burst of `update()` calls is given to settle before the debounced write actually runs. */
 const WRITE_DEBOUNCE_MS = 200;
 /** See `awaitIndexing`: ~5s of retries at `WRITE_DEBOUNCE_MS` apiece. */
@@ -328,7 +344,11 @@ export class IndexFileStore {
 	 */
 	async updateOrRepair(mutate: (index: OrderIndex) => OrderIndex): Promise<boolean> {
 		if (this.usable) return this.update(mutate);
-		return this.healThenUpdate(mutate);
+		// Callers of this one only need to know whether their edit landed, so
+		// the three-valued outcome collapses here rather than spreading into
+		// every move, drop and clear. `repair()` keeps the distinction because
+		// the settings tab is the one caller that must act on it.
+		return (await this.healThenUpdate(mutate)) === 'healed';
 	}
 
 	/**
@@ -340,8 +360,8 @@ export class IndexFileStore {
 	 * runs automatically, via an identity `mutate` that changes nothing
 	 * beyond the recovery itself.
 	 */
-	async repair(): Promise<boolean> {
-		if (this.usable) return true;
+	async repair(): Promise<RepairOutcome> {
+		if (this.usable) return 'healed';
 		return this.healThenUpdate((index) => index);
 	}
 
@@ -357,31 +377,22 @@ export class IndexFileStore {
 	 *    recover: stops here, touches nothing, stays unusable. Destroying
 	 *    the only copy of something in order to replace it with an empty one
 	 *    is the one outcome that must never happen, so this is the one case
-	 *    healing refuses even to try.
-	 * 2. Preserves the unreadable text as a quarantine note beside the
-	 *    original *before* touching the original at all.
-	 * 3. Applies `mutate` to the recovered index, rebuilds the note from the
-	 *    result, and becomes usable again.
-	 * 4. Reports success with a Notice naming the quarantine note, so the
+	 *    healing refuses even to try. `startOver` is the explicit, confirmed
+	 *    way past that refusal, for the user who would rather have a working
+	 *    plugin than a note nothing can read.
+	 * 2. Applies `mutate` to the recovered index and hands the result to
+	 *    `quarantineThenRebuild`, which preserves the unreadable text beside
+	 *    the original before replacing it and makes the store usable again.
+	 * 3. Reports success with a Notice naming the quarantine note, so the
 	 *    preserved content is findable, and how many lines could not be
 	 *    salvaged when that count is above zero.
 	 *
-	 * A failure at step 2 or 3 (quarantine or rebuild I/O) is logged and
-	 * leaves the store unusable — it does not partially apply: `this.index`
-	 * and `this.usable` are only updated together, after both the quarantine
-	 * and the rebuilt note have actually landed.
-	 *
-	 * The quarantine + rebuild pair runs on `writeChain` (`runExclusive`),
-	 * the same queue `performWrite` uses: a write that was already scheduled
-	 * *before* the note went unusable (armed by an earlier, then-valid
-	 * `update()`) could still be in flight when a heal starts, and without
-	 * this its `Vault.process` call could interleave with the heal's own —
-	 * exactly the overlap `writeChain` exists to prevent. Chaining onto it
-	 * makes the heal wait for that write to finish first, and makes any
-	 * later write (or a second, concurrent heal attempt) wait for the heal
-	 * in turn.
+	 * A failure at step 2 (quarantine or rebuild I/O) is logged and leaves the
+	 * store unusable — it does not partially apply: `this.index` and
+	 * `this.usable` are only updated together, after both the quarantine and
+	 * the rebuilt note have actually landed.
 	 */
-	private async healThenUpdate(mutate: (index: OrderIndex) => OrderIndex): Promise<boolean> {
+	private async healThenUpdate(mutate: (index: OrderIndex) => OrderIndex): Promise<RepairOutcome> {
 		const unreadableText = this.unreadableText ?? '';
 		const backup = await this.readBackup();
 		const { index: recovered, droppedLines } = recoverIndex(unreadableText, this.index, backup);
@@ -390,42 +401,117 @@ export class IndexFileStore {
 			console.error(
 				`[explorer-order-editor] cannot repair the order index (${this.notePath()}): nothing recoverable in the note, what is loaded, or the last backup`,
 			);
-			return false;
+			return 'nothing-to-recover';
 		}
 
 		const next = mutate(recovered);
 
 		try {
-			const quarantinePath = await this.runExclusive(async () => {
-				// Re-checked after taking the chain, not just at entry: two
-				// explicit actions can reach here before either has run — a
-				// double-click on "Clear explorer order", a save landing while a
-				// repair is queued. Each captured its own copy of
-				// `unreadableText` while the store was still unusable, so
-				// without this the second would quarantine the same content a
-				// second time and hand the user two "preserved copy" notes for
-				// one broken file. The first heal already recovered everything;
-				// the second only has to apply its own mutation.
-				if (this.usable) return null;
-				const path = await this.quarantineUnreadableNote(unreadableText);
-				await this.rebuildNoteFrom(next);
-				this.index = next;
-				this.markUsable();
-				await this.persistBackup(next);
-				return path;
-			});
+			const { rebuilt, quarantinePath } = await this.quarantineThenRebuild(unreadableText, next);
 
-			if (quarantinePath === null) return this.update(mutate);
+			if (!rebuilt) return this.update(mutate) ? 'healed' : 'failed';
 
-			const lines = [`Explorer order editor: repaired ${this.notePath()}. The unreadable copy was kept as "${quarantinePath}".`];
+			const lines = [`Explorer order editor: repaired ${this.notePath()}.`];
+			if (quarantinePath !== null) lines.push(`The unreadable copy was kept as "${quarantinePath}".`);
 			if (droppedLines > 0) {
 				lines.push(`${droppedLines} line${droppedLines === 1 ? '' : 's'} in it could not be salvaged.`);
 			}
 			new Notice(lines.join(' '));
 
-			return true;
+			return 'healed';
 		} catch (err) {
 			console.error('[explorer-order-editor] failed to repair the order index', err);
+			return 'failed';
+		}
+	}
+
+	/**
+	 * Replaces the unreadable note with one built from `next`, preserving what
+	 * was there first. Shared by `healThenUpdate` and `startOver` so the order
+	 * of these five steps is written down once: the quarantine copy lands
+	 * *before* the original is touched, and `this.index`/`usable` only move
+	 * after both that copy and the rebuilt note have actually been written.
+	 *
+	 * Reports two independent facts, which is why this is not just a path or
+	 * `null`: `rebuilt` says whether this call is the one that replaced the
+	 * note (`false` means the store became usable before it got its turn on
+	 * the chain — see the re-check inside), and `quarantinePath` says whether
+	 * a copy was kept. They are independent because there is one case that
+	 * rebuilds without keeping anything: an index note emptied to nothing at
+	 * all, which `applyParsed` marks unusable on the strength of the backup.
+	 * Copying zero bytes preserves nothing and would only leave a note the
+	 * "delete the kept copies" row then offers to tidy away, so the copy is
+	 * skipped — "preserve before replacing" is satisfied vacuously when there
+	 * is nothing to preserve.
+	 *
+
+	 * Runs on `writeChain` (`runExclusive`), the same queue `performWrite`
+	 * uses: a write that was already scheduled *before* the note went unusable
+	 * (armed by an earlier, then-valid `update()`) could still be in flight
+	 * when this starts, and without this its `Vault.process` call could
+	 * interleave with the rebuild's own — exactly the overlap `writeChain`
+	 * exists to prevent.
+	 */
+	private async quarantineThenRebuild(
+		unreadableText: string,
+		next: OrderIndex,
+	): Promise<{ rebuilt: boolean; quarantinePath: string | null }> {
+		return this.runExclusive(async () => {
+			// Re-checked after taking the chain, not just at entry: two
+			// explicit actions can reach here before either has run — a
+			// double-click on "Clear explorer order", a save landing while a
+			// repair is queued. Each captured its own copy of `unreadableText`
+			// while the store was still unusable, so without this the second
+			// would quarantine the same content a second time and hand the user
+			// two "preserved copy" notes for one broken file.
+			//
+			// This is also what keeps `startOver` from being able to discard
+			// anything: if a heal recovered real orders while the confirmation
+			// dialog was open, the store is usable by now and the rebuild from
+			// an empty index never happens.
+			if (this.usable) return { rebuilt: false, quarantinePath: null };
+			const quarantinePath = unreadableText === '' ? null : await this.quarantineUnreadableNote(unreadableText);
+			await this.rebuildNoteFrom(next);
+			this.index = next;
+			this.markUsable();
+			await this.persistBackup(next);
+			return { rebuilt: true, quarantinePath };
+		});
+	}
+
+	/**
+	 * The deliberate way out of the one state `healThenUpdate` refuses to act
+	 * on: the note is unreadable and the note, the loaded index and the backup
+	 * between them hold nothing to recover. That refusal is right as an
+	 * automatic policy — replacing the only copy of something with an empty
+	 * one is the outcome that must never happen on its own — but it leaves the
+	 * user with a plugin that cannot write and no action inside it that
+	 * changes that. This is that action, and it is reachable only from an
+	 * explicit confirmed click in the settings tab.
+	 *
+	 * What makes overriding the policy safe is that nothing is actually
+	 * destroyed: `quarantineThenRebuild` writes the unreadable content to its
+	 * own note before the original is touched, so "start over" costs the saved
+	 * orders but keeps every byte that held them.
+	 *
+	 * Returns `true` when the store is usable afterwards — including the case
+	 * where something else healed it first, which is not a failure and must
+	 * not be followed by a wipe.
+	 */
+	async startOver(): Promise<boolean> {
+		if (this.usable) return true;
+		const unreadableText = this.unreadableText ?? '';
+
+		try {
+			const { rebuilt, quarantinePath } = await this.quarantineThenRebuild(unreadableText, new Map());
+			if (!rebuilt) return true;
+
+			const lines = [`Explorer order editor: ${this.notePath()} was rebuilt with no saved orders.`];
+			if (quarantinePath !== null) lines.push(`The unreadable copy was kept as "${quarantinePath}".`);
+			new Notice(lines.join(' '));
+			return true;
+		} catch (err) {
+			console.error('[explorer-order-editor] failed to start over with an empty order index', err);
 			return false;
 		}
 	}

@@ -228,14 +228,19 @@ export async function applyDrop(
 	// Not a new healing trigger — the `updateOrRepair` at the foot of this
 	// function already healed on a drop, one of the three explicit user
 	// actions healing is allowed to run for. This only moves that same heal
-	// earlier in the sequence. `repair()` is a no-op returning `true` when the
-	// store is already usable, so the ordinary drop pays nothing for it.
+	// earlier in the sequence. `repair()` is a no-op answering `'healed'` when
+	// the store is already usable, so the ordinary drop pays nothing for it.
 	//
 	// The same-folder branch above deliberately keeps the original order: it
 	// renames nothing, so a refused write there leaves no on-disk state
 	// disagreeing with the saved order, and `'refused'` remains the honest
 	// answer.
-	if (!(await host.store.repair())) return { outcome: 'refused' };
+	// Compared against `'healed'`, not tested for truthiness: `repair()` answers
+	// with a `RepairOutcome`, and every member of that union is a non-empty
+	// string, so `!outcome` would be false for the failures too — and silently,
+	// since that is valid TypeScript. All this branch needs is "can the store
+	// be written now"; why it cannot is the settings tab's business.
+	if ((await host.store.repair()) !== 'healed') return { outcome: 'refused' };
 
 	const next = insertNameBeside(effectiveOrder(host, dest), dragged.name, anchor.name, side);
 	if (next === null) return { outcome: 'unchanged' };

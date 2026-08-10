@@ -13,7 +13,7 @@
  */
 import { App, normalizePath, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
 import { ConfirmModal } from './ConfirmModal';
-import { requestFileExplorerResort, type IndexFileStore } from './indexFile';
+import { requestFileExplorerResort, type IndexFileStore, type RepairOutcome } from './indexFile';
 import { pruneMissing } from './orderIndex';
 import { isQuarantinePath, quarantineFolderPath } from './quarantine';
 
@@ -196,7 +196,21 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 					'and keeps the unreadable version beside it as a separate note so nothing is thrown away. ' +
 					'Those kept copies are only useful for checking whether an order went missing in the rebuild. ' +
 					'Once you are satisfied nothing is, they can go.',
-				visible: () => this.quarantineFiles().length > 0,
+				// Gated on the store being usable, not merely on copies
+				// existing. Every word of the description above assumes a
+				// rebuild has happened — that is what makes a kept copy a
+				// leftover worth clearing. While the note is unreadable no
+				// rebuild has happened, so the same files are not leftovers at
+				// all: if recovery found nothing, a kept copy can be the last
+				// place the orders still exist, and this row would offer to
+				// delete it while presenting it as spent.
+				//
+				// It also keeps two destructive-looking buttons from sharing a
+				// screen. In the unusable state the only other row visible is
+				// the repair one, whose failure path offers to start over —
+				// "delete the copies" and "start over" read as the same
+				// gesture, and only one of them repairs anything.
+				visible: () => this.plugin.store.isUsable() && this.quarantineFiles().length > 0,
 				render: (setting) => {
 					setting.addButton((button) =>
 						button
@@ -452,28 +466,79 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 * the tab — the row disappears because `visible` is re-evaluated — and ask
 	 * the file explorer to re-sort.
 	 *
-	 * Failure it does not announce: `healThenUpdate` only reaches the console
-	 * when there is nothing to recover. Reporting that here is not a nicety.
-	 * This row is the one control offered for an unusable note, and a click
-	 * that repairs nothing leaves the tab looking exactly as it did — the row
-	 * stays (the store is still unusable), so the button reads as broken
-	 * rather than as having answered. It is also the moment the user most
-	 * needs to be told something, because the only other row that can still be
-	 * visible in this state deletes the kept copies of unreadable notes, which
-	 * repairs nothing and, when recovery found nothing, may be deleting the
-	 * last surviving copy of the orders.
+	 * Failure needs an answer of its own, not a log line. `healThenUpdate`
+	 * refuses when nothing is recoverable and only reaches the console, so a
+	 * click that repairs nothing used to leave the tab looking exactly as it
+	 * did — the row stays, since the store is still unusable, and the button
+	 * reads as broken rather than as having answered.
+	 *
+	 * Worse, that state is terminal from inside the plugin: without an order
+	 * note it can parse, nothing here can write, and no other row in this tab
+	 * changes that. So the refusal is where the way out belongs. The dialog
+	 * asks rather than acts because it costs the saved orders, and it can
+	 * promise the copy is kept because `startOver` quarantines before it
+	 * rebuilds — the orders go, the bytes that held them do not.
+	 *
+	 * Confirmation is asked outside the `busy` window, matching the other
+	 * destructive rows here: the tab should not sit disabled behind a dialog
+	 * that may well be cancelled.
 	 */
 	private async runRepair(): Promise<void> {
 		this.busy = true;
 		this.update();
+		let outcome: RepairOutcome;
 		try {
-			const healed = await this.plugin.store.repair();
-			if (healed) {
+			outcome = await this.plugin.store.repair();
+		} finally {
+			this.busy = false;
+			this.update();
+		}
+
+		if (outcome === 'healed') {
+			requestFileExplorerResort(this.app);
+			return;
+		}
+
+		// Only "there was nothing to recover" earns the offer below. A repair
+		// that *broke* says nothing about whether the orders are recoverable —
+		// a quarantine copy that could not be created, a note that could not be
+		// rebuilt — and inviting a wipe on that footing would be asking the
+		// user to discard orders on a false premise. Retrying is the right next
+		// move there, not starting over.
+		if (outcome === 'failed') {
+			new Notice(
+				'Could not repair the order note: the attempt itself failed, so it is not known whether anything is recoverable. ' +
+					'The note has not been changed — see the console for details, and try again.',
+			);
+			return;
+		}
+
+		const confirmed = await ConfirmModal.ask(
+			this.app,
+			'Nothing could be recovered',
+			'No readable order survived in the order note, and there is no backup to fall back on, so it cannot be repaired. ' +
+				'Starting over rebuilds it with no saved orders — every folder goes back to the file explorer\'s own sort setting. ' +
+				'The unreadable version is kept beside it as a separate note, so nothing is thrown away. ' +
+				'Cancel instead if you would rather edit its json block by hand first.',
+			'Start over',
+		);
+		if (!confirmed) return;
+
+		this.busy = true;
+		this.update();
+		try {
+			if (await this.plugin.store.startOver()) {
 				requestFileExplorerResort(this.app);
 			} else {
+				// The same silence this row was just fixed for, and worse here:
+				// the user has confirmed a destructive action, so saying
+				// nothing leaves them unable to tell whether the orders were
+				// cleared. Deliberately does not claim nothing happened — the
+				// quarantine copy is written before the rebuild, so a rebuild
+				// that throws can still have left one behind.
 				new Notice(
-					'Could not repair the order note: nothing readable survived in it, and there is no backup to fall back on. ' +
-						'It has been left exactly as it was — fix its json block by hand, or delete the block to start over with no saved orders.',
+					'Could not start over: the order note could not be rebuilt. It still holds what it did — see the console for details. ' +
+						'A kept copy of it may already have been created beside it.',
 				);
 			}
 		} finally {
