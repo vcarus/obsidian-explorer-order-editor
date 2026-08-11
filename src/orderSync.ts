@@ -49,6 +49,7 @@ import { debounce, Notice, Plugin, TAbstractFile, TFile, TFolder, type Debouncer
 import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { removeEntry, removeOrder, renameEntry, renameFolderPath } from './orderIndex';
 import type { ExplorerOrderEditorSettings } from './settings';
+import { baseNameOf, parentPathOf } from './types';
 
 /** Structural slice of `Plugin`, matching `SettingsHost` in `settings.ts` — avoids a circular import against `main.ts`. */
 export interface OrderSyncHost extends Plugin {
@@ -115,19 +116,11 @@ class OrderSyncCoordinator {
 		}
 
 		// Reconcile the entry's own position within its *parent* folder's
-		// order — same for a renamed file and a renamed folder alike.
-		const oldSlash = oldPath.lastIndexOf('/');
-		// A root-level item's oldPath has no '/', so lastIndexOf returns -1.
-		// Feeding that straight into String#slice(0, -1) would NOT yield ''
-		// — slice treats a negative end index as "count back from the end",
-		// so it would silently drop the path's last character instead of
-		// producing an empty parent path. Guard the no-slash case explicitly
-		// rather than lean on the arithmetic happening to work out.
-		const oldName = oldSlash === -1 ? oldPath : oldPath.slice(oldSlash + 1);
-		const oldParentPath = oldSlash === -1 ? '' : oldPath.slice(0, oldSlash);
-
-		const { app } = this.host;
-		const oldParentFolder = oldParentPath === '' ? app.vault.getRoot() : app.vault.getFolderByPath(oldParentPath);
+		// order — same for a renamed file and a renamed folder alike. The
+		// root-level no-slash trap in this split lives with `parentPathOf`
+		// (`types.ts`), stated once instead of guarded at every call site.
+		const oldName = baseNameOf(oldPath);
+		const oldParentFolder = this.resolveParentFolder(parentPathOf(oldPath));
 		if (oldParentFolder === null) return; // the old parent isn't resolvable — nothing to reconcile against
 		const parentKey = folderIndexKey(oldParentFolder);
 		const newName = file.name;
@@ -163,11 +156,8 @@ class OrderSyncCoordinator {
 		// Not `file.parent`: Obsidian doesn't promise a deleted node still
 		// points at its former parent by the time this event runs. Derive
 		// the parent folder from the path text instead, exactly like
-		// onRename's "moved away" branch does for the same reason.
-		const slash = file.path.lastIndexOf('/');
-		const parentPath = slash === -1 ? '' : file.path.slice(0, slash);
-		const { app } = this.host;
-		const parentFolder = parentPath === '' ? app.vault.getRoot() : app.vault.getFolderByPath(parentPath);
+		// onRename does for the same reason.
+		const parentFolder = this.resolveParentFolder(parentPathOf(file.path));
 		if (parentFolder === null) return;
 		const parentKey = folderIndexKey(parentFolder);
 		const name = file.name;
@@ -191,6 +181,17 @@ class OrderSyncCoordinator {
 		}
 
 		this.scheduleRefresh();
+	}
+
+	/**
+	 * The folder at a `parentPathOf`-derived path. `''` maps to the vault
+	 * root explicitly: a root-level item's parent is the root, and the empty
+	 * string is not the key the root lives under in the vault's file map.
+	 * `null` when the path doesn't resolve to a folder any more.
+	 */
+	private resolveParentFolder(parentPath: string): TFolder | null {
+		const { app } = this.host;
+		return parentPath === '' ? app.vault.getRoot() : app.vault.getFolderByPath(parentPath);
 	}
 
 	private enqueue(op: () => void): void {

@@ -1,9 +1,53 @@
 import { describe, expect, it } from 'vitest';
-import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel } from '../src/navigation';
+import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, openingRowOrder } from '../src/navigation';
 import type { Entry } from '../src/types';
 
 const file = (name: string): Entry => ({ name, kind: 'file' });
 const folder = (name: string): Entry => ({ name, kind: 'folder' });
+
+describe('openingRowOrder', () => {
+	it('follows the explorer names when they could be read', () => {
+		const siblings = [file('a.md'), file('b.md'), folder('C')];
+		expect(openingRowOrder(['b.md', 'C', 'a.md'], undefined, siblings)).toEqual([file('b.md'), folder('C'), file('a.md')]);
+	});
+
+	it('skips names with no matching sibling instead of inventing rows', () => {
+		// The index note is the everyday such name: the explorer renders it,
+		// the dialog's siblings never include it.
+		const siblings = [file('a.md'), file('b.md')];
+		expect(openingRowOrder(['b.md', 'explorer-order.md', 'a.md'], undefined, siblings)).toEqual([file('b.md'), file('a.md')]);
+	});
+
+	it('appends siblings the explorer never mentioned, in the order they arrived', () => {
+		const siblings = [file('stale-2.md'), file('a.md'), file('stale-1.md')];
+		expect(openingRowOrder(['a.md'], undefined, siblings)).toEqual([file('a.md'), file('stale-2.md'), file('stale-1.md')]);
+	});
+
+	it('a duplicated name keeps its first occurrence only', () => {
+		const siblings = [file('a.md'), file('b.md')];
+		expect(openingRowOrder(['a.md', 'b.md', 'a.md'], undefined, siblings)).toEqual([file('a.md'), file('b.md')]);
+	});
+
+	it('falls back to the stored order when the explorer could not be consulted', () => {
+		const siblings = [file('a.md'), file('b.md'), file('c.md')];
+		// The stored order names one gone entry (dropped) and two live ones;
+		// the sibling it never mentioned lands at the end.
+		expect(openingRowOrder(null, ['c.md', 'gone.md', 'a.md'], siblings)).toEqual([file('c.md'), file('a.md'), file('b.md')]);
+	});
+
+	it('no explorer and no stored order passes the siblings through unchanged', () => {
+		const siblings = [file('b.md'), file('a.md')];
+		expect(openingRowOrder(null, undefined, siblings)).toEqual([file('b.md'), file('a.md')]);
+	});
+
+	it('permutes the very objects it was handed rather than rebuilding them', () => {
+		const a = file('a.md');
+		const b = file('b.md');
+		const out = openingRowOrder(['b.md', 'a.md'], undefined, [a, b]);
+		expect(out[0]).toBe(b);
+		expect(out[1]).toBe(a);
+	});
+});
 
 describe('isSameOrder', () => {
 	it('equal lists -> true', () => {

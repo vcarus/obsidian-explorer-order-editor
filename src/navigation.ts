@@ -1,11 +1,60 @@
 /**
- * Pure judgments for the reorder modal's in-dialog navigation: walking
- * into a subfolder, or back out to any ancestor, without closing the dialog.
- * Kept free of any import besides `Entry`'s type — `OrderModal.ts` imports
- * `obsidian` and so has no unit-test surface at all, the same reason
+ * Pure judgments for the reorder modal: walking into a subfolder or back out
+ * to any ancestor without closing the dialog, and the order a level's rows
+ * open in (`openingRowOrder`). Kept free of `obsidian` — `OrderModal.ts`
+ * imports it and so has no unit-test surface at all, the same reason
  * `rowMove.ts` exists as its own module rather than living inline there.
  */
+import { mergeOrder } from './orderIndex';
 import type { Entry } from './types';
+
+/**
+ * The order a level's rows open in: `explorerNames` (what the file explorer
+ * is rendering right now, when it could be consulted) resolved against
+ * `siblings`, the entries the dialog actually knows how to order. When the
+ * explorer could not be consulted (`null`), the names come from
+ * `mergeOrder(stored, …)` instead — the stored order reconciled against the
+ * live siblings, the same approximation the render patch itself applies.
+ *
+ * Either way the same two rules finish the job, and they are the contract
+ * this function exists to pin down:
+ *
+ * - A name with no matching sibling is skipped, not invented: the index note
+ *   (excluded from `siblings` on purpose) and anything else the dialog
+ *   doesn't recognize never becomes a row. Duplicate names keep their first
+ *   occurrence only.
+ * - Every sibling the names never mentioned is appended at the end, in the
+ *   order `siblings` arrived — a stale row must still get a position rather
+ *   than vanish from the dialog entirely.
+ *
+ * Generic in the entry type for `fallbackEntryOrder`'s reason (`types.ts`):
+ * this only ever permutes what it is handed, so the caller's richer
+ * `SortableEntry` rides through without a cast.
+ */
+export function openingRowOrder<T extends Entry>(
+	explorerNames: readonly string[] | null,
+	stored: readonly string[] | undefined,
+	siblings: readonly T[],
+): T[] {
+	const siblingByName = new Map(siblings.map((entry) => [entry.name, entry] as const));
+	const names = explorerNames ?? mergeOrder(stored, siblings.map((entry) => entry.name));
+
+	const seen = new Set<string>();
+	const ordered: T[] = [];
+	for (const name of names) {
+		const entry = siblingByName.get(name);
+		if (entry === undefined) continue;
+		if (seen.has(name)) continue;
+		seen.add(name);
+		ordered.push(entry);
+	}
+	for (const entry of siblings) {
+		if (seen.has(entry.name)) continue;
+		seen.add(entry.name);
+		ordered.push(entry);
+	}
+	return ordered;
+}
 
 /** True when both lists name the same entries, same `kind`, in the same order. */
 export function isSameOrder(a: readonly Entry[], b: readonly Entry[]): boolean {

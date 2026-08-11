@@ -85,6 +85,27 @@ export function compareNames(a: string, b: string): number {
 }
 
 /**
+ * The parent portion of a vault path — `''` for a root-level path. The
+ * no-slash case is guarded explicitly rather than leaning on the arithmetic:
+ * `lastIndexOf` returns `-1` there, and `slice(0, -1)` does NOT yield `''` —
+ * slice treats a negative end index as "count back from the end", so it would
+ * silently drop the path's last character instead of producing an empty
+ * parent. `orderSync.ts` used to carry that guard, with this comment, at two
+ * call sites; a shared helper is what keeps a third copy from being written
+ * without it.
+ */
+export function parentPathOf(path: string): string {
+	const slash = path.lastIndexOf('/');
+	return slash === -1 ? '' : path.slice(0, slash);
+}
+
+/** The final segment of a vault path — the whole path when it has no `/`. */
+export function baseNameOf(path: string): string {
+	const slash = path.lastIndexOf('/');
+	return slash === -1 ? path : path.slice(slash + 1);
+}
+
+/**
  * The order rows appear in when a folder has no saved order yet — folders
  * before files, each group by name. It also decides where entries the saved
  * order doesn't mention get appended (see `mergeOrder` in `orderIndex.ts`).

@@ -4,8 +4,8 @@ import { SORT_CHOICES, sortEntries, timestampFor, type SortChoice, type Sortable
 import { explorerOrderNames } from './explorerSort';
 import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { refusalNotice, reportApplied } from './notices';
-import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
-import { mergeOrder, setOrder } from './orderIndex';
+import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, openingRowOrder, type BreadcrumbSegment } from './navigation';
+import { setOrder } from './orderIndex';
 import { targetIndexFor, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
 import { entriesFor } from './folderEntries';
@@ -411,55 +411,17 @@ export class OrderModal extends Modal {
 	 *
 	 * `explorerOrderNames` goes through our own `getSortedFolderItems` patch,
 	 * so its answer already *is* either this folder's saved order or the
-	 * explorer's own current sort — there is nothing left for this method to
-	 * merge against a separately-read `store.get()`, unlike the fallback path
-	 * below. The index note is never among `siblings` (`entriesFor` excludes
-	 * it), so any name `explorerOrderNames` returns that isn't in
-	 * `siblingByName` — the index note itself, or anything else this dialog
-	 * doesn't know how to order — is simply skipped rather than turned into a
-	 * row.
-	 *
-	 * Falls back to `mergeOrder(store.get(...), siblings)` — today's
-	 * behaviour — whenever the explorer can't be consulted (`null`): a closed
-	 * file explorer, or anything unexpected about its internals, degrades to
-	 * the old approximation rather than leaving the dialog with no order at
-	 * all.
+	 * explorer's own current sort; when the explorer can't be consulted
+	 * (`null`), the stored order reconciled against the live siblings stands
+	 * in. That fallback and the resolution rules — skip names this dialog
+	 * doesn't recognize (the index note above all, never among `siblings`
+	 * since `entriesFor` excludes it), append siblings the names never
+	 * mentioned — are `openingRowOrder`'s contract (`navigation.ts`), pure
+	 * and unit-tested there rather than trapped behind this file's `obsidian`
+	 * import.
 	 */
 	private orderedEntriesFor(siblings: readonly SortableEntry[]): SortableEntry[] {
-		const siblingByName = new Map(siblings.map((entry) => [entry.name, entry]));
-		const explorerNames = explorerOrderNames(this.app, this.folder);
-
-		if (explorerNames === null) {
-			const stored = this.store.get(folderIndexKey(this.folder));
-			return mergeOrder(
-				stored,
-				siblings.map((entry) => entry.name),
-			)
-				.map((name) => siblingByName.get(name))
-				.filter((entry): entry is SortableEntry => entry !== undefined);
-		}
-
-		const seen = new Set<string>();
-		const ordered: SortableEntry[] = [];
-		for (const name of explorerNames) {
-			const entry = siblingByName.get(name);
-			// Not found for the index note (excluded from `siblings` on
-			// purpose — see the doc comment above) or anything else this
-			// dialog doesn't recognize as an orderable sibling.
-			if (entry === undefined) continue;
-			if (seen.has(name)) continue; // defensive: siblings are already unique by name
-			seen.add(name);
-			ordered.push(entry);
-		}
-		// Anything entriesFor knows about that the explorer didn't return —
-		// should not happen once the explorer's own patch is installed, but a
-		// stale row must still get a position rather than vanish from the
-		// dialog entirely.
-		for (const entry of siblings) {
-			if (seen.has(entry.name)) continue;
-			ordered.push(entry);
-		}
-		return ordered;
+		return openingRowOrder(explorerOrderNames(this.app, this.folder), this.store.get(folderIndexKey(this.folder)), siblings);
 	}
 
 	/**

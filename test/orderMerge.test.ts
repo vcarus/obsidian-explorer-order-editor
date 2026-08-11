@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { targetIndexFor } from '../src/rowMove';
-import { displayLabel, fallbackEntryOrder, type Entry } from '../src/types';
+import { baseNameOf, displayLabel, fallbackEntryOrder, parentPathOf, type Entry } from '../src/types';
 
 const file = (name: string): Entry => ({ name, kind: 'file' });
 const folder = (name: string): Entry => ({ name, kind: 'folder' });
@@ -32,6 +32,25 @@ describe('displayLabel', () => {
 
 	it('a folder is never touched, even one literally named with a .md suffix', () => {
 		expect(displayLabel(folder('Notes.md'))).toBe('Notes.md');
+	});
+});
+
+describe('parentPathOf / baseNameOf', () => {
+	it('splits a nested path at the last slash', () => {
+		expect(parentPathOf('Projects/Alpha/Design.md')).toBe('Projects/Alpha');
+		expect(baseNameOf('Projects/Alpha/Design.md')).toBe('Design.md');
+	});
+
+	it('a root-level path has an empty parent and is its own base name', () => {
+		// The trap the guard exists for: lastIndexOf returns -1 there, and
+		// slice(0, -1) would have produced 'Welcome.m', not ''.
+		expect(parentPathOf('Welcome.md')).toBe('');
+		expect(baseNameOf('Welcome.md')).toBe('Welcome.md');
+	});
+
+	it('a folder path splits the same way as a file path', () => {
+		expect(parentPathOf('Projects/Alpha')).toBe('Projects');
+		expect(baseNameOf('Projects/Alpha')).toBe('Alpha');
 	});
 });
 
