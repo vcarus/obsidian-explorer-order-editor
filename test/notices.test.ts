@@ -9,12 +9,19 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { IndexFileStore, type IndexFileHost } from '../src/indexFile';
-import { unusableClause } from '../src/notices';
+import { repairPointer, unusableClause } from '../src/notices';
 import { serializeIndex } from '../src/orderIndex';
 import { DEFAULT_SETTINGS } from '../src/settings';
-import { StubPlugin, resetNotices } from './stubs/obsidian';
+import { StubPlugin, installTimers, resetNotices } from './stubs/obsidian';
 
 const NOTE = 'explorer-order.md';
+
+// Nothing here schedules a write today, but every store built below is a real
+// one, and `update()`/`markUnusable` reach `window` timers node does not have.
+// Installed unconditionally so the first assertion that drives a mutation
+// through one of these stores fails for its own reason rather than with
+// `ReferenceError: window is not defined`.
+installTimers();
 
 /** See the identically-shaped helper in `indexFileRepair.test.ts` for why the cast is the only one. */
 function makeHost(): { host: IndexFileHost; stub: StubPlugin } {
@@ -76,6 +83,15 @@ describe('unusableClause', () => {
 		expect(unusableClause(store)).toBe('the order note its json block is missing');
 	});
 
+	it('is a clause, so a caller can open the sentence it sits in', async () => {
+		const store = await storeThatFailedToLoad('```json\n[1, 2, 3]\n```\n');
+		const clause = unusableClause(store);
+		// Neither end may be a sentence boundary: every caller writes
+		// "Could not <verb>: ${clause}. ${repairPointer(…)}" around it.
+		expect(clause.charAt(0)).toBe(clause.charAt(0).toLowerCase());
+		expect(clause.endsWith('.')).toBe(false);
+	});
+
 	it('falls back to a clause, not a sentence, when the store never said why', async () => {
 		const { host } = makeHost();
 		const store = new IndexFileStore(host);
@@ -83,5 +99,30 @@ describe('unusableClause', () => {
 		// A usable store has no reason at all; the fallback still has to read as
 		// the middle of somebody else's sentence.
 		expect(unusableClause(store)).toBe('the order note could not be repaired');
+	});
+});
+
+describe('repairPointer', () => {
+	// The clause this pins was already lost once, silently: the eight notices it
+	// replaced each ended "or check the console for details", and nothing —
+	// tests, lint, build — noticed it going. Everything explaining *why* a
+	// refusal happened is in the console and nowhere else, including the two
+	// distinct causes that both surface as "the attempt itself failed".
+	it('sends the reader to the console, which is where every reason actually is', () => {
+		for (const where of ['in the settings tab', 'from elsewhere'] as const) {
+			expect(repairPointer(where)).toContain('See the console for details.');
+		}
+	});
+
+	it('names the way out that exists when repair itself refuses', () => {
+		// Somebody told only to "repair" would keep pressing a button that
+		// correctly declines when there is nothing to recover.
+		expect(repairPointer('from elsewhere')).toContain('start over');
+	});
+
+	it('does not tell the settings tab to go to the settings tab', () => {
+		expect(repairPointer('in the settings tab')).toContain('above');
+		expect(repairPointer('in the settings tab')).not.toContain('in settings');
+		expect(repairPointer('from elsewhere')).toContain('in settings');
 	});
 });

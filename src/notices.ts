@@ -64,16 +64,19 @@ function asClause(reason: string): string {
  * refusal notice, so the fallback wording for "the store never said why" is
  * written once.
  *
- * A clause rather than a whole sentence on purpose: the seven callers open
- * differently ("Could not save:", "Could not remove stale entries:", and one
- * that leads with a move that *did* happen) and end differently ("then drag
- * it again", "or check the console for details"). Only the middle was ever
- * really the same, and forcing the rest through one template would have meant
- * a parameter per caller.
+ * A clause rather than a whole sentence on purpose: callers open differently
+ * ("Could not save:", "Could not remove stale entries:", and one that leads
+ * with a move that *did* happen). Only the middle was ever really the same, and
+ * forcing the openings through one template would have meant a parameter per
+ * caller.
  *
  * Being that middle is also why the re-casing above belongs here and not at
- * the seven call sites, nor in the reasons themselves: a reason has to read as
- * a sentence where the store announces it, and as a clause here.
+ * the call sites, nor in the reasons themselves: a reason has to read as a
+ * sentence where the store announces it, and as a clause here.
+ *
+ * No count of those callers is written down here, deliberately. The number was
+ * stated once and was wrong within two commits, which is the whole reason the
+ * console pointer below went missing without anything noticing.
  */
 export function unusableClause(store: IndexFileStore): string {
 	const reason = store.unusableReason();
@@ -86,13 +89,22 @@ export function unusableClause(store: IndexFileStore): string {
  * Single-sourced because of what it has to say now: repair is no longer the
  * only way out. When nothing is recoverable it offers to start over, and a
  * user told only to "repair" would keep pressing a button that correctly
- * refuses. That sentence had to reach seven notices, which is the whole
- * argument for it living here.
+ * refuses. Reaching every refusal notice with that is the whole argument for
+ * it living here.
+ *
+ * The console sentence is part of it, and was lost once already: the notices
+ * this replaced each ended "or check the console for details", and collapsing
+ * their shared middle dropped their shared ending with it. That ending is not
+ * decoration. Everything that explains *why* a refusal happened is written to
+ * the console and nowhere else — the reason `markUnusable` logs, the error
+ * `healThenUpdate` catches, and the two different causes that both surface as
+ * "the attempt failed" — so a notice without it points the reader at a button
+ * that will refuse again, with no route to the one place the answer is.
  *
  * `where` exists because the settings tab is one of those callers and cannot
  * sensibly tell the reader to go to the settings tab.
  */
 export function repairPointer(where: 'in the settings tab' | 'from elsewhere'): string {
 	const location = where === 'in the settings tab' ? 'above' : 'in settings';
-	return `Use "Repair the order note" ${location} — it offers to start over when nothing can be recovered.`;
+	return `Use "Repair the order note" ${location} — it offers to start over when nothing can be recovered. See the console for details.`;
 }
