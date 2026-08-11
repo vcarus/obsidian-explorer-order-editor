@@ -152,16 +152,24 @@ interface FileExplorerViewLike {
  * `IndexFileStore` type from this file, so the reverse import this file
  * would need to reuse its interface would be circular.
  *
- * Returns `false` when there is no file explorer leaf, or its view doesn't
- * expose `requestSort` — never throws.
+ * Every `file-explorer` leaf is asked, not just `[0]`: `getLeavesOfType`
+ * matches on view type and so returns deferred leaves too, whose views lack
+ * `requestSort` — indexing `[0]` would skip a real explorer sitting behind a
+ * deferred one (`explorerDrag.ts` documents the same trap for its own
+ * install), and with two real explorers open both are showing the order that
+ * just changed.
+ *
+ * Returns `false` when no leaf's view exposes `requestSort` — never throws.
  */
 export function requestFileExplorerResort(app: App): boolean {
-	const leaf = app.workspace.getLeavesOfType('file-explorer')[0];
-	if (leaf === undefined) return false;
-	const view = leaf.view as Partial<FileExplorerViewLike>;
-	if (typeof view.requestSort !== 'function') return false;
-	view.requestSort();
-	return true;
+	let asked = false;
+	for (const leaf of app.workspace.getLeavesOfType('file-explorer')) {
+		const view = leaf.view as Partial<FileExplorerViewLike>;
+		if (typeof view.requestSort !== 'function') continue;
+		view.requestSort();
+		asked = true;
+	}
+	return asked;
 }
 
 export class IndexFileStore {

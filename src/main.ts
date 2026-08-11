@@ -73,17 +73,24 @@ function hasSubmenu(item: MenuItem): item is MenuItemWithSubmenu {
  *
  * Focus is read through `containerEl.ownerDocument` rather than the global
  * `document` so this still answers correctly in a popped-out window.
+ *
+ * Every leaf is checked, not just `[0]`: `getLeavesOfType` returns deferred
+ * leaves too (`explorerDrag.ts` documents the trap), and with two explorers
+ * open the one that matters is whichever holds focus. At most one can, so the
+ * first leaf that does is the whole answer — a focused leaf whose tree has no
+ * focused row resolves to `null` outright rather than falling through to some
+ * other, unfocused explorer.
  */
 function explorerFocusedItem(app: App): TFile | TFolder | null {
-	const leaf = app.workspace.getLeavesOfType('file-explorer')[0];
-	if (leaf === undefined) return null;
+	for (const leaf of app.workspace.getLeavesOfType('file-explorer')) {
+		const { containerEl } = leaf.view;
+		if (!containerEl.contains(containerEl.ownerDocument.activeElement)) continue;
 
-	const { containerEl } = leaf.view;
-	if (!containerEl.contains(containerEl.ownerDocument.activeElement)) return null;
-
-	const view = leaf.view as Partial<FileExplorerFocus>;
-	const file: unknown = view.tree?.focusedItem?.file;
-	return file instanceof TFile || file instanceof TFolder ? file : null;
+		const view = leaf.view as Partial<FileExplorerFocus>;
+		const file: unknown = view.tree?.focusedItem?.file;
+		return file instanceof TFile || file instanceof TFolder ? file : null;
+	}
+	return null;
 }
 
 export default class ExplorerOrderEditorPlugin extends Plugin {
