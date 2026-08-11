@@ -405,13 +405,26 @@ export class IndexFileStore {
 	 * it — the action the user asked for actually happens, not just the
 	 * repair.
 	 *
-	 * This is the entry point for the three explicit user actions it heals
-	 * on: the order modal's save, "Clear explorer order", and (indirectly,
-	 * via `repair()`) the settings tab's own "Repair the order note" row. `orderSync.ts`'s background rename/delete
-	 * reactions deliberately keep calling plain `update()` instead — a
-	 * rename elsewhere in the vault is not the user asking this plugin to
-	 * repair anything, and healing must only ever happen in response to one
-	 * that is.
+	 * This is the entry point for every explicit user action it heals on —
+	 * `OrderModal.save`, `applyMove`, both branches of `applyDrop`,
+	 * `clearOrderFor`, and the settings tab's "Remove orders for missing
+	 * folders" and "Clear every saved order" rows — plus, indirectly via
+	 * `repair()`, that tab's "Repair the order note" row and the pre-flight
+	 * heal the move actions run before they read an order to compute a write
+	 * from (`moveItem.ts`'s `orderToWriteFrom`). `orderSync.ts`'s background
+	 * rename/delete reactions deliberately keep calling plain `update()`
+	 * instead — a rename elsewhere in the vault is not the user asking this
+	 * plugin to repair anything, and healing must only ever happen in response
+	 * to one that is.
+	 *
+	 * **`mutate` may run more than once.** When healing happens it runs once
+	 * per rebuild attempt, and once more if the note turns out to have healed
+	 * itself in the meantime. Only the last call corresponds to what was
+	 * actually written, so it must be a function of the index it is handed:
+	 * a caller measuring its own edit (`OrderModal.save`'s `changed`,
+	 * `runPruneMissing`'s `removed`, `runClearAll`'s `cleared`) has to *assign*
+	 * from the argument, never accumulate across calls, or it will report a
+	 * number no single write ever produced.
 	 */
 	async updateOrRepair(mutate: (index: OrderIndex) => OrderIndex): Promise<boolean> {
 		if (this.usable) return this.update(mutate);
@@ -426,10 +439,16 @@ export class IndexFileStore {
 	 * Attempts to heal without any accompanying edit — the settings tab's
 	 * "Repair the order note" row, for the cold-start case
 	 * where a bad note left nothing in memory and there is no in-flight edit
-	 * to complete alongside the repair. A no-op returning `true` when the
-	 * store is already usable. Identical machinery to what `updateOrRepair`
-	 * runs automatically, via an identity `mutate` that changes nothing
-	 * beyond the recovery itself.
+	 * to complete alongside the repair, and `moveItem.ts`'s pre-flight heal,
+	 * which needs the store readable *before* it reads an order rather than
+	 * after. Identical machinery to what `updateOrRepair` runs automatically,
+	 * via an identity `mutate` that changes nothing beyond the recovery itself.
+	 *
+	 * Answers `'healed'` — not `true` — when the store is already usable, and
+	 * that is the whole reason the return type is `RepairOutcome` rather than a
+	 * boolean: every member of it is a non-empty string, so `if (await
+	 * store.repair())` is true for the failures too, silently and with nothing
+	 * for tsc to catch. Compare against `'healed'`.
 	 */
 	async repair(): Promise<RepairOutcome> {
 		if (this.usable) return 'healed';
@@ -460,9 +479,22 @@ export class IndexFileStore {
 	 *    salvaged when that count is above zero.
 	 *
 	 * A failure at step 2 (quarantine or rebuild I/O) is logged and leaves the
-	 * store unusable — it does not partially apply: `this.index` and
+	 * store unusable, and no order is half-written: `this.index` and
 	 * `this.usable` are only updated together, after both the quarantine and
 	 * the rebuilt note have actually landed.
+	 *
+	 * What such a failure *can* leave behind is quarantine notes — one per
+	 * attempt `quarantineThenRebuild` spent (see its own doc comment on the
+	 * loop). That is not a leak to be tidied away silently: each copy holds a
+	 * version of the note that really existed at the moment it was taken, which
+	 * is strictly more preserved than before the attempt. The settings tab's
+	 * "delete the kept copies" row is where they can be removed, and it stays
+	 * reachable while the store is unusable precisely so this case has an exit.
+	 *
+	 * `mutate` may therefore be called more than once — once per attempt, plus
+	 * once more on the adopt path below. See `updateOrRepair`'s contract note:
+	 * it has to be a function of its argument, and any bookkeeping a caller
+	 * does inside it has to be assignment, not accumulation.
 	 */
 	private async healThenUpdate(mutate: (index: OrderIndex) => OrderIndex): Promise<RepairOutcome> {
 		const backup = await this.readBackup();
@@ -536,8 +568,11 @@ export class IndexFileStore {
 	 * invariant that fixes it; re-planning from them is what keeps the write
 	 * meaningful rather than merely safe.
 	 *
-	 * `planFor` returns `null` for "nothing here is worth recovering", which
-	 * only `healThenUpdate` ever says — `startOver` plans an empty index
+	 * `planFor` is therefore called once per attempt, and must be a function of
+	 * the text it is handed rather than something that accumulates across
+	 * calls — only the attempt that actually writes describes the note
+	 * afterwards. It returns `null` for "nothing here is worth recovering",
+	 * which only `healThenUpdate` ever says — `startOver` plans an empty index
 	 * whatever it finds, since that is precisely what the user confirmed. Note
 	 * that it plans from the *newest* text even so, and that text is preserved
 	 * before it goes: starting over costs the orders and keeps the bytes.

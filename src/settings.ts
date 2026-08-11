@@ -417,6 +417,11 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				// the question was never going to be asked about. Built inside
 				// the mutation function so it describes the index actually
 				// being pruned, not one read before the confirmation dialog.
+				//
+				// `removed` is assigned, never accumulated, and that is a
+				// requirement rather than a style: healing runs this function
+				// once per rebuild attempt (see `updateOrRepair`), and only the
+				// last run describes what actually got written.
 				const existing = new Set([...index.keys()].filter((key) => this.folderExists(key)));
 				const pruned = pruneMissing(index, existing);
 				removed = index.size - pruned.size;
@@ -471,6 +476,9 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		try {
 			let cleared = 0;
 			const ok = await this.plugin.store.updateOrRepair((index) => {
+				// Assigned from the index being replaced, not from the snapshot
+				// counted before the dialog — and assigned rather than added to,
+				// since healing can run this once per rebuild attempt.
 				cleared = index.size;
 				return new Map<string, readonly string[]>();
 			});
