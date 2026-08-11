@@ -9,11 +9,19 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { IndexFileStore, type IndexFileHost } from '../src/indexFile';
-import { serializeIndex } from '../src/orderIndex';
+import { serializeIndex, setOrder } from '../src/orderIndex';
 import { DEFAULT_SETTINGS } from '../src/settings';
-import { StubPlugin, notices, resetNotices } from './stubs/obsidian';
+import { StubPlugin, installTimers, notices, resetNotices } from './stubs/obsidian';
 
 const NOTE = 'explorer-order.md';
+
+// Not optional, and not only for the tests below that write: `update()` arms a
+// debounced write through `window.setTimeout` and `markUnusable` clears it
+// through `window.clearTimeout`, neither of which node has. Every test here
+// used to reach `repair()` with an identity mutation, which returns before
+// scheduling anything — so the omission was invisible until the first test that
+// actually changed the index, which is exactly one of the ones below.
+installTimers();
 
 /**
  * The stub is imported by path, never by mapping `obsidian` to it in
@@ -277,6 +285,71 @@ describe('recovering from the text a read last found unreadable', () => {
 
 		expect(await store.repair()).toBe('healed');
 		expect(store.get('navtest')).toEqual(['a.md']);
+	});
+});
+
+describe('a note the vault has not indexed', () => {
+	it('is refused before anything is written, rather than created over', async () => {
+		// `getFileByPath` answering `null` is not evidence the note is absent —
+		// it is also what a cold start and an unindexable filename look like. The
+		// rebuild used to read that `null` as "vanished" and call `create`, which
+		// throws `File already exists.` *after* a copy has been taken: one stray
+		// note and one "the attempt itself failed" per click, permanently.
+		const { store, stub } = await loadedStore(salvageable);
+		expect(store.isUsable()).toBe(false);
+		stub.app.vault.unindexed.add(NOTE);
+
+		expect(await store.repair()).toBe('failed');
+		expect(store.isUsable()).toBe(false);
+		// The two halves that matter: the note is exactly as it was found, and
+		// nothing was kept beside it. A copy here would be litter, not evidence —
+		// the content it copies was never in danger.
+		expect([...stub.app.vault.files.keys()]).toEqual([NOTE]);
+		expect(stub.app.vault.files.get(NOTE)).toBe(salvageable);
+	});
+
+	it('still rebuilds once the vault catches up', async () => {
+		// The cold-start half of the same state is transient, so "try again" is
+		// honest advice — this is what happens when the user takes it.
+		const { store, stub } = await loadedStore(salvageable);
+		stub.app.vault.unindexed.add(NOTE);
+		expect(await store.repair()).toBe('failed');
+
+		stub.app.vault.unindexed.delete(NOTE);
+		expect(await store.repair()).toBe('healed');
+		expect(store.get('navtest')).toEqual(['a.md']);
+	});
+});
+
+describe('adopting a healed note records that a block was seen there', () => {
+	it('refuses a later write into a note whose block has since vanished', async () => {
+		// `sawBlock` is the read side's proof that a json block really exists at
+		// this path, and adoption is a read that parses — but the adopt branch
+		// set `usable` without recording it, so the proof was thrown away on the
+		// one path where nothing else can stand in for it. `lastWrittenText` is
+		// null (adoption writes nothing) and the backup is empty (the block that
+		// arrived was), which leaves `performWrite` with no witness at all.
+		const { store, stub } = await loadedStore(unsalvageable);
+		expect(store.isUsable()).toBe(false);
+
+		// Another device ran "Clear every saved order" and the result synced in:
+		// valid, block present, no orders inside it.
+		stub.app.vault.files.set(NOTE, serializeIndex('', new Map()));
+		expect(await store.repair()).toBe('healed');
+		expect(store.isUsable()).toBe(true);
+
+		// Now the block is destroyed — a bad hand edit, a truncated sync — and an
+		// ordinary reorder tries to write.
+		const blockless = 'Someone removed the block.\n';
+		stub.app.vault.files.set(NOTE, blockless);
+		expect(store.update((i) => setOrder(i, 'navtest', ['a.md']))).toBe(true);
+		await store.flush();
+
+		// Refused, not appended to. Without the fix this writes a fresh block and
+		// reports itself perfectly healthy, which is the exact regression the
+		// guard in `performWrite` was added for.
+		expect(store.isUsable()).toBe(false);
+		expect(stub.app.vault.files.get(NOTE)).toBe(blockless);
 	});
 });
 

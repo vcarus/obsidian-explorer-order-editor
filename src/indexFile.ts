@@ -81,13 +81,23 @@ interface RebuildPlan {
  * How a rebuild ended. Every member means something different to the caller,
  * which is why this is not a boolean: three of them leave the store usable and
  * two of them do not, and only `'rebuilt'` actually replaced the note.
+ *
+ * `copies` rides on every member rather than on `'rebuilt'` alone, and that
+ * shape is the point. A quarantine copy is written *before* the write it
+ * exists to justify, so an attempt that then loses the identity check leaves
+ * one behind and ends somewhere else entirely — adopted, or given up. Naming
+ * them used to be the privilege of the one branch that usually has none to
+ * name, which is how a *successful* repair could put a note in the vault and
+ * mention it nowhere. Carrying the list on the type means a new member cannot
+ * be added without a decision about what to say about them.
  */
-type RebuildOutcome =
-	| { kind: 'rebuilt'; quarantinePath: string | null; droppedLines: number }
+type RebuildOutcome = { readonly copies: readonly string[] } & (
+	| { kind: 'rebuilt'; droppedLines: number }
 	| { kind: 'adopted' }
 	| { kind: 'already-usable' }
 	| { kind: 'nothing-to-recover' }
-	| { kind: 'gave-up' };
+	| { kind: 'gave-up' }
+);
 
 /** Milliseconds a burst of `update()` calls is given to settle before the debounced write actually runs. */
 const WRITE_DEBOUNCE_MS = 200;
@@ -252,7 +262,10 @@ export class IndexFileStore {
 			// missing from a `Vault` index that may not be built yet. See
 			// `readNote`.
 			this.index = new Map();
-			this.markUsable();
+			// No note, so nothing has proved a block is at this path — and the
+			// absence is not itself proof of the opposite either, which is why
+			// this is `false` rather than a reset.
+			this.markUsable(false);
 			return;
 		}
 		const result = parseIndex(text);
@@ -336,12 +349,11 @@ export class IndexFileStore {
 			this.markUnusable(MISSING_BLOCK_REASON, text);
 			return;
 		}
-		// The one place a read can prove a block is really there. Recorded even
+		// A read that parses is proof a block is really there, and it counts even
 		// when the block parsed to an empty index: what matters later is that a
 		// fence existed at this path, not what was inside it.
-		if (result.status === 'ok') this.sawBlock = true;
 		this.index = result.status === 'ok' ? result.index : new Map();
-		this.markUsable();
+		this.markUsable(result.status === 'ok');
 	}
 
 	/**
@@ -516,22 +528,41 @@ export class IndexFileStore {
 				return { index: mutate(recovered), droppedLines };
 			});
 
+			const kept = this.keptClause(outcome.copies);
+
 			switch (outcome.kind) {
 				case 'nothing-to-recover':
+					// Deliberately silent to the user: the settings tab is the
+					// caller that acts on this one, and it answers with a dialog
+					// offering to start over. A Notice raised underneath that
+					// dialog would be talking over it. Copies still go to the
+					// console, where the reason already goes.
 					console.error(
-						`[explorer-order-editor] cannot repair the order index (${this.notePath()}): nothing recoverable in the note, what is loaded, or the last backup`,
+						`[explorer-order-editor] cannot repair the order index (${this.notePath()}): nothing recoverable in the note, what is loaded, or the last backup` +
+							(kept === null ? '' : ` — ${kept}`),
 					);
 					return 'nothing-to-recover';
 				case 'gave-up':
+					if (kept !== null) console.error(`[explorer-order-editor] the repair of ${this.notePath()} ended without rebuilding it. ${kept}`);
 					return 'failed';
 				// Both leave the store usable without this call having written
 				// anything, so the edit the caller came for still has to land.
+				//
+				// Silent when nothing was kept — the note works again and the
+				// user asked for an edit, not for a status report. Not silent
+				// when something was: an earlier attempt in this same call can
+				// have taken a copy before losing the identity check, and a note
+				// appearing in somebody's vault with no explanation is the one
+				// thing a repair must never do quietly.
 				case 'already-usable':
 				case 'adopted':
+					if (kept !== null) {
+						new Notice(`Explorer order editor: ${this.notePath()} became readable on its own, so it was not rebuilt. ${kept}`);
+					}
 					return this.update(mutate) ? 'healed' : 'failed';
 				case 'rebuilt': {
 					const lines = [`Explorer order editor: repaired ${this.notePath()}.`];
-					if (outcome.quarantinePath !== null) lines.push(`The unreadable copy was kept as "${outcome.quarantinePath}".`);
+					if (kept !== null) lines.push(kept);
 					if (outcome.droppedLines > 0) {
 						lines.push(`${outcome.droppedLines} line${outcome.droppedLines === 1 ? '' : 's'} in it could not be salvaged.`);
 					}
@@ -601,6 +632,15 @@ export class IndexFileStore {
 	 */
 	private async quarantineThenRebuild(planFor: (text: string) => RebuildPlan | null): Promise<RebuildOutcome> {
 		return this.runExclusive(async () => {
+			const { app } = this.host;
+			const path = this.notePath();
+			// Accumulated across attempts and returned on every outcome, because
+			// a copy is written before the write that would justify it: an
+			// attempt that then loses the identity check ends somewhere other
+			// than `'rebuilt'` and its copy is still in the vault. See
+			// `RebuildOutcome`.
+			const copies: string[] = [];
+
 			for (let attempt = 0; attempt < MAX_REBUILD_ATTEMPTS; attempt++) {
 				// Re-checked after taking the chain, not just at entry: two
 				// explicit actions can reach here before either has run — a
@@ -608,49 +648,91 @@ export class IndexFileStore {
 				// a repair is queued. The first healed everything; the second
 				// would otherwise quarantine the same content again and hand
 				// the user two "preserved copy" notes for one broken file.
-				if (this.usable) return { kind: 'already-usable' };
+				if (this.usable) return { kind: 'already-usable', copies };
 
 				// Read past the cache (`fresh`), because this text is what
 				// `rebuildNoteFrom` compares against what `Vault.process`
 				// re-reads. Planning and writing have to be looking at the same
 				// bytes for the identity check to mean anything — see
 				// `readNote`.
-				const current = (await this.readNote(this.notePath(), true)) ?? '';
+				//
+				// `null` is kept apart from `''` all the way down rather than
+				// collapsed on arrival, and that distinction is load-bearing:
+				// `readNote` answers `null` only after the *adapter* says the
+				// note is not there, which is the only trustworthy answer to
+				// that question, and it is what tells the rebuild below whether
+				// creating the note is right or catastrophic.
+				const current = await this.readNote(path, true);
 
 				// The note fixed itself while this was queued or while a
 				// confirmation dialog was open. Adopt it — that is only what
 				// `onExternalModify` was about to do — rather than write a plan
 				// derived from the broken version over orders that are strictly
 				// newer.
-				const parsed = parseIndex(current);
+				const parsed = parseIndex(current ?? '');
 				if (parsed.status === 'ok') {
 					this.index = parsed.index;
-					this.markUsable();
+					this.markUsable(true);
 					await this.persistBackup(parsed.index);
-					return { kind: 'adopted' };
+					return { kind: 'adopted', copies };
 				}
 
-				const plan = planFor(current);
-				if (plan === null) return { kind: 'nothing-to-recover' };
+				const plan = planFor(current ?? '');
+				if (plan === null) return { kind: 'nothing-to-recover', copies };
+
+				// The handle is taken *before* anything is written, and that
+				// ordering is the fix for a state this file already documents
+				// twice and used to handle in only two of the three places it
+				// arises: `getFileByPath` answers from the `Vault`'s file map,
+				// and a `null` from that map is not evidence the note is absent
+				// (see `readNote`, and `performWrite`'s own guard). The note can
+				// be on disk — `current` was read from it through the adapter —
+				// while the map has nothing, briefly during a cold start and
+				// permanently for a name Obsidian refuses to index.
+				//
+				// Without a handle the note cannot be replaced through
+				// `Vault.process`, and `Vault.process` is not an implementation
+				// detail here: it is what makes the identity check atomic
+				// against the write it guards. So this stops, rather than
+				// falling back to a blind `create` that throws "File already
+				// exists." after a copy has been taken — one stray copy and one
+				// spurious "the attempt failed" per click, for a note nothing
+				// ever touched.
+				//
+				// Checked here rather than inside `rebuildNoteFrom` so that
+				// nothing has been written when it fires, and reported as
+				// `'gave-up'` rather than as its own member: the caller's answer
+				// is the same either way — the note is unchanged, try again —
+				// and the console carries which of the two it was.
+				const file = current === null ? null : app.vault.getFileByPath(path);
+				if (current !== null && file === null) {
+					console.error(
+						`[explorer-order-editor] cannot repair ${path}: it exists on disk but the vault has not indexed it, ` +
+							'so it cannot be replaced atomically. A cold start does this briefly; a filename Obsidian refuses to ' +
+							'index (a backslash, for instance) does it permanently. The note was not changed and no copy was made.',
+					);
+					return { kind: 'gave-up', copies };
+				}
 
 				// Zero bytes preserve nothing, and the copy would only leave a
 				// note the "delete the kept copies" row then offers to tidy
 				// away — "preserve before replacing" is satisfied vacuously
-				// when there is nothing to preserve.
-				const quarantinePath = current === '' ? null : await this.quarantineUnreadableNote(current);
+				// when there is nothing to preserve. An absent note (`null`)
+				// is the same case for the same reason.
+				if (current !== null && current !== '') copies.push(await this.quarantineUnreadableNote(current));
 
-				if (!(await this.rebuildNoteFrom(plan.index, current))) continue;
+				if (!(await this.rebuildNoteFrom(plan.index, current ?? '', file))) continue;
 
 				this.index = plan.index;
-				this.markUsable();
+				this.markUsable(true);
 				await this.persistBackup(plan.index);
-				return { kind: 'rebuilt', quarantinePath, droppedLines: plan.droppedLines };
+				return { kind: 'rebuilt', copies, droppedLines: plan.droppedLines };
 			}
 
 			console.error(
-				`[explorer-order-editor] gave up rebuilding ${this.notePath()}: it kept changing between reading it and writing it`,
+				`[explorer-order-editor] gave up rebuilding ${path}: it kept changing between reading it and writing it`,
 			);
-			return { kind: 'gave-up' };
+			return { kind: 'gave-up', copies };
 		});
 	}
 
@@ -683,7 +765,9 @@ export class IndexFileStore {
 		// the same silence the branch further down exists to prevent, reached by
 		// the wider path.
 		if (this.usable) {
-			this.reportNothingCleared();
+			// Empty, and provably so: this returns before `quarantineThenRebuild`
+			// is entered, so no copy of anything can have been taken yet.
+			this.reportNothingCleared([]);
 			return true;
 		}
 
@@ -696,8 +780,11 @@ export class IndexFileStore {
 			// the strength of a snapshot from before it existed.
 			const outcome = await this.quarantineThenRebuild(() => ({ index: new Map(), droppedLines: 0 }));
 
+			const kept = this.keptClause(outcome.copies);
+
 			switch (outcome.kind) {
 				case 'gave-up':
+					if (kept !== null) console.error(`[explorer-order-editor] starting over on ${this.notePath()} ended without rebuilding it. ${kept}`);
 					return false;
 				// `planFor` above never returns `null`, so recovery can never
 				// be the reason this stopped. Handled rather than assumed away:
@@ -711,11 +798,11 @@ export class IndexFileStore {
 				// did not.
 				case 'already-usable':
 				case 'adopted':
-					this.reportNothingCleared();
+					this.reportNothingCleared(outcome.copies);
 					return true;
 				case 'rebuilt': {
 					const lines = [`Explorer order editor: ${this.notePath()} was rebuilt with no saved orders.`];
-					if (outcome.quarantinePath !== null) lines.push(`The unreadable copy was kept as "${outcome.quarantinePath}".`);
+					if (kept !== null) lines.push(kept);
 					new Notice(lines.join(' '));
 					return true;
 				}
@@ -736,9 +823,33 @@ export class IndexFileStore {
 	 * before, and the branch is the narrow window (between taking the write
 	 * chain and reading the note); the guard is the wide one, and it returned
 	 * `true` in silence.
+	 *
+	 * `copies` is required rather than defaulted, for the same reason
+	 * `markUsable`'s argument is: the two callers know different things — the
+	 * guard runs before anything could have been written, the branch runs after
+	 * attempts that may have kept something — and a default would let the
+	 * branch quietly inherit the guard's answer.
 	 */
-	private reportNothingCleared(): void {
-		new Notice(`Explorer order editor: ${this.notePath()} became readable again before starting over, so nothing was cleared.`);
+	private reportNothingCleared(copies: readonly string[]): void {
+		const kept = this.keptClause(copies);
+		new Notice(
+			`Explorer order editor: ${this.notePath()} became readable again before starting over, so nothing was cleared.` +
+				(kept === null ? '' : ` ${kept}`),
+		);
+	}
+
+	/**
+	 * Names every quarantine copy one repair produced, or `null` when it
+	 * produced none — the sentence every reporting path appends, written once so
+	 * the singular/plural and the quoting cannot drift between them.
+	 *
+	 * `null` rather than `''` so a caller building a list of sentences has to
+	 * decide, rather than pushing an empty string and shipping a double space.
+	 */
+	private keptClause(copies: readonly string[]): string | null {
+		if (copies.length === 0) return null;
+		const named = copies.map((path) => `"${path}"`).join(', ');
+		return copies.length === 1 ? `The unreadable copy was kept as ${named}.` : `The unreadable copies were kept as ${named}.`;
 	}
 
 	/**
@@ -768,6 +879,16 @@ export class IndexFileStore {
 	 * `quarantine.ts`) keeps adjusting the name until one is free, so an
 	 * existing quarantine note (a previous failed heal, another device) is
 	 * never clobbered either. Returns the path used, for the Notice.
+	 *
+	 * `isTaken` asks the `Vault` file map, and that is a knowing exception to
+	 * the rule the rest of this file follows (a `null` from the map is not
+	 * evidence of absence — see `readNote`). It is safe *here* only because
+	 * being wrong is not destructive: `create` checks the filesystem itself and
+	 * throws rather than overwriting, the retry below re-asks, and a name that
+	 * still collides gives up with the error rather than clobbering the file it
+	 * collided with. Making the predicate async to reach the adapter would push
+	 * `findFreeQuarantinePath` — pure, and tested as such — into promises for a
+	 * case that cannot lose data.
 	 */
 	private async quarantineUnreadableNote(text: string): Promise<string> {
 		const { app } = this.host;
@@ -813,18 +934,23 @@ export class IndexFileStore {
 	 * around," same as an empty note. Nothing is lost by falling back: the
 	 * original text this is replacing is already safe in the quarantine
 	 * note.
+	 *
+	 * `file` is passed in rather than looked up here, and that is what makes
+	 * the `null` branch below safe. Its caller resolved it against a read that
+	 * had already asked the *adapter* whether the note exists, so `null` here
+	 * means "proven absent" and nothing else — where a lookup at this point
+	 * would also return `null` for a note that is on disk but unindexed, and
+	 * creating over that throws after a copy has been taken. See the caller.
 	 */
-	private async rebuildNoteFrom(index: OrderIndex, expected: string): Promise<boolean> {
+	private async rebuildNoteFrom(index: OrderIndex, expected: string, file: TFile | null): Promise<boolean> {
 		const { app } = this.host;
-		const path = this.notePath();
-		const file = app.vault.getFileByPath(path);
 
 		if (file === null) {
 			// The note vanished between going unusable and this heal (e.g.
 			// deleted externally in the meantime). Same as any other first write.
 			const text = serializeIndex('', index);
 			this.lastWrittenText = text;
-			await app.vault.create(path, text);
+			await app.vault.create(this.notePath(), text);
 			return true;
 		}
 
@@ -1171,7 +1297,23 @@ export class IndexFileStore {
 		);
 	}
 
-	private markUsable(): void {
+	/**
+	 * `blockProven` is required, and required for the reason `sawBlock` exists
+	 * at all: every path that makes the store usable has just learned something
+	 * about whether a json block is really at this path, and one of them used to
+	 * arrive here and drop that knowledge on the floor. Reading a note that
+	 * parses `ok`, adopting one that healed itself, and rebuilding one
+	 * ourselves are all proof; finding no note at all is not. Making it an
+	 * argument means the next path into this state cannot be written without
+	 * answering, where the old free-standing assignment beside one caller could
+	 * simply not be copied to the next.
+	 *
+	 * Sticky, deliberately: `false` never clears it. The question `sawBlock`
+	 * answers for `performWrite` is "has a block ever been seen here", and a
+	 * later read that finds none is the very event that question is asked about.
+	 */
+	private markUsable(blockProven: boolean): void {
+		if (blockProven) this.sawBlock = true;
 		this.usable = true;
 		this.reason = null;
 		this.noticeShown = false;

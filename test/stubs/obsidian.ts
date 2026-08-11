@@ -103,13 +103,26 @@ export class Vault {
 	 */
 	staleCache = new Map<string, string>();
 
+	/**
+	 * Paths the file map pretends not to know while `files` and `adapter` still
+	 * hold them — "on disk, but the vault has not indexed it".
+	 *
+	 * `indexFile.ts` guards against that state in three separate places and
+	 * documents it in two more, so our branches for it need some way to be
+	 * reached. What this reproduces is only the *shape* of the state, never when
+	 * the real app enters it: that is a cold-start window, or a filename
+	 * Obsidian refuses to index, and neither is something a stub may claim to
+	 * model (see the header).
+	 */
+	unindexed = new Set<string>();
+
 	adapter = {
 		exists: async (path: string): Promise<boolean> => this.files.has(path),
 		read: async (path: string): Promise<string> => this.files.get(path) ?? '',
 	};
 
 	getFileByPath(path: string): TFile | null {
-		return this.files.has(path) ? new TFile(path, path.split('/').pop() ?? path) : null;
+		return this.files.has(path) && !this.unindexed.has(path) ? new TFile(path, path.split('/').pop() ?? path) : null;
 	}
 
 	getAbstractFileByPath(path: string): TAbstractFile | null {
