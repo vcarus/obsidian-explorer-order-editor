@@ -248,7 +248,13 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			return;
 		}
 		new Notice('Explorer order cleared.');
-		reportApplied(this.app, this.settings.autoRefresh, 'Saved');
+		// 'Cleared', not 'Saved': with no file explorer leaf open this is the
+		// second sentence the user reads, right after "Explorer order cleared."
+		// — `settings.ts`'s vault-wide clear passes the same verb for the same
+		// reason. The closed set exists so a caller has to pick a sentence that
+		// is actually true; picking the wrong one is the only way left to get
+		// this wrong.
+		reportApplied(this.app, this.settings.autoRefresh, 'Cleared');
 	}
 
 	/**
