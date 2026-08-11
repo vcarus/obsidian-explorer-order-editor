@@ -43,11 +43,26 @@
  * reaches `window` in both phases, DragManager's own bookkeeping keeps
  * running, only the file explorer's *reaction* to the event is suppressed.
  */
-import { App, normalizePath, Notice, TFile, TFolder, type View } from 'obsidian';
+import { App, Notice, TFile, TFolder, type View } from 'obsidian';
 import { dropSideFor, scrollStepFor, type DropSide, type RowKind } from './dropZone';
 import { explorerViews } from './fileExplorerLeaves';
+import { indexNotePath } from './indexFile';
 import { applyDrop, type MoveItemHost } from './moveItem';
 import { refusalNotice, reportApplied, repairPointer, unusableClause } from './notices';
+
+/**
+ * The window `el` actually lives in, not the main one.
+ *
+ * An explorer popped out into its own window has its own `requestAnimationFrame`
+ * clock and its own event loop: frame callbacks scheduled on the main window's
+ * are throttled or suspended while that window is in the background — which is
+ * exactly when the popped-out one is being dragged in — and a `dragend` on the
+ * main window never sees a drag that happened in the other. Falls back to the
+ * main `window` only for an element attached to no view at all.
+ */
+function windowFor(el: HTMLElement): Window {
+	return el.ownerDocument.defaultView ?? window;
+}
 
 /**
  * Auto-scroll tuning. `SCROLL_ZONE_PX` is the band, measured from
@@ -147,7 +162,22 @@ interface ResolvedDrop {
  * `try`/`catch` (`safeResolveDrop` below) rather than here, so this stays a
  * plain, directly-readable sequence of guards.
  */
-function resolveDrop(host: MoveItemHost, evt: DragEvent): ResolvedDrop | null {
+
+/**
+ * The whole of `resolveDrop`, in terms of the only two things it ever read
+ * off the event: what the pointer is over, and how far down the viewport it
+ * is.
+ *
+ * Split out so the auto-scroll loop can ask the same question. That loop moves
+ * the tree under a stationary pointer at up to `SCROLL_MAX_STEP_PX` a frame,
+ * and `dragover` — the only other thing that refreshes the indicator — is not
+ * a clock: the DnD spec fires it roughly every ~350ms while the pointer sits
+ * still, by which time a couple of hundred pixels have gone past. The line
+ * would still be drawn on the row it was drawn on, while `handleDrop`
+ * re-resolves against whatever is under the pointer *now*. Same question, two
+ * answers, and the user only ever saw the stale one.
+ */
+function resolveDropAt(host: MoveItemHost, target: EventTarget | Element | null, clientY: number): ResolvedDrop | null {
 	if (!host.settings.dragToReorder) return null;
 
 	const dragManager = (host.app as AppWithDragManager).dragManager;
@@ -163,8 +193,8 @@ function resolveDrop(host: MoveItemHost, evt: DragEvent): ResolvedDrop | null {
 	if (!(draggedFile instanceof TFile) && !(draggedFile instanceof TFolder)) return null;
 	const dragged: TFile | TFolder = draggedFile;
 
-	if (!(evt.target instanceof Element)) return null;
-	const rowEl = evt.target.closest('.nav-file-title, .nav-folder-title');
+	if (!(target instanceof Element)) return null;
+	const rowEl = target.closest('.nav-file-title, .nav-folder-title');
 	if (!(rowEl instanceof HTMLElement)) return null;
 
 	const path = rowEl.getAttribute('data-path');
@@ -184,8 +214,8 @@ function resolveDrop(host: MoveItemHost, evt: DragEvent): ResolvedDrop | null {
 	// leaving a stray entry in the user's note bought with no visible
 	// movement at all. Same rule `main.ts`'s move menu applies by offering no
 	// items for that note.
-	const indexNotePath = normalizePath(host.settings.indexPath);
-	if (anchor.path === indexNotePath || dragged.path === indexNotePath) return null;
+	const notePath = indexNotePath(host.settings);
+	if (anchor.path === notePath || dragged.path === notePath) return null;
 
 	const dest = anchor.parent;
 	if (dest === null) return null;
@@ -198,7 +228,7 @@ function resolveDrop(host: MoveItemHost, evt: DragEvent): ResolvedDrop | null {
 	}
 
 	const rect = rowEl.getBoundingClientRect();
-	const side = dropSideFor(evt.clientY, rect.top, rect.height, rowKindFor(anchor, rowEl));
+	const side = dropSideFor(clientY, rect.top, rect.height, rowKindFor(anchor, rowEl));
 	if (side === null) return null;
 
 	return { dragged, anchor, rowEl, side };
@@ -230,7 +260,7 @@ function rowKindFor(anchor: TFile | TFolder, rowEl: HTMLElement): RowKind {
 }
 
 /**
- * `resolveDrop` wrapped in a `try`/`catch` that treats any exception the
+ * `resolveDropAt` wrapped in a `try`/`catch` that treats any exception the
  * same as a deliberate `null`: Obsidian's internals changed under us, or
  * something above misbehaved, and the only safe response is to hand the
  * event back to native handling rather than let a thrown error leave the
@@ -238,10 +268,14 @@ function rowKindFor(anchor: TFile | TFolder, rowEl: HTMLElement): RowKind {
  * listener and break every *other* capture-phase listener on the same
  * element). Logged once per call, not deduplicated — same policy
  * `explorerSort.ts`'s replacement takes for the same reason.
+ *
+ * Takes the two fields rather than the event, so the auto-scroll loop — which
+ * has coordinates and no event — gets this same policy instead of its own
+ * copy of it.
  */
-function safeResolveDrop(host: MoveItemHost, evt: DragEvent): ResolvedDrop | null {
+function safeResolveDrop(host: MoveItemHost, target: EventTarget | Element | null, clientY: number): ResolvedDrop | null {
 	try {
-		return resolveDrop(host, evt);
+		return resolveDropAt(host, target, clientY);
 	} catch (err) {
 		console.error('[explorer-order-editor] failed to resolve a file explorer drag target, falling back to native drag-and-drop', err);
 		return null;
@@ -333,11 +367,26 @@ function findScrollContainer(target: Element, boundaryEl: HTMLElement): HTMLElem
  */
 class AutoScroller {
 	private scrollEl: HTMLElement | null = null;
+	private pointerX = 0;
 	private pointerY = 0;
 	private step = 0;
 	private rafId: number | null = null;
 
-	constructor(private readonly boundaryEl: HTMLElement) {}
+	/**
+	 * `onScrolled` is called after each frame's scroll, with the pointer where
+	 * it still is. The tree just moved under a pointer that did not, so
+	 * whatever was resolved from the last `dragover` is now about a different
+	 * row — and this loop is the only thing that knows it happened.
+	 */
+	constructor(
+		private readonly boundaryEl: HTMLElement,
+		private readonly onScrolled: (clientX: number, clientY: number) => void,
+	) {}
+
+	/** See `windowFor`: the rAF clock has to be the one belonging to the window this element is in. */
+	private get win(): Window {
+		return windowFor(this.boundaryEl);
+	}
 
 	/**
 	 * Called from every `dragover`/`dragenter` this plugin sees on the file
@@ -363,6 +412,7 @@ class AutoScroller {
 		}
 		if (this.scrollEl === null) return;
 
+		this.pointerX = evt.clientX;
 		this.pointerY = evt.clientY;
 		this.step = this.computeStep();
 		this.syncLoop();
@@ -378,7 +428,7 @@ class AutoScroller {
 	 */
 	stop(): void {
 		if (this.rafId !== null) {
-			window.cancelAnimationFrame(this.rafId);
+			this.win.cancelAnimationFrame(this.rafId);
 			this.rafId = null;
 		}
 		this.scrollEl = null;
@@ -393,9 +443,9 @@ class AutoScroller {
 
 	private syncLoop(): void {
 		if (this.step !== 0 && this.rafId === null) {
-			this.rafId = window.requestAnimationFrame(this.tick);
+			this.rafId = this.win.requestAnimationFrame(this.tick);
 		} else if (this.step === 0 && this.rafId !== null) {
-			window.cancelAnimationFrame(this.rafId);
+			this.win.cancelAnimationFrame(this.rafId);
 			this.rafId = null;
 		}
 	}
@@ -413,8 +463,38 @@ class AutoScroller {
 		this.step = this.computeStep();
 		if (this.step === 0) return;
 		this.scrollEl.scrollTop += this.step;
-		this.rafId = window.requestAnimationFrame(this.tick);
+		// After the scroll, not before: the callback resolves what is under the
+		// pointer now, and "now" is after this frame's movement.
+		this.onScrolled(this.pointerX, this.pointerY);
+		this.rafId = this.win.requestAnimationFrame(this.tick);
 	};
+}
+
+/**
+ * Redraws the insertion line for wherever the pointer is now, after
+ * auto-scroll has moved the tree beneath it.
+ *
+ * `elementFromPoint` on the boundary element's *own* document, because a
+ * popped-out explorer is not in the main one. `null` from it, or a position
+ * this file would not claim, clears the line rather than leaving it where it
+ * was — the same rule `handleDragOverLike` follows, and for the same reason:
+ * a line promising "insert here" over a spot that will drop natively is worse
+ * than no line, because the native drop moves the item *into* a folder.
+ *
+ * Never throws, for the reason every other entry point in this file is
+ * wrapped: auto-scroll is a convenience on top of the drop, and a fault in it
+ * must not take the drag with it. That guarantee comes from `safeResolveDrop`
+ * rather than a second `try`/`catch` here, so there is one error policy for
+ * resolving a drop and not one per caller.
+ */
+function refreshIndicatorAfterScroll(host: MoveItemHost, indicator: DropIndicator, boundaryEl: HTMLElement, clientX: number, clientY: number): void {
+	const under = boundaryEl.ownerDocument.elementFromPoint(clientX, clientY);
+	const resolved = safeResolveDrop(host, under, clientY);
+	if (resolved === null) {
+		indicator.clear();
+		return;
+	}
+	indicator.show(resolved.rowEl, resolved.side);
 }
 
 /**
@@ -460,7 +540,7 @@ function updateAutoScroll(host: MoveItemHost, scroller: AutoScroller, evt: DragE
 function handleDragOverLike(host: MoveItemHost, indicator: DropIndicator, scroller: AutoScroller, evt: DragEvent): void {
 	updateAutoScroll(host, scroller, evt);
 
-	const resolved = safeResolveDrop(host, evt);
+	const resolved = safeResolveDrop(host, evt.target, evt.clientY);
 	if (resolved === null) {
 		// Not merely "do nothing". The pointer has moved from a zone this file
 		// claimed into one it doesn't — the middle of a folder row, a row it
@@ -537,7 +617,7 @@ function handleDrop(host: MoveItemHost, indicator: DropIndicator, scroller: Auto
 	// the time between that event and this one (however short), and this is
 	// the event that actually writes something — it gets its own fresh
 	// answer, not a cached one.
-	const resolved = safeResolveDrop(host, evt);
+	const resolved = safeResolveDrop(host, evt.target, evt.clientY);
 	if (resolved === null) return;
 
 	evt.preventDefault();
@@ -610,31 +690,59 @@ async function performDrop(host: MoveItemHost, dragged: TFile | TFolder, anchor:
  * with the pointer outside `containerEl` entirely (so neither `drop` nor a
  * "real" `dragleave` on this element necessarily fired first) still leaves
  * no rAF loop running.
+ *
+ * Returns its own disarm function instead of routing teardown through
+ * `host.registerDomEvent`/`host.register`. Those hold until the *plugin*
+ * unloads, and this is armed per view: `registerDomEvent` is
+ * `addEventListener` plus a `register()` closure capturing the element
+ * (verified in `obsidian-internals.md`), so every rebuilt file explorer added
+ * four dead-element listeners, one more `window` `dragend` handler firing on
+ * every drag anywhere in the app, and a strong reference pinning a detached
+ * 150-row subtree — the exact opposite of what the `WeakSet` in
+ * `installExplorerDrag` was there to achieve. The caller owns these and reaps
+ * them when the view goes away.
+ *
+ * `dragend` goes on the window `containerEl` actually lives in, so a
+ * popped-out explorer's drags are covered by their own window rather than by
+ * a background one that never sees them.
  */
-function armCaptureListeners(host: MoveItemHost, containerEl: HTMLElement): void {
+function armCaptureListeners(host: MoveItemHost, containerEl: HTMLElement): () => void {
 	const indicator = new DropIndicator();
-	const scroller = new AutoScroller(containerEl);
+	const scroller = new AutoScroller(containerEl, (clientX, clientY) => refreshIndicatorAfterScroll(host, indicator, containerEl, clientX, clientY));
+	const win = windowFor(containerEl);
 
-	host.registerDomEvent(containerEl, 'dragover', (evt) => handleDragOverLike(host, indicator, scroller, evt), { capture: true });
-	host.registerDomEvent(containerEl, 'dragenter', (evt) => handleDragOverLike(host, indicator, scroller, evt), { capture: true });
-	host.registerDomEvent(containerEl, 'drop', (evt) => handleDrop(host, indicator, scroller, evt), { capture: true });
-	host.registerDomEvent(containerEl, 'dragleave', (evt) => handleDragLeave(containerEl, indicator, scroller, evt), { capture: true });
-	host.registerDomEvent(window, 'dragend', () => {
+	const removers: (() => void)[] = [];
+	// `handler` is declared over `DragEvent` and cast once here, rather than at
+	// each call site: every listener this file installs is a drag listener, and
+	// four `evt as DragEvent` casts would say so four times.
+	const on = (target: EventTarget, type: string, handler: (evt: DragEvent) => void, options?: AddEventListenerOptions): void => {
+		const listener = handler as EventListener;
+		target.addEventListener(type, listener, options);
+		removers.push(() => target.removeEventListener(type, listener, options));
+	};
+
+	const onDragOverLike = (evt: DragEvent): void => handleDragOverLike(host, indicator, scroller, evt);
+	on(containerEl, 'dragover', onDragOverLike, { capture: true });
+	on(containerEl, 'dragenter', onDragOverLike, { capture: true });
+	on(containerEl, 'drop', (evt) => handleDrop(host, indicator, scroller, evt), { capture: true });
+	on(containerEl, 'dragleave', (evt) => handleDragLeave(containerEl, indicator, scroller, evt), { capture: true });
+	on(win, 'dragend', () => {
 		indicator.clear();
 		scroller.stop();
 	});
 
-	// Belt-and-suspenders alongside `registerDomEvent`'s own teardown: those
-	// calls stop *future* events from reaching these handlers on unload, but
-	// say nothing about a `eoe-drop-before`/`eoe-drop-after` class already
-	// sitting on a row, or a rAF loop already scheduled, at the moment the
-	// plugin is disabled mid-drag. This guarantees both are gone too, so a
-	// disabled/reloaded plugin never leaves a stray line on the tree or a
-	// scroll loop with nothing left to stop it.
-	host.register(() => {
+	// Belt-and-suspenders alongside removing the listeners: that stops *future*
+	// events reaching these handlers, but says nothing about an
+	// `eoe-drop-before`/`eoe-drop-after` class already sitting on a row, or a
+	// rAF loop already scheduled, at the moment the view is destroyed or the
+	// plugin disabled mid-drag. Clearing both here guarantees neither outlives
+	// the listeners that would otherwise have cleaned them up.
+	return () => {
+		for (const remove of removers) remove();
+		removers.length = 0;
 		indicator.clear();
 		scroller.stop();
-	});
+	};
 }
 
 /**
@@ -658,10 +766,19 @@ function armCaptureListeners(host: MoveItemHost, containerEl: HTMLElement): void
  * what made it invisible: the saved order still looks right, so nothing points
  * at the drag having come loose.
  *
- * `armed` is a `WeakSet`, not an "installed" boolean. `layout-change` fires
- * constantly, and arming the *same* element twice would stack duplicate
- * capture handlers, so a single drop would be written more than once. Holding
- * the elements weakly means a destroyed view's element stays collectable.
+ * `armed` maps each armed element to its disarm function, rather than being an
+ * "installed" boolean. `layout-change` fires constantly, and arming the *same*
+ * element twice would stack duplicate capture handlers, so a single drop would
+ * be written more than once.
+ *
+ * It was a `WeakSet`, for the stated purpose of letting a destroyed view's
+ * element stay collectable — which it never achieved, because
+ * `host.registerDomEvent` retained that element strongly for the plugin's
+ * whole life anyway. Weakness was the wrong tool for the job: nothing was ever
+ * *disarmed*, so detached explorers kept their listeners (including a `window`
+ * `dragend` each, all firing on every drag in the app) no matter how the
+ * element was held. The reap below is the actual fix, and it needs the disarm
+ * function, which means holding the entry strongly until it runs.
  *
  * Every real `file-explorer` view is armed, not just the first: `explorerViews`
  * (`fileExplorerLeaves.ts`) walks every leaf `getLeavesOfType` returns and
@@ -670,17 +787,36 @@ function armCaptureListeners(host: MoveItemHost, containerEl: HTMLElement): void
  * or behind a real one in the list — from ever reaching `armCaptureListeners`.
  */
 export function installExplorerDrag(host: MoveItemHost): void {
-	const armed = new WeakSet<HTMLElement>();
+	const armed = new Map<HTMLElement, () => void>();
 
 	const armAll = (): void => {
+		const live = new Set<HTMLElement>();
 		for (const view of explorerViews(host.app, isFileExplorerViewHandle)) {
 			const { containerEl } = view;
+			live.add(containerEl);
 			if (armed.has(containerEl)) continue;
-			armed.add(containerEl);
-			armCaptureListeners(host, containerEl);
+			armed.set(containerEl, armCaptureListeners(host, containerEl));
+		}
+
+		// Reap in the same pass that arms, and on the same event: a detached or
+		// rebuilt file explorer is exactly what `layout-change` announces, so
+		// the element stops being reachable here at the moment it stops being
+		// used. Anything still armed but no longer belonging to a live view is
+		// a detached subtree whose listeners can only misfire.
+		for (const [containerEl, disarm] of armed) {
+			if (live.has(containerEl)) continue;
+			armed.delete(containerEl);
+			disarm();
 		}
 	};
 
 	armAll();
 	host.registerEvent(host.app.workspace.on('layout-change', armAll));
+	// The plugin outliving a view is handled by the reap above; this is the
+	// other direction — views outliving the plugin, which is every armed
+	// element at the moment it is disabled.
+	host.register(() => {
+		for (const disarm of armed.values()) disarm();
+		armed.clear();
+	});
 }
