@@ -34,4 +34,21 @@ export default defineConfig(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		// The `obsidian` stub is never bundled — `esbuild.config.mjs` lists
+		// `obsidian` as external and the production tsconfig compiles `src/`
+		// alone — so rules about how a *plugin* must reach timers and globals
+		// have nothing to say about it. It has to use the bare ones on purpose:
+		// its whole job is to install `window` where node has none.
+		//
+		// Turned off here rather than left as warnings because `eslint .` exits
+		// 0 on warnings, so a noisy report is indistinguishable from a clean
+		// one at the gate, and the next genuine warning arrives as one more line
+		// in a list nobody reads.
+		files: ['test/stubs/**/*.ts'],
+		rules: {
+			'obsidianmd/no-global-this': 'off',
+			'obsidianmd/prefer-window-timers': 'off',
+		},
+	},
 );
