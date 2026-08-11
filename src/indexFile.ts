@@ -343,15 +343,22 @@ export class IndexFileStore {
 	 * note with every order the user just deleted.
 	 *
 	 * So this does neither, and instead removes the silence: the orders are
-	 * still loaded, the note comes back on the next change, and "Start over"
-	 * in settings is the explicit action that actually clears them. That one
-	 * already exists, already confirms, and already quarantines.
+	 * still loaded, the note comes back on the next change, and "Clear every
+	 * saved order" in settings is the explicit action that actually clears
+	 * them. That row already exists and already confirms, and it stays visible
+	 * here because the orders are still loaded — its `visible` predicate is
+	 * `keys().size > 0`, which a deleted note does not change.
+	 *
+	 * Naming that row exactly is not a detail: an earlier draft of this Notice
+	 * pointed at "Start over", which is the confirm button inside the repair
+	 * flow and not a settings row at all. A message that sends someone hunting
+	 * for a control that does not exist is worse than one that says nothing.
 	 */
 	private onIndexNoteDeleted(): void {
 		if (this.index.size === 0) return;
 		new Notice(
 			`Explorer order editor: ${this.notePath()} was deleted, but its saved orders are still loaded and it will be recreated on the next change. ` +
-				'Use "Start over" in settings to clear them for good.',
+				'Use "Clear every saved order" in settings to clear them for good.',
 		);
 	}
 

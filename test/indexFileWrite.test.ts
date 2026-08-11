@@ -335,15 +335,16 @@ describe('the index note being renamed or deleted', () => {
 	it('says what will happen when the note is deleted, and changes nothing', async () => {
 		// Neither reading of a delete ("start over" / "a sync client removed
 		// it") can be told apart from a vault event, so this reports instead
-		// of guessing — the orders stay loaded and "Start over" stays the
-		// explicit way to clear them.
+		// of guessing — the orders stay loaded, and the Notice has to name the
+		// settings row that really clears them. Asserted on that exact wording
+		// because an earlier draft named a button from a different flow.
 		const { store, stub } = await loadedStore(serializeIndex('', new Map([['navtest', ['a.md']]])));
 		stub.app.vault.files.delete(NOTE);
 		resetNotices();
 
 		stub.app.vault.fire('delete', NOTE);
 
-		expect(notices.some((notice) => notice.includes('Start over'))).toBe(true);
+		expect(notices.some((notice) => notice.includes('Clear every saved order'))).toBe(true);
 		expect(store.get('navtest')).toEqual(['a.md']);
 		expect(store.isUsable()).toBe(true);
 	});
