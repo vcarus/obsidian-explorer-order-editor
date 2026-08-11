@@ -44,6 +44,12 @@ export interface MoveItemHost extends Plugin {
  * Synchronous: both sources already are (`store.get` is a `Map` lookup;
  * `folder.children` is already in memory), so there is no reason for this to
  * be async and every caller benefits from not having to await it.
+ *
+ * Only for reading — deciding whether to offer a menu item, seeding a dialog.
+ * Anything about to *write* an order back must go through `orderToWriteFrom`
+ * below instead, which heals first: what this returns while the store is
+ * unusable is the tree's own sort, and writing that back is how a saved order
+ * gets replaced by the view that stood in for it.
  */
 export function effectiveOrder(host: MoveItemHost, folder: TFolder): readonly string[] {
 	const indexNotePath = normalizePath(host.settings.indexPath);
@@ -66,10 +72,44 @@ export function effectiveOrder(host: MoveItemHost, folder: TFolder): readonly st
 	return fromExplorer;
 }
 
+/**
+ * `folder`'s order to compute a write from, or `null` when the store cannot
+ * be written at all.
+ *
+ * Every action that reads an order in order to write one back goes through
+ * this rather than calling `effectiveOrder` directly, and the reason is that
+ * the heal and the read are not two steps that happen to be adjacent — they
+ * are one operation, and doing them in the other order silently destroys
+ * data. While the store is unusable `store.get` holds nothing for `folder`,
+ * so `effectiveOrder` falls back to whatever the file explorer is rendering:
+ * the tree's own sort setting, not the saved order. Compute a new order from
+ * that, heal, and write, and the write lands on top of exactly what the heal
+ * just recovered — the fallback view, plus one item nudged, is now the saved
+ * order.
+ *
+ * This was originally a guard inside `applyDrop`'s cross-folder branch alone,
+ * defended on the grounds that the other paths rename nothing and so leave
+ * nothing on disk disagreeing with the saved order when a write is refused.
+ * That defence answers the wrong question: it is about *refusal*, and the
+ * damage here comes from *staleness* — a write that succeeds, from an order
+ * that was never real. So the rule is the invariant, not the branch: no
+ * caller may read an order to write back from while `!store.isUsable()`.
+ *
+ * `repair()` is a no-op answering `'healed'` when the store is already
+ * usable, so the ordinary case pays nothing for it. Compared against
+ * `'healed'` rather than tested for truthiness — every member of
+ * `RepairOutcome` is a non-empty string, so `!outcome` is false for the
+ * failures too, silently and legally.
+ */
+export async function orderToWriteFrom(host: MoveItemHost, folder: TFolder): Promise<readonly string[] | null> {
+	if ((await host.store.repair()) !== 'healed') return null;
+	return effectiveOrder(host, folder);
+}
+
 export type MoveOutcome = 'moved' | 'unchanged' | 'refused';
 
 /**
- * Resolves `file`'s parent folder, computes its `effectiveOrder`, and moves
+ * Resolves `file`'s parent folder, takes its `orderToWriteFrom`, and moves
  * `file.name` within it (`moveNameInOrder`, `rowMove.ts`). Writes the result
  * with `store.updateOrRepair` — not `update` — because a move is an explicit
  * user action (a context-menu click or a command), exactly the kind the store
@@ -82,7 +122,7 @@ export type MoveOutcome = 'moved' | 'unchanged' | 'refused';
  * - `'unchanged'` — there was nothing to do: `file` has no parent (the vault
  *   root itself, which cannot be moved within anything), or the move would
  *   not change the order (already at the edge `move` targets, or `file.name`
- *   isn't in `effectiveOrder` at all). The menu and the commands both gate on
+ *   isn't in the folder's order at all). The menu and the commands both gate on
  *   this already, but it is re-checked here rather than trusted: the order can
  *   change between a menu opening and the click, and a command's
  *   `checkCallback` runs against whatever was active at check time.
@@ -94,10 +134,17 @@ export type MoveOutcome = 'moved' | 'unchanged' | 'refused';
  * on an item already at the top that their order note is broken and needs
  * repairing would be a fault report about data that is perfectly fine.
  *
+ * Which is why the no-op check is *not* hoisted above the heal to preserve
+ * `'unchanged'` in the unhealable case: answering "nothing to do" needs an
+ * order worth believing, and while the store is unusable the only order
+ * available is the file explorer's fallback view. "The note cannot be written"
+ * is the true answer there; "nothing to do" would be a guess wearing the
+ * reassuring one's clothes.
+ *
  * Note what a first move into a folder with no saved order yet means: it
- * materializes one from `effectiveOrder` — whatever is currently on screen —
- * with `file` nudged one step. That is a write the user did not explicitly
- * ask for ("set this folder's order"), but it is the correct reading of what
+ * materializes one from the folder's `effectiveOrder` — whatever is currently
+ * on screen — with `file` nudged one step. That is a write the user did not
+ * explicitly ask for ("set this folder's order"), but it is the correct reading of what
  * they *did* ask for ("move this one thing"): the alternative, refusing to
  * act until a full order already exists, would make the direct move actions
  * useless for the common case of a folder nobody has ever opened the reorder
@@ -107,7 +154,13 @@ export async function applyMove(host: MoveItemHost, file: TFile | TFolder, move:
 	const parent = file.parent;
 	if (parent === null) return 'unchanged';
 
-	const order = effectiveOrder(host, parent);
+	// Heal before reading, never after — see `orderToWriteFrom`. `'refused'`
+	// rather than `'unchanged'` for a `null`: nothing about the move was a
+	// no-op, the note could not be made writable, and the caller's message for
+	// that names the note and points at repair.
+	const order = await orderToWriteFrom(host, parent);
+	if (order === null) return 'refused';
+
 	const moved = moveNameInOrder(order, file.name, move);
 	if (moved === null) return 'unchanged';
 
@@ -142,8 +195,8 @@ export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed' | 'm
  * third for the cross-folder one:
  *
  * Same folder (`dragged.parent === dest`, reference comparison — both are
- * live `TFolder` objects resolved from the same vault): compute
- * `effectiveOrder` for `dest`, splice `dragged.name` beside `anchor.name`, and
+ * live `TFolder` objects resolved from the same vault): take `dest`'s
+ * `orderToWriteFrom`, splice `dragged.name` beside `anchor.name`, and
  * write it — no rename involved, so this is `applyMove`'s shape exactly,
  * `insertNameBeside` standing in for `moveNameInOrder`.
  *
@@ -151,12 +204,13 @@ export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed' | 'm
  * store can be written at all, *then* compute the destination order, *then*
  * rename, and only write the order after the rename actually lands":
  *
- * 0. `store.repair()` — a no-op when the store is already usable, an attempt
- *    to heal when it is not, and a `'refused'` return when it cannot be
- *    healed. Doing this up front is what keeps step 3's irreversible rename
- *    from running when step 4 is already known to be impossible; the comment
- *    at the call site covers why it also has to precede step 1.
- * 1. `insertNameBeside(effectiveOrder(host, dest), dragged.name, anchor.name,
+ * 0. The heal inside `orderToWriteFrom` — a no-op when the store is already
+ *    usable, an attempt when it is not, and a `null` (reported as
+ *    `'refused'`) when it cannot be healed. Happening before the read is that
+ *    function's whole point; happening before step 3 is this branch's own
+ *    requirement, and is what keeps the irreversible rename from running when
+ *    step 4 is already known to be impossible.
+ * 1. `insertNameBeside(orderToWriteFrom(host, dest), dragged.name, anchor.name,
  *    side)` is computed against `dest`'s *current* order, before `dragged`
  *    has moved anywhere — `insertNameBeside` tolerates `dragged.name` not yet
  *    being a member of that order, which is exactly the cross-folder case.
@@ -202,7 +256,14 @@ export async function applyDrop(
 	if (dest === null) return { outcome: 'unchanged' };
 
 	if (dragged.parent === dest) {
-		const order = effectiveOrder(host, dest);
+		// Same heal-before-reading rule as everywhere else that computes a
+		// write from an existing order (`orderToWriteFrom`). This branch renames
+		// nothing, so `'refused'` stays the honest answer when the store cannot
+		// be written — but the read still has to happen on a healed store, or
+		// the order this drop computes is a permutation of the fallback view.
+		const order = await orderToWriteFrom(host, dest);
+		if (order === null) return { outcome: 'refused' };
+
 		const next = insertNameBeside(order, dragged.name, anchor.name, side);
 		if (next === null) return { outcome: 'unchanged' };
 
@@ -210,39 +271,25 @@ export async function applyDrop(
 		return { outcome: accepted ? 'moved' : 'refused' };
 	}
 
-	// Heal first, before either the order is computed or the rename runs.
+	// Heal before reading, which is where this rule was first needed and from
+	// where it has since been generalized — `orderToWriteFrom` carries the
+	// argument now, and every path that computes a write from an existing order
+	// goes through it.
 	//
-	// Before the rename, because `renameFile` is the one step in this function
-	// that cannot be undone: finding out afterwards that the store will not
-	// accept the write leaves the file moved with nothing recording where it
-	// belongs, which is precisely the state the step-3 note above claims this
-	// ordering prevents.
+	// Healing before the *rename* is this branch's own additional requirement:
+	// `renameFile` is the one step in this function that cannot be undone, so
+	// finding out afterwards that the store will not accept the write leaves
+	// the file moved with nothing recording where it belongs — precisely the
+	// state the step-3 note above claims this ordering prevents.
 	//
-	// Before `effectiveOrder` too, and that part is not merely tidiness: while
-	// the store is unusable `store.get` has nothing for `dest`, so
-	// `effectiveOrder` falls back to whatever the explorer is rendering.
-	// Computing the new order from that and writing it after a heal would
-	// overwrite the order the heal just recovered with one derived from the
-	// fallback view.
-	//
-	// Not a new healing trigger — the `updateOrRepair` at the foot of this
-	// function already healed on a drop, one of the three explicit user
+	// Not a new healing trigger: the `updateOrRepair` at the foot of this
+	// function already healed on a drop, which is one of the explicit user
 	// actions healing is allowed to run for. This only moves that same heal
-	// earlier in the sequence. `repair()` is a no-op answering `'healed'` when
-	// the store is already usable, so the ordinary drop pays nothing for it.
-	//
-	// The same-folder branch above deliberately keeps the original order: it
-	// renames nothing, so a refused write there leaves no on-disk state
-	// disagreeing with the saved order, and `'refused'` remains the honest
-	// answer.
-	// Compared against `'healed'`, not tested for truthiness: `repair()` answers
-	// with a `RepairOutcome`, and every member of that union is a non-empty
-	// string, so `!outcome` would be false for the failures too — and silently,
-	// since that is valid TypeScript. All this branch needs is "can the store
-	// be written now"; why it cannot is the settings tab's business.
-	if ((await host.store.repair()) !== 'healed') return { outcome: 'refused' };
+	// earlier in the sequence.
+	const order = await orderToWriteFrom(host, dest);
+	if (order === null) return { outcome: 'refused' };
 
-	const next = insertNameBeside(effectiveOrder(host, dest), dragged.name, anchor.name, side);
+	const next = insertNameBeside(order, dragged.name, anchor.name, side);
 	if (next === null) return { outcome: 'unchanged' };
 
 	const newPath = normalizePath(dest.isRoot() ? dragged.name : `${dest.path}/${dragged.name}`);

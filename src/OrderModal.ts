@@ -2,7 +2,7 @@ import { App, ButtonComponent, Menu, Modal, Notice, normalizePath, Platform, set
 import Sortable from 'sortablejs';
 import { SORT_CHOICES, sortEntries, timestampFor, type SortChoice, type SortableEntry, type SortKey } from './entrySort';
 import { explorerOrderNames } from './explorerSort';
-import { folderIndexKey, type IndexFileStore } from './indexFile';
+import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { reportApplied, repairPointer, unusableClause } from './notices';
 import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
 import { mergeOrder, setOrder } from './orderIndex';
@@ -118,8 +118,16 @@ interface OrderRow {
  * do next instead of `save()` closing the modal unilaterally — navigating
  * needs to keep the modal open on a successful save (to then switch levels),
  * where the footer button needs to close it.
+ *
+ * `'repaired'` is its own member rather than another way of saying
+ * `'blocked'`: nothing was refused and nothing failed — the order note was
+ * repaired, this folder's real order came back out of it, and the level has
+ * been redrawn around that instead of writing over it. Both callers treat it
+ * like `'blocked'` (stay where we are, the screen has changed), but a caller
+ * that ever wants to tell "we could not" from "we found something better"
+ * should not have to guess which one it got.
  */
-type SaveOutcome = 'saved' | 'unchanged' | 'blocked' | 'failed';
+type SaveOutcome = 'saved' | 'unchanged' | 'blocked' | 'failed' | 'repaired';
 
 export class OrderModal extends Modal {
 	private listEl: HTMLElement | null = null;
@@ -189,6 +197,28 @@ export class OrderModal extends Modal {
 	 * of every `render()`.
 	 */
 	private initialOrder: readonly SortableEntry[] = [];
+	/**
+	 * Whether this level's rows were drawn without ever seeing a saved order
+	 * for this folder: the store was unusable when `render()` ran *and* it held
+	 * nothing for this key. Both halves are needed. Unusable alone does not
+	 * mean the rows are a guess — a note that broke after loading leaves the
+	 * in-memory index intact, and the rows then show the real saved order —
+	 * while an empty key alone is the ordinary case of a folder nobody has
+	 * ordered yet.
+	 *
+	 * When both hold, what is on screen is the file explorer's own sort
+	 * standing in for an order this dialog could not read, and a repair may
+	 * still bring the real one back from the note's salvageable lines or the
+	 * backup. Saving without checking would write the stand-in over it — the
+	 * dialog's own version of the trap `moveItem.ts`'s `orderToWriteFrom`
+	 * closes for the move actions, and the one path that cannot be fixed by
+	 * healing first, because the read it has to redo already happened on
+	 * screen. See `save()`.
+	 *
+	 * Recomputed by `finishRender` for every level, and cleared by
+	 * `resetContent` with the rest of the per-level state.
+	 */
+	private renderedBlind = false;
 	private folder: TFolder;
 
 	constructor(
@@ -453,6 +483,11 @@ export class OrderModal extends Modal {
 	 */
 	private finishRender(): void {
 		this.initialOrder = this.collectOrderedEntries();
+		// Recorded here, at the one moment it can be: the question is what the
+		// store looked like when these rows were derived from it, and by the
+		// time anyone saves it may have healed itself — which changes nothing
+		// about the rows, and would make the same test answer the opposite way.
+		this.renderedBlind = !this.store.isUsable() && this.store.get(folderIndexKey(this.folder)) === undefined;
 		this.afterOrderChanged();
 	}
 
@@ -473,6 +508,7 @@ export class OrderModal extends Modal {
 		this.childFolderByName.clear();
 		this.navControls = [];
 		this.initialOrder = [];
+		this.renderedBlind = false;
 		this.contentEl.empty();
 	}
 
@@ -529,7 +565,11 @@ export class OrderModal extends Modal {
 				const outcome = await this.save();
 				// blocked / failed: notices are already up, and entering now
 				// would discard what the user arranged. Stay on this level.
-				if (outcome === 'blocked' || outcome === 'failed') return;
+				// repaired: the level has just been redrawn from an order that
+				// came back with the repair, and leaving for the folder that was
+				// clicked would carry the user away from the one screen that
+				// change is visible on.
+				if (outcome === 'blocked' || outcome === 'failed' || outcome === 'repaired') return;
 				// `save()` is still async even though nothing inside it takes
 				// long, which is enough for the user to have closed the dialog
 				// underneath us while it was in flight. Calling render() into a
@@ -1066,6 +1106,9 @@ export class OrderModal extends Modal {
 					.then((outcome) => {
 						// 'blocked'/'failed': a notice is already up, and the
 						// order the user arranged is still on screen to retry.
+						// 'repaired': the screen now holds this folder's real
+						// order, recovered a moment ago — closing over it would
+						// hide the only thing that just happened.
 						if (outcome === 'saved' || outcome === 'unchanged') this.close();
 					})
 					.finally(() => {
@@ -1089,10 +1132,65 @@ export class OrderModal extends Modal {
 	 * store can't know whether a save is recoverable without attempting the
 	 * same repair a save would trigger, so this always calls
 	 * `updateOrRepair` and reads the outcome from its result instead.
+	 *
+	 * The `renderedBlind` branch below is the same rule the move actions follow
+	 * — heal before reading the order you are about to write back — arriving
+	 * here in the only shape this dialog can express it. Its read happened when
+	 * the level rendered, so it cannot be redone in place: the rows are the
+	 * user's arrangement now, not a value to recompute. What it can do is heal
+	 * first and then ask whether this folder's order came back. If it did, the
+	 * arrangement on screen was a permutation of a stand-in and writing it
+	 * would destroy exactly what the repair recovered, so the level is redrawn
+	 * from the real order and nothing is written. If it did not — no salvaged
+	 * line, no backup entry for this key — then the stand-in is still the only
+	 * order there has ever been for this folder, and saving it is precisely
+	 * what the user asked for.
 	 */
 	private async save(): Promise<SaveOutcome> {
-		const names = this.collectOrderedEntries().map((entry) => entry.name);
 		const key = folderIndexKey(this.folder);
+
+		if (this.renderedBlind) {
+			// A no-op answering `'healed'` if something already healed the note
+			// while this dialog was open, which is the point: what matters is
+			// whether an order exists for this folder *now*, not whether this
+			// call is what produced it.
+			if ((await this.store.repair()) !== 'healed') {
+				new Notice(`Could not save: ${unusableClause(this.store)}. ${repairPointer('from elsewhere')}`);
+				return 'blocked';
+			}
+
+			if (this.store.get(key) !== undefined) {
+				// Rebuilt from the store rather than patched in place: the rows
+				// hold a stand-in order, and there is no meaningful way to carry
+				// a permutation of it onto an order the user has not seen. Told
+				// plainly, because dropping an arrangement silently and redrawing
+				// would look like the drag never registered.
+				new Notice(
+					"The order note was repaired and this folder's saved order came back with it, so nothing was written. It is on screen now — arrange it again and save.",
+				);
+				// The tree behind this dialog is still painting the stand-in
+				// order, and nothing else is going to tell it otherwise: the
+				// heal writes the note without asking for a re-sort, and this
+				// path deliberately never reaches the save that would. Resorted
+				// unconditionally rather than through `autoRefresh` (which is
+				// about "after saving") and immediately rather than through
+				// `pendingRefresh` (which reports as a save) — the same
+				// treatment the settings tab's repair row gives a repair.
+				requestFileExplorerResort(this.app);
+
+				// The repair above is real I/O, long enough for the dialog to
+				// have been closed underneath it; rendering into a detached
+				// contentEl would build a level nobody can see.
+				if (this.closed) return 'repaired';
+				this.resetContent();
+				await this.render();
+				return 'repaired';
+			}
+			// Nothing came back for this folder, so what is on screen is still
+			// the only order it has ever had. Fall through and write it.
+		}
+
+		const names = this.collectOrderedEntries().map((entry) => entry.name);
 
 		let changed = false;
 		let ok: boolean;
