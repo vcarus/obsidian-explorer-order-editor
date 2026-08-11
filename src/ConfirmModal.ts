@@ -1,13 +1,14 @@
 /**
- * A small yes/no dialog, for the one action in this plugin that destroys
- * something the user cannot get back with an undo: deleting the sortspec.md
- * files left behind after a migration.
+ * A small yes/no dialog, used only before the actions that destroy something
+ * no undo brings back — the settings tab's delete-kept-copies, prune-stale,
+ * clear-all and start-over rows. (It predates all four: it originally guarded
+ * deleting migration-era sortspec.md files, a layer removed in 1.2.)
  *
  * Obsidian has no built-in confirm, and the alternatives are worse: a Notice
  * cannot ask anything, and a "click twice to confirm" button states its real
  * meaning only after the first click. Everything else this plugin does is
  * either reversible (an order can be re-dragged) or already gated by its own
- * safety property, which is why this is the only place it exists.
+ * safety property, which is why nothing else asks.
  */
 import { App, Modal } from 'obsidian';
 

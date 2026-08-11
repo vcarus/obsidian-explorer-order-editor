@@ -7,7 +7,7 @@
  * folder row is deliberately left unclaimed here.
  *
  * Zero imports — including `./types` — so this stays as directly
- * unit-testable as `rowMove.ts`. The (not yet written) drag handler owns
+ * unit-testable as `rowMove.ts`. The drag handler (`explorerDrag.ts`) owns
  * turning live DOM measurements into the plain numbers this takes.
  */
 

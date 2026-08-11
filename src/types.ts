@@ -35,10 +35,15 @@ export function displayLabel(entry: Entry): string {
 /**
  * The collator `compareNames` runs on, built once here rather than through
  * `a.localeCompare(b, undefined, { numeric: true })` at every comparison.
- * Those two are specified to mean the same thing — `localeCompare` with an
- * options object is defined as constructing a collator with them and calling
- * `compare` — which is exactly the cost: inside a sort comparator it builds
- * one per comparison. Measured on this machine, sorting 150 names (the size
+ * The two produce the same *comparison* — `localeCompare` with an options
+ * object is defined as constructing a collator with them and calling
+ * `compare` — but not at the same moment: this resolves the runtime's default
+ * locale once at module load, where per-call construction would re-resolve it
+ * every time. In practice that difference needs an app restart to observe (a
+ * changed system locale reaches a running Obsidian no other way), which is why
+ * hoisting is safe. That per-call construction is also exactly the cost being
+ * avoided: inside a sort comparator it builds one collator per comparison.
+ * Measured on this machine, sorting 150 names (the size
  * of `bigfolder` in the test vault) takes 8.65ms that way against 0.49ms
  * through a hoisted collator, and the ratio holds at ~16x through 5000 names.
  *

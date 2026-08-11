@@ -10,17 +10,16 @@
  * vault's `rename`/`delete` events and rewrites the stored index before that
  * ever becomes visible.
  *
- * Unlike the old sortspec.md-based version of this module, the mutations
- * here (`renameEntry`, `removeEntry`, `renameFolderPath`, `removeOrder`, all
- * from `orderIndex.ts`) need no live sibling context at all: a stored name
- * either is or isn't in a folder's order, with no bare-line-kind ambiguity
- * to resolve against what's currently on disk (see `orderIndex.ts`'s module
- * doc for why full names make that ambiguity disappear). So there is nothing
- * left to snapshot at event time — only the FIFO ordering itself is still
- * worth keeping: `store.update()` is synchronous, but wrapping each
- * reaction in the same `enqueue`/`chain` shape as before still isolates one
- * failing op from blocking the ones queued after it, and keeps this module's
- * shape stable for whatever builds on it next.
+ * The mutations here (`renameEntry`, `removeEntry`, `renameFolderPath`,
+ * `removeOrder`, all from `orderIndex.ts`) need no live sibling context at
+ * all: a stored name either is or isn't in a folder's order, with no
+ * bare-line-kind ambiguity to resolve against what's currently on disk (see
+ * `orderIndex.ts`'s module doc for why full names make that ambiguity
+ * disappear). So there is nothing to snapshot at event time — only FIFO
+ * ordering is worth keeping: `store.update()` is synchronous, but wrapping
+ * each reaction in an `enqueue`/`chain` shape still isolates one failing op
+ * from blocking the ones queued after it, and keeps this module's shape
+ * stable for whatever builds on it next.
  *
  * Explicitly out of scope, not bugs:
  * - A rename that happens while this plugin isn't running (e.g. another

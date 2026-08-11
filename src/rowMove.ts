@@ -1,10 +1,10 @@
 /**
  * Index arithmetic for the reorder modal's "move to top/bottom" buttons and
  * keyboard shortcuts. Pulled out of `OrderModal.ts` and kept free of any
- * import (including `./types`) so it can be unit-tested directly — this is
- * exactly the kind of off-by-one-prone arithmetic `orderSync.ts`'s doc
- * comment warns sinks to the pure layer, and `OrderModal.ts` has no unit-test
- * surface at all (it imports obsidian).
+ * import (including `./types`) so it can be unit-tested directly —
+ * off-by-one-prone arithmetic is exactly what this project sinks to the pure
+ * layer, and `OrderModal.ts` has no unit-test surface at all (it imports
+ * obsidian).
  */
 import type { DropSide } from './dropZone';
 

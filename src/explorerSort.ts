@@ -8,8 +8,7 @@
  * folders the index has an order for, pass everything else through
  * untouched."
  *
- * The only other module besides `indexFile.ts` that imports `obsidian`, and
- * deliberately thin: every judgment that doesn't need a live
+ * Deliberately thin: every judgment that doesn't need a live
  * `TFolder`/`TAbstractFile` — reconciling a stored order against live
  * siblings — is already pure (`mergeOrder` in `orderIndex.ts`). This file's
  * own job is narrow: locate the file explorer view, patch its prototype,
@@ -20,10 +19,10 @@
  * patches the same method (verified against its bundled `main.js`: it
  * monkey-patches `leaf.view.constructor.prototype.getSortedFolderItems` with
  * its own `around`-style helper — the same contract `patch.ts` reimplements)
- * — the one deliberate exception to this project's usual "no monkey-patching
- * the file tree" rule. Everything else in that rule still stands: this never
- * touches the DOM the file explorer builds, never calls a private renderer,
- * and always falls back to the explorer's own result on any error.
+ * — the one place this project patches the file tree, under the four
+ * guardrails CLAUDE.md's patch rule lists. Beyond those, this never touches
+ * the DOM the file explorer builds, never calls a private renderer, and
+ * always falls back to the explorer's own result on any error.
  */
 import { App, normalizePath, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
 import { folderIndexKey, type IndexFileStore } from './indexFile';
