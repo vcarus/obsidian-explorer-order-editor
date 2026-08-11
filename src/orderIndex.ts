@@ -387,10 +387,10 @@ export function salvageIndex(noteText: string): SalvageResult {
  * lower one wrote for the same key, and simply doesn't touch keys a lower
  * source didn't have.
  *
- * Not exported: `recoverIndex` below is its only caller — nothing else in
- * `src/` needs an arbitrary-length precedence merge, and `recoverIndex`'s own
- * fixed shape (salvage / memory / backup / last unreadable text) is what every
- * other module actually wants.
+ * Not exported: `fillGapsFrom` below is its only caller — nothing else in
+ * `src/` needs an arbitrary-length precedence merge, and the fixed shape that
+ * function fixes it into (highest source / memory / backup / last unreadable
+ * text) is what every other module actually wants.
  */
 function mergeIndexesByPrecedence(sources: readonly OrderIndex[]): OrderIndex {
 	const merged = new Map<string, readonly string[]>();
@@ -449,9 +449,34 @@ export function recoverIndex(
 	lastUnreadableText: string,
 ): RecoveryResult {
 	const salvage = salvageIndex(unreadableText);
-	const index = mergeIndexesByPrecedence([salvage.index, memoryIndex, backupIndex, salvageIndex(lastUnreadableText).index]);
-	return { index, droppedLines: salvage.droppedLines };
+	// The precedence list itself lives in `fillGapsFrom` below, stated once:
+	// this function is that union with the unreadable note's own salvage in
+	// the top slot, plus the count of what that salvage lost.
+	return { index: fillGapsFrom(salvage.index, memoryIndex, backupIndex, lastUnreadableText), droppedLines: salvage.droppedLines };
 }
+
+/**
+ * `adopted`, plus every key it does not already have, taken from the same
+ * lower-precedence sources `recoverIndex` uses and in the same order.
+ *
+ * For the one recovery path that starts from a note which parses: the note
+ * healed itself (a sync client landed a good copy) while this store was
+ * unusable, so the disk copy is the newest readable truth and wins every key
+ * it has — but it is not the only place orders exist. A store goes unusable
+ * with a debounced write cancelled, so `memoryIndex` can hold a folder that
+ * never reached any note; a cold start against a broken note leaves memory
+ * empty and `backupIndex` the only survivor; and both can be empty while
+ * `lastUnreadableText` still has salvageable lines.
+ *
+ * Adopting `adopted` alone discards all three at once — silently, with the
+ * store now reporting itself healthy and the `lastUnreadableText` structurally
+ * dropped by the transition into usable. Which is the same union rule the
+ * rebuild path has always applied, simply never applied here.
+ */
+export function fillGapsFrom(adopted: OrderIndex, memoryIndex: OrderIndex, backupIndex: OrderIndex, lastUnreadableText: string): OrderIndex {
+	return mergeIndexesByPrecedence([adopted, memoryIndex, backupIndex, salvageIndex(lastUnreadableText).index]);
+}
+
 
 // ---------------------------------------------------------------------------
 // Mutations — all pure: each returns a new `OrderIndex`, never modifies its
@@ -477,13 +502,29 @@ function dedupeKeepFirst(names: readonly string[]): string[] {
  * key instead of storing `[]`: an empty order is the *absence* of an order,
  * not a distinct zero-length one — storing `[]` would make
  * `removeOrder(setOrder(i, p, []), p)` differ from `i`.
+ *
+ * Returns `index` itself when the stored order already *is* `names`, which is
+ * the no-op contract every other mutation in this module keeps and this one
+ * used to be alone in breaking. `indexFile.ts`'s `update()` reads that
+ * identity as "nothing changed", so a `setOrder` that always answered with a
+ * fresh `Map` meant `OrderModal.save`'s `changed` was true no matter what:
+ * its "Explorer order unchanged." branch was unreachable, and every Save
+ * rewrote the note — byte-identically, thanks to `serializeIndex`, but a
+ * write is a write. It also re-armed the debounce and re-persisted the
+ * backup for a change that did not exist.
  */
 export function setOrder(index: OrderIndex, folderPath: string, names: readonly string[]): OrderIndex {
 	const deduped = dedupeKeepFirst(names);
 	if (deduped.length === 0) return removeOrder(index, folderPath);
+	const current = index.get(folderPath);
+	if (current !== undefined && sameNames(current, deduped)) return index;
 	const next = new Map(index);
 	next.set(folderPath, deduped);
 	return next;
+}
+
+function sameNames(a: readonly string[], b: readonly string[]): boolean {
+	return a.length === b.length && a.every((name, i) => name === b[i]);
 }
 
 export function removeOrder(index: OrderIndex, folderPath: string): OrderIndex {
@@ -499,24 +540,44 @@ export function removeOrder(index: OrderIndex, folderPath: string): OrderIndex {
  * on `oldPath` alone — so renaming `Projects` remaps `Projects/Notes` but
  * leaves a sibling folder that merely starts with the same characters, like
  * `ProjectsOld/Notes`, untouched.
+ *
+ * A key already sitting on one of the destinations is dropped, and the
+ * renamed folder's order wins — the same rule `renameEntry` applies one level
+ * down to a colliding name. Such a key is always stale: the file system will
+ * not rename `A` onto an existing folder `B`, so anything keyed `B` at this
+ * moment describes a folder that is already gone (deleted while the plugin
+ * was off — what `pruneMissing` exists for). Letting it survive would give a
+ * live folder a dead one's order, and which of the two won would come down to
+ * `Map` insertion order — which is always the note's sorted order, so the
+ * live folder would lose whenever it sorted first.
  */
 export function renameFolderPath(index: OrderIndex, oldPath: string, newPath: string): OrderIndex {
 	if (oldPath === newPath) return index;
 	const prefix = `${oldPath}/`;
-	let changed = false;
+	const destinationFor = (key: string): string | null => {
+		if (key === oldPath) return newPath;
+		if (key.startsWith(prefix)) return newPath + key.slice(oldPath.length);
+		return null;
+	};
+
+	// Collected before the rebuild below, because a stale key can sit anywhere
+	// in the iteration — including *after* the key that displaces it, where a
+	// single pass has already written the good value and cannot know it is
+	// about to be overwritten.
+	const destinations = new Set<string>();
+	for (const key of index.keys()) {
+		const moved = destinationFor(key);
+		if (moved !== null) destinations.add(moved);
+	}
+	if (destinations.size === 0) return index;
+
 	const next = new Map<string, readonly string[]>();
 	for (const [key, value] of index) {
-		if (key === oldPath) {
-			next.set(newPath, value);
-			changed = true;
-		} else if (key.startsWith(prefix)) {
-			next.set(newPath + key.slice(oldPath.length), value);
-			changed = true;
-		} else {
-			next.set(key, value);
-		}
+		const moved = destinationFor(key);
+		if (moved !== null) next.set(moved, value);
+		else if (!destinations.has(key)) next.set(key, value);
 	}
-	return changed ? next : index;
+	return next;
 }
 
 /**

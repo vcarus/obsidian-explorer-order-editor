@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	fillGapsFrom,
 	mergeOrder,
 	parseIndex,
 	pruneMissing,
@@ -318,8 +319,47 @@ describe('renameFolderPath', () => {
 		);
 	});
 
+	it('keeps the renamed folder order when a stale key already sits on the destination', () => {
+		// `Work` is a folder deleted while the plugin was off, so its key
+		// outlived it. The rename could only have been allowed because no
+		// folder is there any more, which makes the surviving key the stale
+		// one — it must not overwrite the folder that just arrived.
+		const i = buildIndex([
+			['Projects', ['keep-me.md']],
+			['Work', ['stale.md']],
+		]);
+		const renamed = renameFolderPath(i, 'Projects', 'Work');
+		expectIndexEqual(renamed, buildIndex([['Work', ['keep-me.md']]]));
+	});
+
+	it('keeps descendant orders when stale keys already sit on their destinations', () => {
+		// Same collision one level down, and in the iteration order that hides
+		// it: `parseIndex` inserts keys sorted, so every stale `Work*` key
+		// lands *after* the `Projects*` key it would overwrite.
+		const i = buildIndex([
+			['Projects/Alpha', ['keep-me.md']],
+			['Work/Alpha', ['stale.md']],
+			['Work/Beta', ['unrelated-stale.md']],
+		]);
+		const renamed = renameFolderPath(i, 'Projects', 'Work');
+		expectIndexEqual(
+			renamed,
+			buildIndex([
+				['Work/Alpha', ['keep-me.md']],
+				['Work/Beta', ['unrelated-stale.md']],
+			]),
+		);
+	});
+
 	it('returns the same reference when neither the path nor any descendant is present', () => {
 		const i = buildIndex([['Elsewhere', ['a.md']]]);
+		expect(renameFolderPath(i, 'Projects', 'Work')).toBe(i);
+	});
+
+	it('returns the same reference when only a would-be destination key is present', () => {
+		// Nothing moves, so nothing may be dropped either: `Work` here is just
+		// another folder's order, not a collision.
+		const i = buildIndex([['Work', ['a.md']]]);
 		expect(renameFolderPath(i, 'Projects', 'Work')).toBe(i);
 	});
 
@@ -834,5 +874,73 @@ describe('recoverIndex', () => {
 		const result = recoverIndex('```json\n{\n  "B": ["b.md"]\n}\n```', empty, empty, older);
 		expect(result.droppedLines).toBe(0);
 		expect(result.index.get('A')).toEqual(['a.md']);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// fillGapsFrom — the adopt path's union (H9)
+// ---------------------------------------------------------------------------
+
+describe('fillGapsFrom', () => {
+	it('keeps every key the adopted note lacks, from all three lower sources', () => {
+		// The scenario: the store went unusable (so its debounced write was
+		// cancelled, stranding `Pending` in memory alone), and a sync client
+		// then landed a good but older copy of the note. Adopting that copy on
+		// its own is what discarded the other three at once.
+		const adopted = buildIndex([['OnDisk', ['a.md']]]);
+		const memory = buildIndex([['Pending', ['never-written.md']]]);
+		const backup = buildIndex([['OnlyInBackup', ['b.md']]]);
+		const lastUnreadable = ['```json', '{', '  "OnlyInBrokenText": ["c.md"]', '}', '```'].join('\n');
+
+		const merged = fillGapsFrom(adopted, memory, backup, lastUnreadable);
+
+		expect(merged.get('OnDisk')).toEqual(['a.md']);
+		expect(merged.get('Pending')).toEqual(['never-written.md']);
+		expect(merged.get('OnlyInBackup')).toEqual(['b.md']);
+		expect(merged.get('OnlyInBrokenText')).toEqual(['c.md']);
+	});
+
+	it('the adopted note wins every key it has: it is the newest readable truth', () => {
+		const adopted = buildIndex([['Shared', ['from-disk.md']]]);
+		const memory = buildIndex([['Shared', ['from-memory.md']]]);
+		const backup = buildIndex([['Shared', ['from-backup.md']]]);
+
+		expect(fillGapsFrom(adopted, memory, backup, '').get('Shared')).toEqual(['from-disk.md']);
+	});
+
+	it('adds nothing when the lower sources are empty', () => {
+		const adopted = buildIndex([['OnDisk', ['a.md']]]);
+
+		expectIndexEqual(fillGapsFrom(adopted, new Map(), new Map(), ''), adopted);
+	});
+});
+
+describe('setOrder no-op identity', () => {
+	it('returns the same reference when the stored order already is these names', () => {
+		// The no-op contract the rest of this module keeps, and the one
+		// `indexFile.ts`'s `update()` reads to decide whether anything happened.
+		const i = buildIndex([['A', ['x.md', 'y.md']]]);
+		expect(setOrder(i, 'A', ['x.md', 'y.md'])).toBe(i);
+	});
+
+	it('still returns the same reference when the input only differs by duplicates', () => {
+		// `dedupeKeepFirst` runs first, so the comparison is against what would
+		// actually be stored, not against the raw argument.
+		const i = buildIndex([['A', ['x.md', 'y.md']]]);
+		expect(setOrder(i, 'A', ['x.md', 'x.md', 'y.md'])).toBe(i);
+	});
+
+	it('returns a new map when the order really changes', () => {
+		const i = buildIndex([['A', ['x.md', 'y.md']]]);
+		const next = setOrder(i, 'A', ['y.md', 'x.md']);
+		expect(next).not.toBe(i);
+		expect(next.get('A')).toEqual(['y.md', 'x.md']);
+	});
+
+	it('returns a new map when the key is new, even if another key matches', () => {
+		const i = buildIndex([['A', ['x.md']]]);
+		const next = setOrder(i, 'B', ['x.md']);
+		expect(next).not.toBe(i);
+		expect(next.get('B')).toEqual(['x.md']);
 	});
 });
