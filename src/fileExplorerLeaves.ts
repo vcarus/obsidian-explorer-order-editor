@@ -36,7 +36,7 @@
  * `getLeavesOfType`'s result and the knowledge that deferred leaves belong in
  * it. That, and only that, is what lives here now.
  */
-import type { App, View } from 'obsidian';
+import type { App, View, WorkspaceLeaf } from 'obsidian';
 
 const FILE_EXPLORER_VIEW_TYPE = 'file-explorer';
 
@@ -124,8 +124,14 @@ export function focusedExplorerView<V extends View>(app: App, isReal: (view: Vie
  * evaluation, since the palette input holds the focus) walked every leaf
  * twice, and the rule ended up spelled out at the call site instead of having
  * a name.
+ *
+ * Not exported: `explorerViewFor` below is its only caller, and a caller
+ * outside this module asking for "focused, else first" is really asking the
+ * question that one answers — whether it has a named leaf to prefer first.
+ * Reached in tests through `explorerViewFor(app, isReal, null)`, which is this
+ * function exactly.
  */
-export function actingExplorerView<V extends View>(app: App, isReal: (view: View) => view is V): V | undefined {
+function actingExplorerView<V extends View>(app: App, isReal: (view: View) => view is V): V | undefined {
 	let firstReal: V | undefined;
 	for (const leaf of app.workspace.getLeavesOfType(FILE_EXPLORER_VIEW_TYPE)) {
 		const { view } = leaf;
@@ -134,6 +140,28 @@ export function actingExplorerView<V extends View>(app: App, isReal: (view: View
 		firstReal ??= view;
 	}
 	return firstReal;
+}
+
+/**
+ * The explorer a caller has *named*, when it named one and that leaf still
+ * holds a real view, and `actingExplorerView` otherwise.
+ *
+ * The distinction is worth a function because the two ways of answering "which
+ * explorer is this about" are not equally good and callers differ in which they
+ * can reach. A leaf handed over by the event that started the action — the
+ * `leaf` argument on `file-menu`, say — is the answer; focus is a heuristic
+ * standing in for it. Anything holding the former should not fall back to the
+ * latter, and anything holding neither has nothing better.
+ *
+ * `from` is probed rather than trusted, and that is the whole reason this is
+ * not just `from?.view`: a leaf can be detached or rebuilt between the event
+ * that produced it and the moment it is used (a dialog can sit open for
+ * minutes), and its view is then a placeholder carrying none of the members
+ * the caller wants. A stale leaf falls back exactly like an absent one.
+ */
+export function explorerViewFor<V extends View>(app: App, isReal: (view: View) => view is V, from: WorkspaceLeaf | null | undefined): V | undefined {
+	if (from != null && isReal(from.view)) return from.view;
+	return actingExplorerView(app, isReal);
 }
 
 /** Read through the view's own `ownerDocument`, so a popped-out explorer is judged against its own window's focus rather than the main one's. */

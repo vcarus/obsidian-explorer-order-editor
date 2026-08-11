@@ -1,4 +1,4 @@
-import { App, Menu, MenuItem, Notice, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
+import { App, Menu, MenuItem, Notice, Plugin, TAbstractFile, TFile, TFolder, type View, type WorkspaceLeaf } from 'obsidian';
 import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
 import { focusedExplorerView } from './fileExplorerLeaves';
@@ -178,8 +178,12 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		this.whenLayoutReady(() => installExplorerDrag(this));
 
 		this.registerEvent(
-			this.app.workspace.on('file-menu', (menu, file) => {
-				this.addOrderMenu(menu, file);
+			// `leaf` is the file explorer the right-click happened in, and it is
+			// carried all the way to `OrderModal` rather than dropped: see
+			// `explorerOrderNames`'s `from` for why the dialog cannot work this
+			// out for itself.
+			this.app.workspace.on('file-menu', (menu, file, _source, leaf) => {
+				this.addOrderMenu(menu, file, leaf ?? null);
 			}),
 		);
 
@@ -187,7 +191,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 			id: 'set-order-for-vault-root',
 			name: 'Set explorer order for vault root',
 			callback: () => {
-				new OrderModal(this.app, this.app.vault.getRoot(), this.settings, this.store).open();
+				new OrderModal(this.app, this.app.vault.getRoot(), this.settings, this.store, null).open();
 			},
 		});
 
@@ -365,7 +369,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	 * Adds nothing at all when nothing of ours applies, rather than a parent
 	 * item that opens onto an empty submenu.
 	 */
-	private addOrderMenu(menu: Menu, file: TAbstractFile): void {
+	private addOrderMenu(menu: Menu, file: TAbstractFile, from: WorkspaceLeaf | null): void {
 		const folder = file instanceof TFolder ? file : null;
 		// Narrowed once here rather than inside `fillOrderMenu`: `moves` is
 		// non-empty only for a `TFile`/`TFolder` (see `availableMoves`), but
@@ -377,7 +381,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		if (folder === null && moves.length === 0) return;
 
 		if (!hasSubmenu(MenuItem.prototype)) {
-			this.fillOrderMenu(menu, folder, movable, moves, false);
+			this.fillOrderMenu(menu, folder, movable, moves, false, from);
 			return;
 		}
 
@@ -390,7 +394,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 				.setIcon('lucide-arrow-up-down')
 				.setSection('action');
 
-			if (hasSubmenu(item)) this.fillOrderMenu(item.setSubmenu(), folder, movable, moves, true);
+			if (hasSubmenu(item)) this.fillOrderMenu(item.setSubmenu(), folder, movable, moves, true, from);
 		});
 	}
 
@@ -412,13 +416,14 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		file: TFile | TFolder | null,
 		moves: readonly (readonly [RowMove, string, string])[],
 		inSubmenu: boolean,
+		from: WorkspaceLeaf | null,
 	): void {
 		if (folder !== null) {
 			menu.addItem((item) => {
 				item.setTitle(inSubmenu ? 'Set order' : 'Set explorer order')
 					.setIcon('lucide-arrow-up-down')
 					.onClick(() => {
-						new OrderModal(this.app, folder, this.settings, this.store).open();
+						new OrderModal(this.app, folder, this.settings, this.store, from).open();
 					});
 				if (!inSubmenu) item.setSection('action');
 			});

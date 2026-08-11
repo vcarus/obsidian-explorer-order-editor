@@ -12,14 +12,14 @@
  * `isReal` here is a hand-rolled stand-in for the five call sites' own
  * predicates (`isFileExplorerView`, `isFileExplorerViewLike`,
  * `isFileExplorerFocusView`, `isFileExplorerViewHandle`) — it exists only to
- * drive the four finders through their one shared branch: "does this leaf's
+ * drive the finders through their one shared branch: "does this leaf's
  * view pass the caller's own realness check." What each production predicate
  * actually probes for is exercised by its own call site's behaviour, not
  * here.
  */
-import type { App, View } from 'obsidian';
+import type { App, View, WorkspaceLeaf } from 'obsidian';
 import { describe, expect, it } from 'vitest';
-import { actingExplorerView, explorerViews, firstExplorerView, focusedExplorerView } from '../src/fileExplorerLeaves';
+import { explorerViewFor, explorerViews, firstExplorerView, focusedExplorerView } from '../src/fileExplorerLeaves';
 
 interface RealView extends View {
 	readonly real: true;
@@ -162,13 +162,19 @@ describe('focusedExplorerView', () => {
 	});
 });
 
-describe('actingExplorerView', () => {
+/**
+ * The "focused, else first" rule — `actingExplorerView`, which is not exported
+ * and is reached here the way `src/` reaches it: `explorerViewFor` with no
+ * named leaf. Same arrangement `orderIndex.test.ts` uses for
+ * `mergeIndexesByPrecedence`.
+ */
+describe('acting explorer (no leaf named)', () => {
 	it('prefers the focused explorer', () => {
 		const first = realWithFocus('a', false);
 		const second = realWithFocus('b', true);
 		const app = fakeApp([{ view: first }, { view: second }]);
 
-		expect(actingExplorerView(app, isReal)).toBe(second);
+		expect(explorerViewFor(app, isReal, null)).toBe(second);
 	});
 
 	it('falls back to the first real one when none has focus', () => {
@@ -178,18 +184,56 @@ describe('actingExplorerView', () => {
 		const second = realWithFocus('b', false);
 		const app = fakeApp([{ view: first }, { view: second }]);
 
-		expect(actingExplorerView(app, isReal)).toBe(first);
+		expect(explorerViewFor(app, isReal, null)).toBe(first);
 	});
 
 	it('skips deferred leaves on both paths', () => {
 		const focused = realWithFocus('b', true);
-		expect(actingExplorerView(fakeApp([{ view: deferred() }, { view: focused }]), isReal)).toBe(focused);
+		expect(explorerViewFor(fakeApp([{ view: deferred() }, { view: focused }]), isReal, null)).toBe(focused);
 
 		const unfocused = realWithFocus('b', false);
-		expect(actingExplorerView(fakeApp([{ view: deferred() }, { view: unfocused }]), isReal)).toBe(unfocused);
+		expect(explorerViewFor(fakeApp([{ view: deferred() }, { view: unfocused }]), isReal, null)).toBe(unfocused);
 	});
 
 	it('no leaves at all: undefined', () => {
-		expect(actingExplorerView(fakeApp([]), isReal)).toBeUndefined();
+		expect(explorerViewFor(fakeApp([]), isReal, null)).toBeUndefined();
+	});
+});
+
+describe('explorerViewFor', () => {
+	/** A leaf as `file-menu` hands one over: only `.view` is ever read. */
+	function leafOf(view: unknown): WorkspaceLeaf {
+		return { view } as unknown as WorkspaceLeaf;
+	}
+
+	it('a named leaf wins over the focused explorer', () => {
+		// The dialog case: by the time it renders, focus is inside the dialog,
+		// so the heuristic would answer with some other explorer entirely.
+		const named = realWithFocus('named', false);
+		const focused = realWithFocus('focused', true);
+		const app = fakeApp([{ view: focused }, { view: named }]);
+
+		expect(explorerViewFor(app, isReal, leafOf(named))).toBe(named);
+	});
+
+	it('a named leaf whose view went stale falls back like an absent one', () => {
+		// A leaf detached or rebuilt while the dialog sat open: its view is a
+		// placeholder now, and trusting it would hand back an empty shell.
+		const focused = realWithFocus('focused', true);
+		const app = fakeApp([{ view: focused }]);
+
+		expect(explorerViewFor(app, isReal, leafOf(deferred()))).toBe(focused);
+	});
+
+	it('no leaf named: focused, else first', () => {
+		const first = realWithFocus('a', false);
+		const focused = realWithFocus('b', true);
+
+		expect(explorerViewFor(fakeApp([{ view: first }, { view: focused }]), isReal, null)).toBe(focused);
+		expect(explorerViewFor(fakeApp([{ view: first }]), isReal, undefined)).toBe(first);
+	});
+
+	it('nothing named and nothing open: undefined', () => {
+		expect(explorerViewFor(fakeApp([]), isReal, null)).toBeUndefined();
 	});
 });

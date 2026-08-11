@@ -1,4 +1,4 @@
-import { App, ButtonComponent, Menu, Modal, Notice, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
+import { App, ButtonComponent, Menu, Modal, Notice, Platform, setIcon, setTooltip, TFolder, type WorkspaceLeaf } from 'obsidian';
 import Sortable from 'sortablejs';
 import { SORT_CHOICES, sortEntries, timestampFor, type SortChoice, type SortableEntry, type SortKey } from './entrySort';
 import { explorerOrderNames } from './explorerSort';
@@ -226,11 +226,22 @@ export class OrderModal extends Modal {
 	private renderedBlind = false;
 	private folder: TFolder;
 
+	/**
+	 * `from` is the file explorer this dialog was opened out of, when there was
+	 * one — `workspace.on('file-menu')` carries the leaf, so the right-click
+	 * that opened this names its own explorer instead of leaving it to be
+	 * guessed. `null` from the commands, which have no originating view.
+	 *
+	 * Held for the dialog's whole life rather than read once: `navigateTo`
+	 * re-renders on every step into a subfolder or back out, and each of those
+	 * renders asks the same question about the same explorer.
+	 */
 	constructor(
 		app: App,
 		folder: TFolder,
 		private readonly settings: ExplorerOrderEditorSettings,
 		private readonly store: IndexFileStore,
+		private readonly from: WorkspaceLeaf | null,
 	) {
 		super(app);
 		this.folder = folder;
@@ -426,7 +437,7 @@ export class OrderModal extends Modal {
 	 * import.
 	 */
 	private orderedEntriesFor(siblings: readonly SortableEntry[]): SortableEntry[] {
-		return openingRowOrder(explorerOrderNames(this.app, this.folder), this.store.get(folderIndexKey(this.folder)), siblings);
+		return openingRowOrder(explorerOrderNames(this.app, this.folder, this.from), this.store.get(folderIndexKey(this.folder)), siblings);
 	}
 
 	/**

@@ -24,8 +24,8 @@
  * the DOM the file explorer builds, never calls a private renderer, and
  * always falls back to the explorer's own result on any error.
  */
-import { App, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
-import { actingExplorerView, firstExplorerView } from './fileExplorerLeaves';
+import { App, Plugin, TAbstractFile, TFile, TFolder, type View, type WorkspaceLeaf } from 'obsidian';
+import { explorerViewFor, firstExplorerView } from './fileExplorerLeaves';
 import { folderIndexKey, indexNotePath, type IndexFileStore } from './indexFile';
 import { mergeOrder } from './orderIndex';
 import { aroundPrototypeMethod } from './patch';
@@ -250,10 +250,21 @@ export function installExplorerSort(host: ExplorerSortHost): void {
  * was also the two halves of one action disagreeing about which explorer it
  * was happening in.
  *
- * Focus is a proxy, and one place it is provably wrong: `OrderModal` reaches
- * here through `openingRowOrder`, and by then the focus is inside the dialog,
- * so the dialog always gets the `actingExplorerView` fallback. Recorded in
- * `review-backlog.md` (H5) rather than papered over here.
+ * `from` is how a caller that *knows* which explorer it is acting for says so,
+ * instead of having it guessed from focus. `OrderModal` is why it exists:
+ * focus is a usable proxy for a hotkey or a drag, and provably wrong for a
+ * dialog — by the time the dialog renders (and again on every in-dialog
+ * navigation) the focus is inside it, so it would always take the fallback,
+ * and it is the worst caller to get this wrong because `save()` writes the
+ * whole folder's order rather than nudging one row. `workspace.on('file-menu')`
+ * hands the originating leaf over for free, so the knowledge exists at the
+ * entry point and only had to be carried.
+ *
+ * Probed, not trusted: the leaf can be detached or rebuilt while the dialog is
+ * open, and a leaf whose view no longer passes `isFileExplorerView` falls back
+ * like any other. A caller with no leaf to name — the commands, which open the
+ * same dialog from the palette — passes `null` and gets the focus heuristic,
+ * which is the best answer available there.
  *
  * Returns `null`, never throws, whenever the file explorer can't be
  * consulted: no file-explorer leaf, a view that isn't (yet) recognizable as
@@ -261,9 +272,9 @@ export function installExplorerSort(host: ExplorerSortHost): void {
  * `TFolder` — the same runtime shape guard `buildReplacement` above applies
  * to the identical rows, reused here rather than re-declared.
  */
-export function explorerOrderNames(app: App, folder: TFolder): readonly string[] | null {
+export function explorerOrderNames(app: App, folder: TFolder, from?: WorkspaceLeaf | null): readonly string[] | null {
 	try {
-		const view = actingExplorerView(app, isFileExplorerView);
+		const view = explorerViewFor(app, isFileExplorerView, from);
 		if (view === undefined) return null;
 
 		const items = view.getSortedFolderItems(folder);
