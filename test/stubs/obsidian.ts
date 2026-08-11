@@ -90,6 +90,18 @@ export class Vault {
 	files = new Map<string, string>();
 	failCreate: string | null = null;
 	failProcess: string | null = null;
+	/**
+	 * What `cachedRead` answers with instead of `files`, for the one thing a
+	 * test cannot otherwise express: the two reads disagreeing. Obsidian's read
+	 * cache is only invalidated by a `modify` event, and this stub never fires
+	 * one (see `on` below), so a note replaced underneath the app is exactly
+	 * this — stale in the cache, current on disk.
+	 *
+	 * Set only by a test asserting *which of the two reads* a path of ours
+	 * takes. Empty otherwise, and then `cachedRead` and `read` agree, which is
+	 * what every other test wants.
+	 */
+	staleCache = new Map<string, string>();
 
 	adapter = {
 		exists: async (path: string): Promise<boolean> => this.files.has(path),
@@ -105,6 +117,11 @@ export class Vault {
 	}
 
 	async cachedRead(file: TFile): Promise<string> {
+		return this.staleCache.get(file.path) ?? this.files.get(file.path) ?? '';
+	}
+
+	/** Straight from `files`, never from `staleCache` — the real `Vault.read` reads the file itself rather than the cache. */
+	async read(file: TFile): Promise<string> {
 		return this.files.get(file.path) ?? '';
 	}
 

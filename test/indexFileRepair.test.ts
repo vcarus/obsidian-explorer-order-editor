@@ -269,3 +269,27 @@ describe('recovering from the text a read last found unreadable', () => {
 		expect(store.get('navtest')).toEqual(['a.md']);
 	});
 });
+
+describe('the rebuild loop reads the note, not the read cache', () => {
+	it('plans from what is on disk when the cache still holds the older text', async () => {
+		// The state `quarantineThenRebuild` exists for is the same state that
+		// makes the cache stale: a sync client has replaced the note and
+		// Obsidian's `modify` event — the only thing that invalidates the cache —
+		// has not fired. Planning from the cached copy and writing against the
+		// file means `data !== expected` on every attempt: three rounds spent,
+		// three copies kept of text that no longer exists, and a `'failed'`
+		// reported about a note nothing ever touched.
+		const { store, stub } = await loadedStore(unsalvageable);
+		expect(store.isUsable()).toBe(false);
+
+		stub.app.vault.files.set(NOTE, newerBroken);
+		stub.app.vault.staleCache.set(NOTE, unsalvageable);
+
+		expect(await store.repair()).toBe('healed');
+		expect(store.get('navtest')).toEqual(['landed-a.md', 'landed-b.md']);
+
+		// One copy, of the bytes that were actually replaced.
+		const kept = [...stub.app.vault.files.entries()].filter(([p]) => p !== NOTE);
+		expect(kept.map(([, text]) => text)).toEqual([newerBroken]);
+	});
+});

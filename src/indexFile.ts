@@ -284,10 +284,22 @@ export class IndexFileStore {
 	 * against the vault adapter, which reads the filesystem directly and needs
 	 * no index. `cachedRead` is still preferred when the map does have the
 	 * file, since that is the warm path and shares Obsidian's own cache.
+	 *
+	 * `fresh` opts out of that cache, for the one caller whose read has to
+	 * agree with a write: `Vault.process` re-reads the file itself, so a plan
+	 * made from a cached copy can be compared against bytes it never saw. The
+	 * cache is invalidated by Obsidian's own `modify` event, and the state
+	 * `quarantineThenRebuild` exists for — a sync client having just replaced
+	 * the note — is exactly the state where that event has not fired yet. Every
+	 * attempt would then plan from text that is no longer there, find
+	 * `data !== expected`, and quarantine a copy of it for its trouble; three
+	 * rounds of that reports "the attempt itself failed" about a note that was
+	 * never touched. The adapter branch below needs no equivalent: it already
+	 * reads the filesystem.
 	 */
-	private async readNote(path: string): Promise<string | null> {
+	private async readNote(path: string, fresh = false): Promise<string | null> {
 		const file = this.host.app.vault.getFileByPath(path);
-		if (file !== null) return this.host.app.vault.cachedRead(file);
+		if (file !== null) return fresh ? this.host.app.vault.read(file) : this.host.app.vault.cachedRead(file);
 
 		const { adapter } = this.host.app.vault;
 		if (!(await adapter.exists(path))) return null;
@@ -554,7 +566,12 @@ export class IndexFileStore {
 				// the user two "preserved copy" notes for one broken file.
 				if (this.usable) return { kind: 'already-usable' };
 
-				const current = (await this.readNote(this.notePath())) ?? '';
+				// Read past the cache (`fresh`), because this text is what
+				// `rebuildNoteFrom` compares against what `Vault.process`
+				// re-reads. Planning and writing have to be looking at the same
+				// bytes for the identity check to mean anything — see
+				// `readNote`.
+				const current = (await this.readNote(this.notePath(), true)) ?? '';
 
 				// The note fixed itself while this was queued or while a
 				// confirmation dialog was open. Adopt it — that is only what
