@@ -253,8 +253,10 @@ export interface SalvageResult {
  * corrupt something; `salvageIndex` only ever reads, and the most likely
  * reason a fence never closes is exactly the case it exists for — a
  * half-written file, cut off mid-write, where everything up to the cutoff is
- * still worth keeping. Returns `null` if there is no opening fence at all —
- * the block cannot be located, so there is nothing to read line by line.
+ * still worth keeping. When there is no opening fence at all, every line of
+ * the note is returned instead, flagged `fenced: false` — see the comment on
+ * that branch: the likeliest such note is one whose fence line a hand edit
+ * deleted, leaving every data line intact.
  */
 function linesForSalvage(noteText: string): { readonly lines: readonly string[]; readonly fenced: boolean } {
 	const lines = noteText.split('\n');
@@ -344,10 +346,11 @@ function parseSalvageLine(trimmedLine: string): readonly [string, readonly strin
  * truncated fragment, a value that isn't an array of strings, ...) is
  * dropped and counted.
  *
- * Never throws. If the json block cannot even be located, returns an empty
- * index and zero dropped lines — there is nothing to read, so nothing was
- * lost by this function specifically (whatever's missing was already
- * missing before it ran).
+ * Never throws. When no fence can be located the whole note is scanned
+ * instead (`linesForSalvage`) — a hand edit that deleted the fence line
+ * leaves every data line intact, and they still parse — with nothing counted
+ * as dropped, because outside a fence a mangled data line and a sentence
+ * that was never data cannot be told apart.
  */
 export function salvageIndex(noteText: string): SalvageResult {
 	const { lines, fenced } = linesForSalvage(noteText);

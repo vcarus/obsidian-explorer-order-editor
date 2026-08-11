@@ -43,6 +43,11 @@ const ICON_ENTER = 'lucide-circle-chevron-right';
  * vertical. 5 keeps the vault root, two real ancestors and the current
  * folder all visible at once while still bounding how far the trail can
  * push the row list down.
+ *
+ * `styles.css` declares one `.eoe-breadcrumb-depth-N` indent rule per
+ * rendered position, `0` through this value minus one — the two are one
+ * fact, and raising this without adding the matching rule leaves the extra
+ * line un-indented.
  */
 const MAX_VISIBLE_CRUMBS = 5;
 
@@ -566,8 +571,7 @@ export class OrderModal extends Modal {
 	 * the horizontal version had no good answer for a long ancestor sitting
 	 * next to a long current folder. Rendered unconditionally, including for
 	 * the vault root itself — a one-line trail is still "you are here".
-	 */
-	/**
+	 *
 	 * Returns the trail's last row — always the current folder's — so the
 	 * caller can hang the "sort by" control off its right-hand end (see
 	 * `renderSortByButton`). `null` only if there were no segments at all,

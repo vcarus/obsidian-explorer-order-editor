@@ -1051,13 +1051,6 @@ export class IndexFileStore {
 	}
 
 	/**
-	 * The actual `Vault.process`/`vault.create` write. Never throws: an
-	 * unexpected I/O error is logged and the write is simply lost until the
-	 * next `update()` schedules another attempt — `this.index` still holds
-	 * the change in memory regardless, so nothing the caller already did is
-	 * undone, only the persistence of it is delayed.
-	 */
-	/**
 	 * Re-arms the debounce so `performWrite` can try again once the vault has
 	 * indexed a note it can already see on disk.
 	 *
@@ -1092,6 +1085,13 @@ export class IndexFileStore {
 		this.scheduleWrite();
 	}
 
+	/**
+	 * The actual `Vault.process`/`vault.create` write. Never throws: an
+	 * unexpected I/O error is logged and the write is simply lost until the
+	 * next `update()` schedules another attempt — `this.index` still holds
+	 * the change in memory regardless, so nothing the caller already did is
+	 * undone, only the persistence of it is delayed.
+	 */
 	private async performWrite(): Promise<void> {
 		// Deliberately NOT guarded on `disposed`. `main.ts`'s `onunload` calls
 		// `flush()` precisely so a change made moments before the plugin is

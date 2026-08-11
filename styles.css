@@ -70,7 +70,10 @@
    not the folder's real depth in the vault, so this is a small fixed set —
    one class per possible rendered position, not one per possible vault
    depth — built from a single Obsidian size variable so the steps stay
-   visually equal. Depth 0 (the vault root's line) gets none. */
+   visually equal. Depth 0 (the vault root's line) gets none. The set has to
+   cover positions 0 through MAX_VISIBLE_CRUMBS - 1 (OrderModal.ts) — raising
+   that constant without adding the matching rule here leaves the extra line
+   un-indented. */
 .eoe-breadcrumb-depth-0 {
 	padding-left: 0;
 }
