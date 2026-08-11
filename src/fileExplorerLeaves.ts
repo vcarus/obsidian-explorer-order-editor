@@ -73,3 +73,71 @@ export function firstExplorerView<V extends View>(app: App, isReal: (view: View)
 	}
 	return undefined;
 }
+
+/**
+ * The first view whose `containerEl` holds focus, or `undefined` when none
+ * does — which includes there being no real explorer to begin with.
+ *
+ * "Which explorer is the user acting in", for callers that would otherwise
+ * silently answer `firstExplorerView` and act on a view nobody is looking at.
+ * With one explorer open — the ordinary case — the two agree. With two, they
+ * do not: `getSortedFolderItems` returns genuinely different rows per view for
+ * a folder that has *no* stored order, because the patch falls through to the
+ * original, and `sortOrder` is per-view state. (Folders that do have a stored
+ * order agree everywhere; the patch answers those from the index.)
+ *
+ * Focus is read through `containerEl.ownerDocument` rather than the global
+ * `document`, so this still answers correctly for an explorer popped out into
+ * its own window.
+ *
+ * Not proof the user is looking at the returned view, and callers must not
+ * treat it as such: each document has its own `activeElement`, so with a
+ * popped-out explorer this can match a view whose window is not frontmost.
+ *
+ * `undefined` means "no explorer has focus", which is a different answer from
+ * "there is no explorer" and callers use it differently: `moveHotkeyTarget`
+ * (`main.ts`) needs exactly this, because the whole point there is to fall
+ * through to the active note when the tree does not have focus. A caller that
+ * wants "focused, else any" wants `actingExplorerView` below instead — one
+ * pass rather than this one plus `firstExplorerView`.
+ */
+export function focusedExplorerView<V extends View>(app: App, isReal: (view: View) => view is V): V | undefined {
+	for (const leaf of app.workspace.getLeavesOfType(FILE_EXPLORER_VIEW_TYPE)) {
+		const { view } = leaf;
+		if (!isReal(view)) continue;
+		if (holdsFocus(view)) return view;
+	}
+	return undefined;
+}
+
+/**
+ * The explorer the user is acting in: the focused one, or the first real one
+ * when none has focus.
+ *
+ * "Which explorer is this action about" for callers that must name one either
+ * way — reading a folder's rendered order, say, where there is no useful
+ * "nobody has focus" answer. With a single explorer open, the ordinary case,
+ * it is that one; the distinction only exists once two are.
+ *
+ * One walk, not `focusedExplorerView(...) ?? firstExplorerView(...)`: written
+ * that way, the fallback path (which includes every command-palette
+ * evaluation, since the palette input holds the focus) walked every leaf
+ * twice, and the rule ended up spelled out at the call site instead of having
+ * a name.
+ */
+export function actingExplorerView<V extends View>(app: App, isReal: (view: View) => view is V): V | undefined {
+	let firstReal: V | undefined;
+	for (const leaf of app.workspace.getLeavesOfType(FILE_EXPLORER_VIEW_TYPE)) {
+		const { view } = leaf;
+		if (!isReal(view)) continue;
+		if (holdsFocus(view)) return view;
+		firstReal ??= view;
+	}
+	return firstReal;
+}
+
+/** Read through the view's own `ownerDocument`, so a popped-out explorer is judged against its own window's focus rather than the main one's. */
+function holdsFocus(view: View): boolean {
+	const { containerEl } = view;
+	return containerEl.contains(containerEl.ownerDocument.activeElement);
+}

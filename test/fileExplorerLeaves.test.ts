@@ -1,6 +1,7 @@
 /**
- * `explorerViews`/`firstExplorerView` read exactly one thing off `App`:
- * `app.workspace.getLeavesOfType(type)`, then each leaf's `.view`. That is
+ * These read almost nothing off `App`: `app.workspace.getLeavesOfType(type)`,
+ * then each leaf's `.view`, plus — for the two focus-aware finders — that
+ * view's `containerEl` and the `activeElement` of the document owning it. That is
  * far narrower than the full stub's `Vault`/`fileManager` surface, so this
  * file builds its own minimal fake rather than reaching for `StubPlugin` —
  * one object literal, one cast, at the single seam `fakeApp` below owns, the
@@ -11,14 +12,14 @@
  * `isReal` here is a hand-rolled stand-in for the five call sites' own
  * predicates (`isFileExplorerView`, `isFileExplorerViewLike`,
  * `isFileExplorerFocusView`, `isFileExplorerViewHandle`) — it exists only to
- * drive `explorerViews`/`firstExplorerView` through their one real branch:
- * "does this leaf's view pass the caller's own realness check." What each
- * production predicate actually probes for is exercised by its own call
- * site's behaviour, not here.
+ * drive the four finders through their one shared branch: "does this leaf's
+ * view pass the caller's own realness check." What each production predicate
+ * actually probes for is exercised by its own call site's behaviour, not
+ * here.
  */
 import type { App, View } from 'obsidian';
 import { describe, expect, it } from 'vitest';
-import { explorerViews, firstExplorerView } from '../src/fileExplorerLeaves';
+import { actingExplorerView, explorerViews, firstExplorerView, focusedExplorerView } from '../src/fileExplorerLeaves';
 
 interface RealView extends View {
 	readonly real: true;
@@ -37,6 +38,24 @@ function real(name: string): RealView {
 /** A view that would fail `isReal` — stands in for a still-deferred leaf's placeholder view. */
 function deferred(): View {
 	return {} as unknown as View;
+}
+
+/**
+ * A real view whose `containerEl` answers `contains(activeElement)` with
+ * `focused`. Each view gets its own `ownerDocument` object, which is the
+ * arrangement `focusedExplorerView` reads deliberately — a popped-out explorer
+ * lives in a different document with its own `activeElement`.
+ */
+function realWithFocus(name: string, focused: boolean): RealView {
+	const activeElement = { el: name };
+	return {
+		real: true,
+		name,
+		containerEl: {
+			ownerDocument: { activeElement },
+			contains: (node: unknown) => focused && node === activeElement,
+		},
+	} as unknown as RealView;
 }
 
 /**
@@ -109,5 +128,68 @@ describe('explorerViews', () => {
 		const app = fakeApp([{ view: first }, { view: second }]);
 
 		expect(explorerViews(app, isReal)).toEqual([first, second]);
+	});
+});
+
+describe('focusedExplorerView', () => {
+	it('two explorers open, the second focused: returns the second, not the first', () => {
+		// H5: reading `[0]` here meant a drag in the second explorer computed
+		// its order from the first one's sort setting and wrote that.
+		const first = realWithFocus('a', false);
+		const second = realWithFocus('b', true);
+		const app = fakeApp([{ view: first }, { view: second }]);
+
+		expect(focusedExplorerView(app, isReal)).toBe(second);
+	});
+
+	it('no view focused: undefined, so callers fall back to the first', () => {
+		const app = fakeApp([{ view: realWithFocus('a', false) }, { view: realWithFocus('b', false) }]);
+
+		expect(focusedExplorerView(app, isReal)).toBeUndefined();
+	});
+
+	it('a deferred leaf ahead of the focused one: still finds it', () => {
+		// The realness probe has to run before `containerEl` is touched at all
+		// — a deferred leaf's placeholder view has no such element.
+		const focused = realWithFocus('a', true);
+		const app = fakeApp([{ view: deferred() }, { view: focused }]);
+
+		expect(focusedExplorerView(app, isReal)).toBe(focused);
+	});
+
+	it('no leaves at all: undefined', () => {
+		expect(focusedExplorerView(fakeApp([]), isReal)).toBeUndefined();
+	});
+});
+
+describe('actingExplorerView', () => {
+	it('prefers the focused explorer', () => {
+		const first = realWithFocus('a', false);
+		const second = realWithFocus('b', true);
+		const app = fakeApp([{ view: first }, { view: second }]);
+
+		expect(actingExplorerView(app, isReal)).toBe(second);
+	});
+
+	it('falls back to the first real one when none has focus', () => {
+		// The state every command-palette evaluation is in — the palette input
+		// holds the focus, so no explorer does.
+		const first = realWithFocus('a', false);
+		const second = realWithFocus('b', false);
+		const app = fakeApp([{ view: first }, { view: second }]);
+
+		expect(actingExplorerView(app, isReal)).toBe(first);
+	});
+
+	it('skips deferred leaves on both paths', () => {
+		const focused = realWithFocus('b', true);
+		expect(actingExplorerView(fakeApp([{ view: deferred() }, { view: focused }]), isReal)).toBe(focused);
+
+		const unfocused = realWithFocus('b', false);
+		expect(actingExplorerView(fakeApp([{ view: deferred() }, { view: unfocused }]), isReal)).toBe(unfocused);
+	});
+
+	it('no leaves at all: undefined', () => {
+		expect(actingExplorerView(fakeApp([]), isReal)).toBeUndefined();
 	});
 });
