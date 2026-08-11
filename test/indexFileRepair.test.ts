@@ -291,7 +291,8 @@ describe('recovering from the text a read last found unreadable', () => {
 describe('a note the vault has not indexed', () => {
 	it('is refused before anything is written, rather than created over', async () => {
 		// `getFileByPath` answering `null` is not evidence the note is absent —
-		// it is also what a cold start and an unindexable filename look like. The
+		// it is also what a cold start, and an index path inside a dot-folder,
+		// look like (the vault walk skips any dot-prefixed component). The
 		// rebuild used to read that `null` as "vanished" and call `create`, which
 		// throws `File already exists.` *after* a copy has been taken: one stray
 		// note and one "the attempt itself failed" per click, permanently.

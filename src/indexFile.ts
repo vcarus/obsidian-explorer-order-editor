@@ -708,8 +708,9 @@ export class IndexFileStore {
 				if (current !== null && file === null) {
 					console.error(
 						`[explorer-order-editor] cannot repair ${path}: it exists on disk but the vault has not indexed it, ` +
-							'so it cannot be replaced atomically. A cold start does this briefly; a filename Obsidian refuses to ' +
-							'index (a backslash, for instance) does it permanently. The note was not changed and no copy was made.',
+							'so it cannot be replaced atomically. A cold start does this briefly; a path with a dot-prefixed ' +
+							'component (".obsidian/…") does it permanently, since the vault walk skips those. ' +
+							'The note was not changed and no copy was made.',
 					);
 					return { kind: 'gave-up', copies };
 				}
@@ -1091,13 +1092,24 @@ export class IndexFileStore {
 	 * Re-arms the debounce so `performWrite` can try again once the vault has
 	 * indexed a note it can already see on disk.
 	 *
-	 * Bounded, and not out of superstition: `indexPath` could name something
-	 * Obsidian will never index — a backslash in the filename is the known case
-	 * — and then `getFileByPath` stays null while `adapter.exists` stays true,
-	 * forever. Unbounded retries would spin a timer for the life of the
-	 * session. The counter resets on every successful write, so an ordinary
-	 * startup gap (a few hundred milliseconds at most) never approaches the
-	 * limit, and a permanent one says so once and stops.
+	 * Bounded, and not out of superstition: `indexPath` can name something
+	 * Obsidian will never index, and then `getFileByPath` stays null while
+	 * `adapter.exists` stays true, forever. The reachable case is a path with a
+	 * dot-prefixed component — `.obsidian/order.md`, say. Obsidian's vault walk
+	 * tests every component with a "starts with a dot" predicate and skips the
+	 * whole subtree, while the adapter reads it perfectly well.
+	 *
+	 * Not the backslash filename this comment used to name: `normalizePath` is
+	 * `path.replace(/([\\/])+/g, '/')` before anything else it does, so a
+	 * backslash in `indexPath` becomes a directory separator and `notePath()`
+	 * can never carry one. Such files do exist and Obsidian really does refuse
+	 * to index them (`docs/dev/obsidian-internals.md`) — they simply cannot be
+	 * *this* note.
+	 *
+	 * Unbounded retries would spin a timer for the life of the session. The
+	 * counter resets on every successful write, so an ordinary startup gap (a
+	 * few hundred milliseconds at most) never approaches the limit, and a
+	 * permanent one says so once and stops.
 	 */
 	private awaitIndexing(): void {
 		this.indexingRetries += 1;

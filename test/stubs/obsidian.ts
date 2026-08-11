@@ -110,9 +110,9 @@ export class Vault {
 	 * `indexFile.ts` guards against that state in three separate places and
 	 * documents it in two more, so our branches for it need some way to be
 	 * reached. What this reproduces is only the *shape* of the state, never when
-	 * the real app enters it: that is a cold-start window, or a filename
-	 * Obsidian refuses to index, and neither is something a stub may claim to
-	 * model (see the header).
+	 * the real app enters it — a cold-start window, or an index path inside a
+	 * dot-folder — and neither is something a stub may claim to model (see the
+	 * header).
 	 */
 	unindexed = new Set<string>();
 
