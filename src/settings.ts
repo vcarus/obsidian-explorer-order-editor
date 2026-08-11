@@ -515,54 +515,53 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 * promise the copy is kept because `startOver` quarantines before it
 	 * rebuilds — the orders go, the bytes that held them do not.
 	 *
-	 * Confirmation is asked outside the `busy` window, matching the other
-	 * destructive rows here: the tab should not sit disabled behind a dialog
-	 * that may well be cancelled.
+	 * One `busy` window covers the whole sequence, including the confirmation
+	 * dialog — unlike every other destructive row here, which asks first and
+	 * only then goes busy. They can: their question is answerable before
+	 * anything runs (are there files, are there stale keys). This one's
+	 * question is *produced by* the repair, so it cannot be asked first, and
+	 * releasing `busy` to await the answer re-enabled the button underneath the
+	 * open dialog — the row is still visible, since the store is still
+	 * unusable. A second click there stacks a second dialog and a second
+	 * `startOver` behind it.
 	 */
 	private async runRepair(): Promise<void> {
 		this.busy = true;
 		this.update();
-		let outcome: RepairOutcome;
 		try {
-			outcome = await this.plugin.store.repair();
-		} finally {
-			this.busy = false;
-			this.update();
-		}
+			const outcome: RepairOutcome = await this.plugin.store.repair();
 
-		if (outcome === 'healed') {
-			requestFileExplorerResort(this.app);
-			return;
-		}
+			if (outcome === 'healed') {
+				requestFileExplorerResort(this.app);
+				return;
+			}
 
-		// Only "there was nothing to recover" earns the offer below. A repair
-		// that *broke* says nothing about whether the orders are recoverable —
-		// a quarantine copy that could not be created, a note that could not be
-		// rebuilt — and inviting a wipe on that footing would be asking the
-		// user to discard orders on a false premise. Retrying is the right next
-		// move there, not starting over.
-		if (outcome === 'failed') {
-			new Notice(
-				'Could not repair the order note: the attempt itself failed, so it is not known whether anything is recoverable. ' +
-					'The note has not been changed — see the console for details, and try again.',
+			// Only "there was nothing to recover" earns the offer below. A
+			// repair that *broke* says nothing about whether the orders are
+			// recoverable — a quarantine copy that could not be created, a note
+			// that could not be rebuilt — and inviting a wipe on that footing
+			// would be asking the user to discard orders on a false premise.
+			// Retrying is the right next move there, not starting over.
+			if (outcome === 'failed') {
+				new Notice(
+					'Could not repair the order note: the attempt itself failed, so it is not known whether anything is recoverable. ' +
+						'The note has not been changed — see the console for details, and try again. ' +
+						'Copies of what it holds may have been kept beside it, and the row below can delete them once they are no longer wanted.',
+				);
+				return;
+			}
+
+			const confirmed = await ConfirmModal.ask(
+				this.app,
+				'Nothing could be recovered',
+				'No readable order survived in the order note, and there is no backup to fall back on, so it cannot be repaired. ' +
+					'Starting over rebuilds it with no saved orders — every folder goes back to the file explorer\'s own sort setting. ' +
+					'The unreadable version is kept beside it as a separate note, so nothing is thrown away. ' +
+					'Cancel instead if you would rather edit its json block by hand first.',
+				'Start over',
 			);
-			return;
-		}
+			if (!confirmed) return;
 
-		const confirmed = await ConfirmModal.ask(
-			this.app,
-			'Nothing could be recovered',
-			'No readable order survived in the order note, and there is no backup to fall back on, so it cannot be repaired. ' +
-				'Starting over rebuilds it with no saved orders — every folder goes back to the file explorer\'s own sort setting. ' +
-				'The unreadable version is kept beside it as a separate note, so nothing is thrown away. ' +
-				'Cancel instead if you would rather edit its json block by hand first.',
-			'Start over',
-		);
-		if (!confirmed) return;
-
-		this.busy = true;
-		this.update();
-		try {
 			if (await this.plugin.store.startOver()) {
 				requestFileExplorerResort(this.app);
 			} else {
