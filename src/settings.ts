@@ -150,7 +150,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 					);
 				},
 			},
-			// Ordered by how much they destroy, increasing downward, and the two
+			// Ordered by how much they destroy, increasing downward, and the ones
 			// that destroy something sit at the bottom. This is not cosmetic: these
 			// rows appear and disappear on their own conditions, so a row that
 			// vanishes when its action succeeds drops whatever follows it straight
@@ -198,20 +198,48 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 					'Those kept copies are only useful for checking whether an order went missing in the rebuild. ' +
 					'Once you are satisfied nothing is, they can go.',
 				// Gated on the store being usable, not merely on copies
-				// existing. Every word of the description above assumes a
-				// rebuild has happened — that is what makes a kept copy a
+				// existing — but paired with the row below rather than being the
+				// only offer. Every word of the description above assumes a
+				// rebuild has happened; that is what makes a kept copy a
 				// leftover worth clearing. While the note is unreadable no
 				// rebuild has happened, so the same files are not leftovers at
 				// all: if recovery found nothing, a kept copy can be the last
-				// place the orders still exist, and this row would offer to
-				// delete it while presenting it as spent.
+				// place the orders still exist, and this wording would present
+				// it as spent.
 				//
-				// It also keeps two destructive-looking buttons from sharing a
-				// screen. In the unusable state the only other row visible is
-				// the repair one, whose failure path offers to start over —
-				// "delete the copies" and "start over" read as the same
-				// gesture, and only one of them repairs anything.
+				// Hiding the action outright in that state was the earlier
+				// answer, and it was wrong for a reason the wording argument
+				// never reached: a repair that gives up leaves one copy per
+				// attempt behind and *stays* unusable
+				// (`quarantineThenRebuild`), so the state that creates the files
+				// was exactly the state with no control for them anywhere in the
+				// plugin. The condition below now splits the two offers instead
+				// of suppressing one.
 				visible: () => this.plugin.store.isUsable() && this.quarantineFiles().length > 0,
+				render: (setting) => {
+					setting.addButton((button) =>
+						button
+							.setButtonText('Delete')
+							.setDestructive()
+							.setDisabled(this.busy)
+							.onClick(() => void this.runDeleteQuarantines()),
+					);
+				},
+			},
+			// The same action while the order note is still unreadable. A
+			// separate row rather than a conditional description, because `desc`
+			// is a fixed string on a declared setting and only `visible` is
+			// re-evaluated per render — and because the two really are different
+			// offers: above, spent copies of a note that has since been rebuilt;
+			// here, possibly the last surviving copy of orders nothing has
+			// recovered yet.
+			{
+				name: 'Delete the kept copies — the order note is still unreadable',
+				desc:
+					'When the order note cannot be read, this plugin keeps the unreadable version beside it as a separate note before trying to rebuild. ' +
+					'The note here still cannot be read, so nothing has been rebuilt from these copies yet: if a saved order is missing, one of them may be the only place it still exists. ' +
+					'Deleting them cannot be undone. Repairing first, above, is almost always the better move.',
+				visible: () => !this.plugin.store.isUsable() && this.quarantineFiles().length > 0,
 				render: (setting) => {
 					setting.addButton((button) =>
 						button
@@ -226,7 +254,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			// the only way to undo an ordering pass over a whole subtree
 			// without right-clicking every folder in it. Last in the list, and
 			// the only row here that discards work the user deliberately did —
-			// the three above only ever remove something already broken,
+			// the rows above only ever remove something already broken,
 			// already stale, or already a copy.
 			{
 				name: 'Clear every saved order',
@@ -304,6 +332,18 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		return [...this.plugin.store.keys()].filter((key) => !this.folderExists(key));
 	}
 
+	/**
+	 * Deletes every kept copy, for both rows that offer it — the one shown
+	 * after a successful repair and the one shown while the note is still
+	 * unreadable.
+	 *
+	 * One action, two confirmations, and the difference is not decoration: in
+	 * the first case a rebuild has already taken what it could from these
+	 * files, and in the second nothing has, so the same click can be discarding
+	 * the last copy of a saved order. Which one to ask is read here rather than
+	 * passed in by the row, so it describes the store as it is at the moment of
+	 * the click — the note can have been repaired since the tab was drawn.
+	 */
 	private async runDeleteQuarantines(): Promise<void> {
 		const files = this.quarantineFiles();
 		if (files.length === 0) return;
@@ -311,8 +351,11 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		const confirmed = await ConfirmModal.ask(
 			this.app,
 			`Delete ${files.length} kept cop${files.length === 1 ? 'y' : 'ies'}?`,
-			'These are the unreadable versions of your order note, kept when it was repaired. ' +
-				"Your current order note is not affected. This moves them to your vault's trash.",
+			this.plugin.store.isUsable()
+				? 'These are the unreadable versions of your order note, kept when it was repaired. ' +
+						"Your current order note is not affected. This moves them to your vault's trash."
+				: 'The order note still cannot be read, so nothing has been rebuilt from these copies yet — if a saved order is missing, one of them may be the only place it still exists. ' +
+						"This moves them to your vault's trash and cannot be undone.",
 			'Delete',
 		);
 		if (!confirmed) return;

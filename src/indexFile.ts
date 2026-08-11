@@ -548,6 +548,15 @@ export class IndexFileStore {
 	 * attempt that quarantined something kept a real version, so giving up
 	 * leaves more preserved than it started with, never less.
 	 *
+	 * The cost of that is up to `MAX_REBUILD_ATTEMPTS` copies from one click,
+	 * with the store still unusable afterwards. They are deliberately not
+	 * cleaned up here — a copy this loop took is the only evidence of a version
+	 * that existed, and deciding it is spent is exactly what nothing in this
+	 * file may do on its own. It is the settings tab's "delete the kept copies"
+	 * row that has to remain reachable in that state, which is why the row is
+	 * offered (with different wording) while the store is unusable rather than
+	 * only after a successful repair.
+	 *
 	 * Runs on `writeChain` (`runExclusive`), the same queue `performWrite`
 	 * uses: a write that was already scheduled *before* the note went unusable
 	 * (armed by an earlier, then-valid `update()`) could still be in flight
