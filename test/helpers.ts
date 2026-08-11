@@ -20,7 +20,7 @@
  * field the store reads, so a key added later cannot leave this compiling
  * against a shape the plugin no longer has.
  */
-import type { IndexFileHost } from '../src/indexFile';
+import { type IndexFileHost, IndexFileStore } from '../src/indexFile';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { StubPlugin } from './stubs/obsidian';
 
@@ -32,4 +32,25 @@ export function makeHost(): { host: IndexFileHost; stub: StubPlugin } {
 	const host = stub as unknown as IndexFileHost;
 	host.settings = { ...DEFAULT_SETTINGS, indexPath: NOTE };
 	return { host, stub };
+}
+
+/**
+ * A store that has already been through `load()` against `noteText` at `NOTE`,
+ * with `backup` seeded into `data.json` first when given.
+ *
+ * The load sequence, not just the host: every store-backed test needs the note
+ * on disk *before* `load()` runs, since that is the only path that decides
+ * usable vs unusable, and seeding the backup afterwards would be a different
+ * scenario than the one being described. Shared for the same reason `makeHost`
+ * is — it existed as two identical copies plus four open-coded repeats, and
+ * the whole risk in a helper like this is one copy drifting into a sequence
+ * the others don't run.
+ */
+export async function loadedStore(noteText: string, backup?: string): Promise<{ store: IndexFileStore; stub: StubPlugin }> {
+	const { host, stub } = makeHost();
+	stub.app.vault.files.set(NOTE, noteText);
+	if (backup !== undefined) await stub.saveData({ indexBackup: backup });
+	const store = new IndexFileStore(host);
+	await store.load();
+	return { store, stub };
 }

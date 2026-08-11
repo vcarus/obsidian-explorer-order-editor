@@ -8,10 +8,9 @@
  * `testvault/` is still what decides whether a change works.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { IndexFileStore } from '../src/indexFile';
 import { serializeIndex, setOrder } from '../src/orderIndex';
-import { NOTE, makeHost } from './helpers';
-import { StubPlugin, notices, resetNotices } from './stubs/obsidian';
+import { NOTE, loadedStore } from './helpers';
+import { notices, resetNotices } from './stubs/obsidian';
 
 /** A note whose fence is present but holds nothing any line can be salvaged from. */
 const unsalvageable = '```json\n{\n  totally broken\n}\n```\n';
@@ -26,15 +25,6 @@ const salvageable = '```json\n{\n  "navtest": ["a.md"],\n  "weird": ["b.md"\n}\n
  * is what the snapshot check exists to prevent.
  */
 const newerBroken = '```json\n{\n  "navtest": ["landed-a.md","landed-b.md"],\n  "weird": ["landed-c.md"\n}\n```\n';
-
-async function loadedStore(noteText: string, backup?: string): Promise<{ store: IndexFileStore; stub: StubPlugin }> {
-	const { host, stub } = makeHost();
-	stub.app.vault.files.set(NOTE, noteText);
-	if (backup !== undefined) await stub.saveData({ indexBackup: backup });
-	const store = new IndexFileStore(host);
-	await store.load();
-	return { store, stub };
-}
 
 beforeEach(() => {
 	resetNotices();

@@ -42,8 +42,6 @@ export interface UnusableHealth extends HealthBase {
 	 * fourth source). Not a plan and never becomes one.
 	 */
 	readonly lastUnreadableText: string;
-	/** Whether the one-per-stretch "could not be read" Notice has been shown. */
-	readonly noticeShown: boolean;
 }
 
 export type StoreHealth = UsableHealth | UnusableHealth;
@@ -67,19 +65,22 @@ export function madeUsable(previous: StoreHealth, blockProven: boolean): UsableH
  * it may be the only copy of a note that is gone by the time anyone repairs.
  *
  * `firstNotice` is true exactly when this stretch of unusability has not yet
- * told the user — a fresh break, or the first break after a recovery. The
- * returned state always records the Notice as shown, so the caller's only job
- * is to raise it when told to; re-marking an already-unusable store (another
- * failed read of the same broken note) stays quiet.
+ * told the user — a fresh break, or the first break after a recovery. That is
+ * the same thing as "this transition crossed from usable", so it is read
+ * straight off the discriminant rather than from a `noticeShown` flag the
+ * state used to carry: this is the only constructor of `UnusableHealth`, so
+ * such a flag could only ever hold one value, and a union advertising a state
+ * the module cannot produce is a rule the next reader has to re-derive.
+ * Re-marking an already-unusable store (another failed read of the same broken
+ * note) therefore stays quiet, which is the whole contract.
  */
 export function madeUnusable(
 	previous: StoreHealth,
 	reason: string,
 	unreadableText: string,
 ): { readonly health: UnusableHealth; readonly firstNotice: boolean } {
-	const firstNotice = previous.usable || !previous.noticeShown;
 	return {
-		health: { usable: false, sawBlock: previous.sawBlock, reason, lastUnreadableText: unreadableText, noticeShown: true },
-		firstNotice,
+		health: { usable: false, sawBlock: previous.sawBlock, reason, lastUnreadableText: unreadableText },
+		firstNotice: previous.usable,
 	};
 }

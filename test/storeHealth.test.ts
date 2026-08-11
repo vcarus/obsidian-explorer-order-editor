@@ -38,7 +38,6 @@ describe('madeUnusable', () => {
 		expect(firstNotice).toBe(true);
 		expect(health.reason).toBe('Malformed JSON: x');
 		expect(health.lastUnreadableText).toBe('bad bytes');
-		expect(health.noticeShown).toBe(true);
 	});
 
 	it('stays quiet when re-marking an already-noticed stretch, but adopts the newer text', () => {

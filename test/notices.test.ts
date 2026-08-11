@@ -11,16 +11,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { IndexFileStore } from '../src/indexFile';
 import { repairPointer, unusableClause } from '../src/notices';
 import { serializeIndex } from '../src/orderIndex';
-import { NOTE, makeHost } from './helpers';
+import { loadedStore, makeHost } from './helpers';
 import { resetNotices } from './stubs/obsidian';
 
 async function storeThatFailedToLoad(noteText: string, backup?: string): Promise<IndexFileStore> {
-	const { host, stub } = makeHost();
-	stub.app.vault.files.set(NOTE, noteText);
-	if (backup !== undefined) await stub.saveData({ indexBackup: backup });
-	const store = new IndexFileStore(host);
-	await store.load();
-	return store;
+	return (await loadedStore(noteText, backup)).store;
 }
 
 beforeEach(() => {

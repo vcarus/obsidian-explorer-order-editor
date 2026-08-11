@@ -1011,7 +1011,8 @@ export class IndexFileStore {
 	/**
 	 * Why the store is unusable, for a caller that needs to tell the user
 	 * *now* rather than rely on the one Notice shown when it first happened.
-	 * That Notice fires once and never repeats (`noticeShown`), which is right
+	 * That Notice fires once per unusable stretch and never repeats
+	 * (`madeUnusable`'s `firstNotice`), which is right
 	 * for a background failure and wrong for the moment someone presses Save:
 	 * the file may have broken long before, and silence at the point of action
 	 * reads as "nothing happened" rather than "this was refused".

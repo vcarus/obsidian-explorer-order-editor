@@ -5,11 +5,13 @@
  * rebuilt, so healing can never destroy the only copy of whatever the broken
  * note held.
  *
- * Zero imports, synchronous — same discipline as `orderIndex.ts`: this module
- * never touches `obsidian`. The actual
+ * Synchronous, and it never touches `obsidian` — same discipline as
+ * `orderIndex.ts`. Its one import is `types.ts`, which has no imports of its
+ * own, so that stays true. The actual
  * `vault.create`/`vault.getAbstractFileByPath` calls this feeds live in
  * `indexFile.ts`.
  */
+import { baseNameOf, parentPathOf } from './types';
 
 const MARKER = 'unreadable';
 
@@ -36,11 +38,16 @@ interface SplitPath {
  * Splits a vault path into folder/base/extension the way `TFile.parent` /
  * `TFile.basename` / `TFile.extension` would, without needing a `TFile` —
  * this module cannot import `obsidian` (see the module doc comment above).
+ *
+ * The folder/name half is `parentPathOf`/`baseNameOf` (`types.ts`), not a
+ * local `lastIndexOf('/')`: those two carry the root-level guard (a path with
+ * no `/` has an empty parent, not a truncated one), and a second copy of it
+ * here is exactly what that shared helper exists to prevent. Only the
+ * extension split below is this module's own.
  */
 function splitPath(notePath: string): SplitPath {
-	const slash = notePath.lastIndexOf('/');
-	const folder = slash === -1 ? '' : notePath.slice(0, slash);
-	const fileName = slash === -1 ? notePath : notePath.slice(slash + 1);
+	const folder = parentPathOf(notePath);
+	const fileName = baseNameOf(notePath);
 
 	const dot = fileName.lastIndexOf('.');
 	// A leading dot (dotfile with no extension, e.g. ".gitignore") is not

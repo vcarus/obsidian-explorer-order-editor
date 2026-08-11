@@ -16,16 +16,24 @@ import type { Entry } from './types';
  * `mergeOrder(stored, …)` instead — the stored order reconciled against the
  * live siblings, the same approximation the render patch itself applies.
  *
- * Either way the same two rules finish the job, and they are the contract
- * this function exists to pin down:
+ * Either way `mergeOrder` finishes the job, and its two rules are exactly the
+ * ones this level needs:
  *
- * - A name with no matching sibling is skipped, not invented: the index note
+ * - A name with no matching sibling is dropped, not invented: the index note
  *   (excluded from `siblings` on purpose) and anything else the dialog
  *   doesn't recognize never becomes a row. Duplicate names keep their first
  *   occurrence only.
  * - Every sibling the names never mentioned is appended at the end, in the
  *   order `siblings` arrived — a stale row must still get a position rather
  *   than vanish from the dialog entirely.
+ *
+ * Those rules are `mergeOrder`'s contract verbatim, which is why this reaches
+ * for it in both cases rather than restating them: the whole of the work here
+ * is choosing *which* names to reconcile against the live siblings, and the
+ * explorer's current rendering is as valid a starting list as the stored
+ * order. Spelling the loops out again also meant running them a second time
+ * over an already-merged list on the `null` path, which provably could not
+ * change anything.
  *
  * Generic in the entry type for `fallbackEntryOrder`'s reason (`types.ts`):
  * this only ever permutes what it is handed, so the caller's richer
@@ -37,21 +45,10 @@ export function openingRowOrder<T extends Entry>(
 	siblings: readonly T[],
 ): T[] {
 	const siblingByName = new Map(siblings.map((entry) => [entry.name, entry] as const));
-	const names = explorerNames ?? mergeOrder(stored, siblings.map((entry) => entry.name));
-
-	const seen = new Set<string>();
 	const ordered: T[] = [];
-	for (const name of names) {
+	for (const name of mergeOrder(explorerNames ?? stored, siblings.map((entry) => entry.name))) {
 		const entry = siblingByName.get(name);
-		if (entry === undefined) continue;
-		if (seen.has(name)) continue;
-		seen.add(name);
-		ordered.push(entry);
-	}
-	for (const entry of siblings) {
-		if (seen.has(entry.name)) continue;
-		seen.add(entry.name);
-		ordered.push(entry);
+		if (entry !== undefined) ordered.push(entry);
 	}
 	return ordered;
 }
