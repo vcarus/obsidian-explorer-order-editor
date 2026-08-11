@@ -26,10 +26,10 @@
  * serializes as the single line `{}`.
  *
  * Values are child names exactly as they appear in the vault, full names
- * including extensions. Unlike the old sortspec.md format, there is no
- * `kind` field: the filesystem already guarantees full names (with
- * extension) are unique within a folder, which removes the
- * file-vs-folder-sharing-a-name ambiguity that format needed `kind` for.
+ * including extensions. There is no `kind` field: the filesystem already
+ * guarantees full names (with extension) are unique within a folder, which
+ * removes the file-vs-folder-sharing-a-name ambiguity a `kind` field would
+ * exist to resolve.
  *
  * Keys are folder paths exactly as Obsidian reports them. This module treats
  * them as opaque strings and never parses or normalizes them beyond the `/`
@@ -439,7 +439,11 @@ export function recoverIndex(
 	unreadableText: string,
 	memoryIndex: OrderIndex,
 	backupIndex: OrderIndex,
-	lastUnreadableText = '',
+	// Required, not defaulted: `src/` has exactly one caller and it always has
+	// the value in hand. A default here buys nothing except a future
+	// three-argument call site that compiles, passes every test, and quietly
+	// shrinks the recovery union back to three sources.
+	lastUnreadableText: string,
 ): RecoveryResult {
 	const salvage = salvageIndex(unreadableText);
 	const index = mergeIndexesByPrecedence([salvage.index, memoryIndex, backupIndex, salvageIndex(lastUnreadableText).index]);

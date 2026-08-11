@@ -741,7 +741,7 @@ describe('recoverIndex', () => {
 			['B', ['must-not-appear-either.md']],
 			['C', ['this-one-is-fine.md']],
 		]);
-		const result = recoverIndex('no fence here', memory, backup);
+		const result = recoverIndex('no fence here', memory, backup, '');
 		expect(result.index.get('A')).toEqual(['keep-this.md']);
 		expect(result.index.get('B')).toEqual(['keep-this-too.md']);
 		expect(result.index.get('C')).toEqual(['this-one-is-fine.md']);
@@ -765,7 +765,7 @@ describe('recoverIndex', () => {
 			['FromBackupOnly', ['b.md']],
 		]);
 
-		const result = recoverIndex(unreadableText, memory, backup);
+		const result = recoverIndex(unreadableText, memory, backup, '');
 		expect(result.droppedLines).toBe(0);
 		expectIndexEqual(
 			result.index,
@@ -780,20 +780,20 @@ describe('recoverIndex', () => {
 
 	it('reports salvageIndex\'s dropped-line count', () => {
 		const unreadableText = ['```json', '{', '  "A": ["a.md"],', 'garbage,', '  "B": ["b.md"]', '}', '```'].join('\n');
-		const result = recoverIndex(unreadableText, empty, empty);
+		const result = recoverIndex(unreadableText, empty, empty, '');
 		expect(result.droppedLines).toBe(1);
 	});
 
 	it('an unreadable note that cannot even be located still recovers from memory and backup', () => {
 		const memory = buildIndex([['A', ['a.md']]]);
 		const backup = buildIndex([['B', ['b.md']]]);
-		const result = recoverIndex('no fence here', memory, backup);
+		const result = recoverIndex('no fence here', memory, backup, '');
 		expect(result.droppedLines).toBe(0);
 		expectIndexEqual(result.index, buildIndex([['A', ['a.md']], ['B', ['b.md']]]));
 	});
 
 	it('all three sources empty -> an empty recovered index (the caller is the one that must refuse to write it)', () => {
-		const result = recoverIndex('', empty, empty);
+		const result = recoverIndex('', empty, empty, '');
 		expect(result.index.size).toBe(0);
 		expect(result.droppedLines).toBe(0);
 	});

@@ -11,10 +11,10 @@
  * sits on the file explorer's hot path (`explorerSort.ts` calls it from
  * inside a patched `getSortedFolderItems`, which cannot be async).
  *
- * One of two files that import `obsidian` (`explorerSort.ts` is the other),
- * and deliberately thin for the same reason `sortspecFile.ts` used to be:
- * every judgment that doesn't need the vault — parsing, serializing, the
- * pure mutations themselves — already lives in `orderIndex.ts`.
+ * Deliberately thin: every judgment that doesn't need the vault — parsing,
+ * serializing, the pure mutations, the rebuild loop's per-attempt decision —
+ * lives in `orderIndex.ts`/`rebuildStep.ts`, so what stays here is only
+ * I/O, event wiring, and state the vault forces on us.
  *
  * Healing: detecting that the note is unreadable never, by itself,
  * changes anything on disk (see `applyParsed`/`markUnusable` — a hand edit
@@ -36,6 +36,8 @@
  */
 import { App, Notice, normalizePath, Plugin, TFile, TFolder } from 'obsidian';
 import { parseIndex, recoverIndex, serializeIndex, type OrderIndex, type ParseResult } from './orderIndex';
+import { INITIAL_HEALTH, madeUnusable, madeUsable, type StoreHealth } from './storeHealth';
+import { rebuildStepFor } from './rebuildStep';
 import { findFreeQuarantinePath } from './quarantine';
 import type { ExplorerOrderEditorSettings } from './settings';
 
@@ -119,9 +121,7 @@ export interface IndexFileHost extends Plugin {
  * `TFolder.path` literally returns for the root — a value this codebase has
  * deliberately never depended on (see the same reasoning spelled out in
  * `orderSync.ts`'s rename handling, which compares two resolved folders'
- * `.path` values rather than asserting either). Byte-identical to the old
- * `specFolderKeyFor` in the sortspec.md layer this replaces, so keys carry
- * over unchanged.
+ * `.path` values rather than asserting either).
  *
  * Only for a folder's *own* key. A folder being renamed or deleted can never
  * be the vault root (Obsidian doesn't fire those events for it), so
@@ -150,8 +150,7 @@ interface FileExplorerViewLike {
  * independent interface rather than imported from `explorerSort.ts` (which
  * declares the same member for its own reason): `explorerSort.ts` needs the
  * `IndexFileStore` type from this file, so the reverse import this file
- * would need to reuse its interface would be circular. Same precedent
- * `sortspecFile.ts` used to follow for the same member.
+ * would need to reuse its interface would be circular.
  *
  * Returns `false` when there is no file explorer leaf, or its view doesn't
  * expose `requestSort` — never throws.
@@ -167,54 +166,28 @@ export function requestFileExplorerResort(app: App): boolean {
 
 export class IndexFileStore {
 	private index: OrderIndex = new Map();
-	private usable = true;
-	/** Guards against a Notice per refused `update()` call while unusable — the user was already told once, at the moment this became true. */
-	private noticeShown = false;
-	/** Why the store went unusable, kept so `unusableReason` can name it at the moment of a refused action. */
-	private reason: string | null = null;
 	/**
-	 * Whether a json block has ever actually been seen at this path — set when
-	 * a read parses as `ok`, which is the only positive evidence a read can
-	 * give. Together with `lastWrittenText` (non-null exactly when this store
-	 * has written a note, and every note it writes has a block) it is what
-	 * `performWrite` may treat as proof that a block-less note lost one.
+	 * The usable/unusable state machine, moved only through
+	 * `markUsable`/`markUnusable` below — the arms, the evidence each is
+	 * required to carry, and the transition semantics (sticky `sawBlock`, the
+	 * unreadable text living exactly one unusable stretch, one Notice per
+	 * stretch) are all `storeHealth.ts`'s and are tested there as a table.
 	 *
-	 * The in-memory index is emphatically *not* that proof on the write side,
-	 * however well it serves as proof on the read side. `applyParsed` runs
-	 * after a read, where a non-empty index can only have come from the note;
-	 * `performWrite` runs after the user's edit has already been applied to
-	 * that index, so it is non-empty because somebody just ordered a folder.
-	 * Reading it as evidence there refused the first write into an existing
-	 * note that never had a block, left the order unwritten and marked the
-	 * store unusable — silently, since nothing throws and the note looks
-	 * untouched.
+	 * `sawBlock` deserves one store-side note the pure module cannot carry:
+	 * together with `lastWrittenText` (non-null exactly when this store has
+	 * written a note, and every note it writes has a block) it is what
+	 * `performWrite` may treat as proof that a block-less note lost one. The
+	 * in-memory index is emphatically *not* that proof on the write side,
+	 * however well it serves on the read side: `applyParsed` runs after a
+	 * read, where a non-empty index can only have come from the note;
+	 * `performWrite` runs after the user's edit has already been applied, so
+	 * there it is non-empty because somebody just ordered a folder. Reading it
+	 * as evidence once refused the first write into an existing note that
+	 * never had a block — silently, since nothing throws.
 	 */
-	private sawBlock = false;
+	private health: StoreHealth = INITIAL_HEALTH;
 	/** The exact text this store itself last wrote, so the `modify` listener below can tell its own write apart from an external one. `null` until the first write. */
 	private lastWrittenText: string | null = null;
-	/**
-	 * The text of the last read that came back unreadable, kept only for as
-	 * long as the store stays unusable (`markUsable` drops it) and used only as
-	 * the lowest-precedence recovery source in `healThenUpdate`.
-	 *
-	 * It is not a plan and must never become one — planning from a snapshot is
-	 * exactly what `quarantineThenRebuild` re-reads to avoid, and this is
-	 * beaten by every source that could be fresher, including the note as it
-	 * reads at the moment of the repair. What it covers is the case where that
-	 * note has since stopped existing: found unreadable, then deleted by a sync
-	 * conflict resolution or by hand before the user got to the repair row. The
-	 * note-side salvage then has nothing to work on, and on a cold start
-	 * neither the in-memory index nor the backup holds anything either, so
-	 * without this the repair reports "nothing to recover" while the orders
-	 * were sitting in text this store had already read.
-	 *
-	 * Its lifetime is exactly one unusable stretch. Every path into that state
-	 * replaces it (`markUnusable` takes the text it judged), and `markUsable`
-	 * clears it, so it can never speak for a note two repairs ago — a text kept
-	 * past the moment the store reads cleanly again could only ever resurrect
-	 * orders something has since legitimately replaced.
-	 */
-	private lastUnreadableText: string | null = null;
 	private writeTimerId: number | null = null;
 	/** See `awaitIndexing`. Reset on every successful write. */
 	private indexingRetries = 0;
@@ -339,8 +312,12 @@ export class IndexFileStore {
 	 * `empty` into the same unusable state a parse failure produces, which is
 	 * what routes it to `salvageIndex` and the repair path — and salvage reads
 	 * whatever survived, fence or no fence.
+	 *
+	 * `hadBlockBefore` is required, not defaulted, for the reason `markUsable`'s
+	 * argument is: both callers have just learned something about this path's
+	 * history, and a default would let a third caller not answer.
 	 */
-	private applyParsed(result: ParseResult, text: string, hadBlockBefore = false): void {
+	private applyParsed(result: ParseResult, text: string, hadBlockBefore: boolean): void {
 		if (result.status === 'invalid') {
 			this.markUnusable(result.reason, text);
 			return;
@@ -379,7 +356,7 @@ export class IndexFileStore {
 	}
 
 	isUsable(): boolean {
-		return this.usable;
+		return this.health.usable;
 	}
 
 	/**
@@ -398,7 +375,7 @@ export class IndexFileStore {
 	 * Notices repeating the same fact.
 	 */
 	update(mutate: (index: OrderIndex) => OrderIndex): boolean {
-		if (!this.usable) {
+		if (!this.health.usable) {
 			console.error(`[explorer-order-editor] refusing to update the order index: ${this.notePath()} could not be parsed and is unusable`);
 			return false;
 		}
@@ -439,7 +416,7 @@ export class IndexFileStore {
 	 * number no single write ever produced.
 	 */
 	async updateOrRepair(mutate: (index: OrderIndex) => OrderIndex): Promise<boolean> {
-		if (this.usable) return this.update(mutate);
+		if (this.health.usable) return this.update(mutate);
 		// Callers of this one only need to know whether their edit landed, so
 		// the three-valued outcome collapses here rather than spreading into
 		// every move, drop and clear. `repair()` keeps the distinction because
@@ -463,13 +440,13 @@ export class IndexFileStore {
 	 * for tsc to catch. Compare against `'healed'`.
 	 */
 	async repair(): Promise<RepairOutcome> {
-		if (this.usable) return 'healed';
+		if (this.health.usable) return 'healed';
 		return this.healThenUpdate((index) => index);
 	}
 
 	/**
 	 * The healing sequence itself, reachable only through
-	 * `updateOrRepair`/`repair` and only while `!this.usable` — never from
+	 * `updateOrRepair`/`repair` and only while the store is unusable — never from
 	 * detection (`applyParsed`/`markUnusable`), which must never by itself
 	 * change anything on disk.
 	 *
@@ -492,7 +469,7 @@ export class IndexFileStore {
 	 *
 	 * A failure at step 2 (quarantine or rebuild I/O) is logged and leaves the
 	 * store unusable, and no order is half-written: `this.index` and
-	 * `this.usable` are only updated together, after both the quarantine and
+	 * the health state are only updated together, after both the quarantine and
 	 * the rebuilt note have actually landed.
 	 *
 	 * What such a failure *can* leave behind is quarantine notes — one per
@@ -514,7 +491,7 @@ export class IndexFileStore {
 		// can change while this runs — nothing between here and the write
 		// re-reads the backup, and `lastUnreadableText` only moves when the
 		// store's usability does, which ends the loop either way.
-		const lastUnreadable = this.lastUnreadableText ?? '';
+		const lastUnreadable = this.health.usable ? '' : this.health.lastUnreadableText;
 
 		try {
 			// Recovery is re-derived per attempt, from whatever the note holds
@@ -648,86 +625,68 @@ export class IndexFileStore {
 				// a repair is queued. The first healed everything; the second
 				// would otherwise quarantine the same content again and hand
 				// the user two "preserved copy" notes for one broken file.
-				if (this.usable) return { kind: 'already-usable', copies };
+				//
+				// Stays here, outside `rebuildStepFor`'s table, because it must
+				// run *before* the fresh read below: a store that healed while
+				// this was queued can hold in-memory changes a debounced write
+				// has not flushed yet, and adopting the disk bytes would replace
+				// that newer index with the older note.
+				if (this.health.usable) return { kind: 'already-usable', copies };
 
 				// Read past the cache (`fresh`), because this text is what
 				// `rebuildNoteFrom` compares against what `Vault.process`
 				// re-reads. Planning and writing have to be looking at the same
 				// bytes for the identity check to mean anything — see
-				// `readNote`.
-				//
-				// `null` is kept apart from `''` all the way down rather than
-				// collapsed on arrival, and that distinction is load-bearing:
+				// `readNote`. `null` is kept apart from `''` all the way down:
 				// `readNote` answers `null` only after the *adapter* says the
-				// note is not there, which is the only trustworthy answer to
-				// that question, and it is what tells the rebuild below whether
+				// note is not there, and that is what tells the rebuild whether
 				// creating the note is right or catastrophic.
 				const current = await this.readNote(path, true);
-
-				// The note fixed itself while this was queued or while a
-				// confirmation dialog was open. Adopt it — that is only what
-				// `onExternalModify` was about to do — rather than write a plan
-				// derived from the broken version over orders that are strictly
-				// newer.
 				const parsed = parseIndex(current ?? '');
-				if (parsed.status === 'ok') {
-					this.index = parsed.index;
-					this.markUsable(true);
-					await this.persistBackup(parsed.index);
-					return { kind: 'adopted', copies };
-				}
-
-				const plan = planFor(current ?? '');
-				if (plan === null) return { kind: 'nothing-to-recover', copies };
-
-				// The handle is taken *before* anything is written, and that
-				// ordering is the fix for a state this file already documents
-				// twice and used to handle in only two of the three places it
-				// arises: `getFileByPath` answers from the `Vault`'s file map,
-				// and a `null` from that map is not evidence the note is absent
-				// (see `readNote`, and `performWrite`'s own guard). The note can
-				// be on disk — `current` was read from it through the adapter —
-				// while the map has nothing, briefly during a cold start and
-				// permanently for a name Obsidian refuses to index.
-				//
-				// Without a handle the note cannot be replaced through
-				// `Vault.process`, and `Vault.process` is not an implementation
-				// detail here: it is what makes the identity check atomic
-				// against the write it guards. So this stops, rather than
-				// falling back to a blind `create` that throws "File already
-				// exists." after a copy has been taken — one stray copy and one
-				// spurious "the attempt failed" per click, for a note nothing
-				// ever touched.
-				//
-				// Checked here rather than inside `rebuildNoteFrom` so that
-				// nothing has been written when it fires, and reported as
-				// `'gave-up'` rather than as its own member: the caller's answer
-				// is the same either way — the note is unchanged, try again —
-				// and the console carries which of the two it was.
+				// Only when the parse did not succeed, so `mutate`'s per-attempt
+				// call count stays what `updateOrRepair` documents — the adopt
+				// path must not spend a call on a plan it will never use.
+				const plan = parsed.status === 'ok' ? null : planFor(current ?? '');
 				const file = current === null ? null : app.vault.getFileByPath(path);
-				if (current !== null && file === null) {
-					console.error(
-						`[explorer-order-editor] cannot repair ${path}: it exists on disk but the vault has not indexed it, ` +
-							'so it cannot be replaced atomically. A cold start does this briefly; any path component ' +
-							'beginning with a dot does it permanently, since the vault walk skips those subtrees. ' +
-							'The note was not changed and no copy was made.',
-					);
-					return { kind: 'gave-up', copies };
+
+				// The judgment itself is pure (`rebuildStep.ts`) and enumerated
+				// as a table in rebuildStep.test.ts; each branch's reasoning
+				// lives on the corresponding `RebuildStep` member.
+				const step = rebuildStepFor(parsed, plan, current, file !== null);
+
+				switch (step.kind) {
+					// The note fixed itself while this was queued or while a
+					// confirmation dialog was open — only what `onExternalModify`
+					// was about to do anyway.
+					case 'adopt':
+						this.index = step.index;
+						this.markUsable(true);
+						await this.persistBackup(step.index);
+						return { kind: 'adopted', copies };
+					case 'nothing-to-recover':
+						return { kind: 'nothing-to-recover', copies };
+					// Reported as `'gave-up'` rather than as its own outcome: the
+					// caller's answer is the same either way — the note is
+					// unchanged, try again — and the console carries which it was.
+					case 'gave-up-unindexed':
+						console.error(
+							`[explorer-order-editor] cannot repair ${path}: it exists on disk but the vault has not indexed it, ` +
+								'so it cannot be replaced atomically. A cold start does this briefly; any path component ' +
+								'beginning with a dot does it permanently, since the vault walk skips those subtrees. ' +
+								'The note was not changed and no copy was made.',
+						);
+						return { kind: 'gave-up', copies };
+					case 'rebuild': {
+						if (step.quarantineFirst) copies.push(await this.quarantineUnreadableNote(current ?? ''));
+
+						if (!(await this.rebuildNoteFrom(step.plan.index, current ?? '', file))) continue;
+
+						this.index = step.plan.index;
+						this.markUsable(true);
+						await this.persistBackup(step.plan.index);
+						return { kind: 'rebuilt', copies, droppedLines: step.plan.droppedLines };
+					}
 				}
-
-				// Zero bytes preserve nothing, and the copy would only leave a
-				// note the "delete the kept copies" row then offers to tidy
-				// away — "preserve before replacing" is satisfied vacuously
-				// when there is nothing to preserve. An absent note (`null`)
-				// is the same case for the same reason.
-				if (current !== null && current !== '') copies.push(await this.quarantineUnreadableNote(current));
-
-				if (!(await this.rebuildNoteFrom(plan.index, current ?? '', file))) continue;
-
-				this.index = plan.index;
-				this.markUsable(true);
-				await this.persistBackup(plan.index);
-				return { kind: 'rebuilt', copies, droppedLines: plan.droppedLines };
 			}
 
 			console.error(
@@ -765,7 +724,7 @@ export class IndexFileStore {
 		// user who just agreed to lose every saved order gets no answer at all —
 		// the same silence the branch further down exists to prevent, reached by
 		// the wider path.
-		if (this.usable) {
+		if (this.health.usable) {
 			// Empty, and provably so: this returns before `quarantineThenRebuild`
 			// is entered, so no copy of anything can have been taken yet.
 			this.reportNothingCleared([]);
@@ -1050,7 +1009,9 @@ export class IndexFileStore {
 	 * reads as "nothing happened" rather than "this was refused".
 	 */
 	unusableReason(): string | null {
-		return this.usable ? null : (this.reason ?? 'it could not be parsed');
+		// No fallback wording: the unusable arm of `StoreHealth` carries its
+		// reason structurally, so "unusable but nobody said why" cannot exist.
+		return this.health.usable ? null : this.health.reason;
 	}
 
 	private scheduleWrite(): void {
@@ -1116,7 +1077,7 @@ export class IndexFileStore {
 		if (this.indexingRetries > MAX_INDEXING_RETRIES) {
 			console.error(
 				`[explorer-order-editor] ${this.notePath()} exists on disk but the vault never indexed it, so the order could not be written. ` +
-					'A filename Obsidian refuses to index (a backslash, for instance) would do this.',
+					'A path component beginning with a dot does this permanently — the vault walk skips those subtrees.',
 			);
 			return;
 		}
@@ -1134,7 +1095,7 @@ export class IndexFileStore {
 		// `disposed` still stops new debounce timers being armed
 		// (`scheduleWrite`) and stops reacting to external edits
 		// (`onExternalModify`), which is all it is for.
-		if (!this.usable) return;
+		if (!this.health.usable) return;
 		const { app } = this.host;
 		const path = this.notePath();
 
@@ -1178,7 +1139,7 @@ export class IndexFileStore {
 			// ordinary write path (which is what runs after every reorder, and
 			// has written this note at least once by definition) keeps costing
 			// zero extra `data.json` reads.
-			const blockWasStored = this.sawBlock || this.lastWrittenText !== null || (await this.readBackup()).size > 0;
+			const blockWasStored = this.health.sawBlock || this.lastWrittenText !== null || (await this.readBackup()).size > 0;
 
 			let becameUnusable: string | null = null;
 			// The text the refusal below was decided against, kept for the same
@@ -1271,38 +1232,30 @@ export class IndexFileStore {
 	 * Detection only — never writes, never heals (see the module doc
 	 * comment).
 	 *
-	 * The text it found unreadable is kept (`lastUnreadableText`), and the
-	 * distinction that makes that safe is worth stating exactly, because the
-	 * opposite of it is a bug this file has already had: healing re-reads the
-	 * note itself, inside the write that replaces it, since any copy taken here
-	 * can be superseded before that write lands — and *planning* from a
-	 * superseded copy is what destroyed salvageable orders before
-	 * `quarantineThenRebuild` was made to re-plan. What is kept here is not a
-	 * plan and never becomes one: it is the last-resort recovery source, below
-	 * every source that could be fresher, and it exists for the case where the
-	 * note being re-read has ceased to exist entirely.
+	 * The kept text's role — last-resort recovery source, never a plan — and
+	 * its one-stretch lifetime are `storeHealth.ts`'s contract; what this
+	 * wrapper adds is the store's side effects. Every caller has the judged
+	 * text in hand already, which is why it is a parameter rather than another
+	 * read.
 	 *
 	 * Also cancels any debounced write still armed from before this ran: it
-	 * would only find `!this.usable` and no-op when it fired anyway
+	 * would only find the store unusable and no-op when it fired anyway
 	 * (`performWrite`'s own guard), but not scheduling it at all means one
 	 * fewer thing that could still be pending if a heal starts before it
 	 * would have fired.
 	 */
 	private markUnusable(reason: string, text: string): void {
-		this.usable = false;
-		this.reason = reason;
-		// Not a plan, and not consulted while anything fresher exists — see the
-		// field's own doc comment. Every caller has the text in hand already,
-		// which is why it is a parameter rather than another read.
-		this.lastUnreadableText = text;
+		const { health, firstNotice } = madeUnusable(this.health, reason, text);
+		this.health = health;
 		if (this.writeTimerId !== null) {
 			window.clearTimeout(this.writeTimerId);
 			this.writeTimerId = null;
 		}
 		const path = this.notePath();
 		console.error(`[explorer-order-editor] the order index (${path}) is unusable: ${reason}`);
-		if (this.noticeShown) return;
-		this.noticeShown = true;
+		// One Notice per unusable stretch — `madeUnusable` decides, so a burst
+		// of failed reads of the same broken note tells the user once.
+		if (!firstNotice) return;
 		new Notice(
 			`Explorer order editor: ${path} could not be read (${reason}). Saved folder orders are unavailable until this is repaired — ` +
 				'use "Repair the order note" in settings, or the next save/clear will attempt it automatically.',
@@ -1315,23 +1268,11 @@ export class IndexFileStore {
 	 * about whether a json block is really at this path, and one of them used to
 	 * arrive here and drop that knowledge on the floor. Reading a note that
 	 * parses `ok`, adopting one that healed itself, and rebuilding one
-	 * ourselves are all proof; finding no note at all is not. Making it an
-	 * argument means the next path into this state cannot be written without
-	 * answering, where the old free-standing assignment beside one caller could
-	 * simply not be copied to the next.
-	 *
-	 * Sticky, deliberately: `false` never clears it. The question `sawBlock`
-	 * answers for `performWrite` is "has a block ever been seen here", and a
-	 * later read that finds none is the very event that question is asked about.
+	 * ourselves are all proof; finding no note at all is not. Stickiness and
+	 * the structural dropping of the kept unreadable text are `madeUsable`'s
+	 * contract (`storeHealth.ts`).
 	 */
 	private markUsable(blockProven: boolean): void {
-		if (blockProven) this.sawBlock = true;
-		this.usable = true;
-		this.reason = null;
-		this.noticeShown = false;
-		// Deliberately dropped here rather than left to age: a readable note is
-		// the newer truth, and a text kept past this point could only ever
-		// resurrect orders that something has since legitimately replaced.
-		this.lastUnreadableText = null;
+		this.health = madeUsable(this.health, blockProven);
 	}
 }
