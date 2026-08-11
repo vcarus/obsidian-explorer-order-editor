@@ -46,7 +46,7 @@
 import { App, normalizePath, Notice, TFile, TFolder, type View } from 'obsidian';
 import { dropSideFor, scrollStepFor, type DropSide, type RowKind } from './dropZone';
 import { applyDrop, type MoveItemHost } from './moveItem';
-import { reportApplied, repairPointer, unusableClause } from './notices';
+import { refusalNotice, reportApplied, repairPointer, unusableClause } from './notices';
 
 /**
  * Auto-scroll tuning. `SCROLL_ZONE_PX` is the band, measured from
@@ -96,18 +96,16 @@ interface AppWithDragManager extends App {
 
 /**
  * A second, independent "is this leaf's view actually the loaded file
- * explorer, not a still-deferred placeholder" check — `explorerSort.ts`
- * already has one (`isFileExplorerView`, checking for both
- * `getSortedFolderItems` and `requestSort`), but it's private to that file
- * and this module's job list is scoped to six specific files that does not
- * include changing `explorerSort.ts` to export it. Rather than reach into
- * that file's internals, this declares its own minimal version of the same
- * check `indexFile.ts`'s `requestFileExplorerResort` already uses for
- * exactly this purpose: `requestSort` alone is enough of a signal, since
- * this file never calls it — it only exists here to prove the view is real
- * before this trusts its `containerEl` to still be the element the real
- * file explorer keeps using, rather than one a still-loading placeholder
- * view will discard.
+ * explorer, not a still-deferred placeholder" check. `explorerSort.ts` has a
+ * richer one (`isFileExplorerView`, probing `getSortedFolderItems` too), but
+ * that extra member is one this module never touches — and declaring
+ * undocumented members where they are used, only the ones actually used, is
+ * the discipline every internal-API touchpoint here follows. So this probes
+ * `requestSort` alone, the same minimal signal `indexFile.ts`'s
+ * `requestFileExplorerResort` uses: not to call it, only to prove the view
+ * is real before trusting its `containerEl` to still be the element the
+ * real file explorer keeps using, rather than one a still-loading
+ * placeholder view will discard.
  */
 interface FileExplorerViewHandle {
 	requestSort(): void;
@@ -558,7 +556,7 @@ async function performDrop(host: MoveItemHost, dragged: TFile | TFolder, anchor:
 	if (outcome === 'unchanged') return;
 
 	if (outcome === 'refused') {
-		new Notice(`Could not move: ${unusableClause(host.store)}. ${repairPointer('from elsewhere')}`);
+		refusalNotice('move', host.store, 'from elsewhere');
 		return;
 	}
 

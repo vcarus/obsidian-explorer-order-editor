@@ -3,7 +3,7 @@ import Sortable from 'sortablejs';
 import { SORT_CHOICES, sortEntries, timestampFor, type SortChoice, type SortableEntry, type SortKey } from './entrySort';
 import { explorerOrderNames } from './explorerSort';
 import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
-import { reportApplied, repairPointer, unusableClause } from './notices';
+import { refusalNotice, reportApplied } from './notices';
 import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, type BreadcrumbSegment } from './navigation';
 import { mergeOrder, setOrder } from './orderIndex';
 import { targetIndexFor, type RowMove } from './rowMove';
@@ -180,10 +180,10 @@ export class OrderModal extends Modal {
 	 *
 	 * The one piece of state `resetContent` must *not* clear: everything else
 	 * there belongs to a single level, whereas this deliberately survives
-	 * every level switch — that is the entire mechanism. Since 1.0 there is
-	 * no metadata cache to wait for (the index is ours, already updated in
-	 * memory the moment `save()` returns), so this is a plain boolean rather
-	 * than an armed promise.
+	 * every level switch — that is the entire mechanism. There is no metadata
+	 * cache to wait for (the index is ours, already updated in memory the
+	 * moment `save()` returns), so this is a plain boolean rather than an
+	 * armed promise.
 	 */
 	private pendingRefresh = false;
 	/**
@@ -962,8 +962,7 @@ export class OrderModal extends Modal {
 	 * `ArrowUp`/`ArrowDown` alone move *focus* to the neighboring row —
 	 * ordinary list-navigation behavior. Repurposing the bare arrow keys to
 	 * move the row itself would leave a keyboard user with no way to simply
-	 * browse a long list (`bigfolder` has 62 rows) without also reordering
-	 * it on every keystroke. `Alt+Arrow` nudges the row one step;
+	 * browse a long list without also reordering it on every keystroke. `Alt+Arrow` nudges the row one step;
 	 * `Alt+Shift+Arrow` jumps it to the relevant edge, mirroring the button
 	 * pair. Every other key (including plain `Shift+Arrow`, which has no
 	 * assigned meaning here) is left untouched.
@@ -1024,8 +1023,8 @@ export class OrderModal extends Modal {
 		// presses would silently drop focus to <body>, and every further
 		// arrow key would do nothing — nothing would be left listening.
 		rowEl.focus();
-		// The list is capped at 60vh and scrolls (`bigfolder` has 62 rows), so
-		// a top/bottom jump can easily carry the row outside the visible slice.
+		// The list is capped at 60vh and scrolls — a long folder overflows it —
+		// so a top/bottom jump can easily carry the row outside the visible slice.
 		rowEl.scrollIntoView({ block: 'nearest' });
 
 		this.afterOrderChanged();
@@ -1060,10 +1059,10 @@ export class OrderModal extends Modal {
 	private refreshNavigationLabels(): void {
 		// Hoisted out of the loop: `isDirty` walks every row in the list, and
 		// there is one control per folder row plus one per breadcrumb level —
-		// so leaving it inside made a single keystroke in a 62-item folder do
-		// roughly sixty full passes over sixty rows. The answer is the same
-		// for every control by construction; it describes the list, not the
-		// control.
+		// so leaving it inside made a single keystroke in a large folder do a
+		// full pass over every row once per control, quadratic in the folder's
+		// size. The answer is the same for every control by construction; it
+		// describes the list, not the control.
 		const dirty = this.isDirty();
 		for (const control of this.navControls) {
 			const label = navigationLabel(dirty, control.targetLabel);
@@ -1155,7 +1154,7 @@ export class OrderModal extends Modal {
 			// whether an order exists for this folder *now*, not whether this
 			// call is what produced it.
 			if ((await this.store.repair()) !== 'healed') {
-				new Notice(`Could not save: ${unusableClause(this.store)}. ${repairPointer('from elsewhere')}`);
+				refusalNotice('save', this.store, 'from elsewhere');
 				return 'blocked';
 			}
 
@@ -1211,7 +1210,7 @@ export class OrderModal extends Modal {
 			// nothing recoverable, which is the only way this is reachable
 			// now — said here and now regardless, since silence at the point
 			// of action reads as "nothing happened", not "this was refused".
-			new Notice(`Could not save: ${unusableClause(this.store)}. ${repairPointer('from elsewhere')}`);
+			refusalNotice('save', this.store, 'from elsewhere');
 			return 'blocked';
 		}
 
@@ -1221,10 +1220,10 @@ export class OrderModal extends Modal {
 		}
 
 		new Notice('Explorer order saved.');
-		// Arms the refresh — see `pendingRefresh` and `flushRefresh`. Unlike
-		// the old sortspec.md-based version there is no cache to wait for: the
-		// index is ours and `this.store` already holds the new value in
-		// memory, so all that's left is asking the file explorer to redraw.
+		// Arms the refresh — see `pendingRefresh` and `flushRefresh`. There is
+		// no cache to wait for: the index is ours and `this.store` already
+		// holds the new value in memory, so all that's left is asking the file
+		// explorer to redraw.
 		this.pendingRefresh = true;
 		return 'saved';
 	}

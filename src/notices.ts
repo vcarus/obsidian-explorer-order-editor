@@ -108,3 +108,20 @@ export function repairPointer(where: 'in the settings tab' | 'from elsewhere'): 
 	const location = where === 'in the settings tab' ? 'above' : 'in settings';
 	return `Use "Repair the order note" ${location} — it offers to start over when nothing can be recovered. See the console for details.`;
 }
+
+/**
+ * The whole refusal Notice, for the callers whose sentence really is just
+ * "Could not <verb phrase>: <clause>. <pointer>." — which is all of them but
+ * one. The exception stays on the two parts directly: `explorerDrag.ts`'s
+ * moved-unsaved case leads with a move that *did* happen, and forcing its
+ * opening through this template is exactly the parameter-per-caller trap
+ * `unusableClause`'s doc comment declines.
+ *
+ * Exists because that one-line scaffolding had been copied verbatim to seven
+ * call sites, and E4 already showed what copies of a shared sentence do: drift
+ * one word at a time with nothing to notice. The verb phrase is the only part
+ * that was ever different, so it is the only parameter.
+ */
+export function refusalNotice(action: string, store: IndexFileStore, where: 'in the settings tab' | 'from elsewhere'): void {
+	new Notice(`Could not ${action}: ${unusableClause(store)}. ${repairPointer(where)}`);
+}

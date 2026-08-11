@@ -14,7 +14,7 @@
 import { App, normalizePath, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
 import { ConfirmModal } from './ConfirmModal';
 import { requestFileExplorerResort, type IndexFileStore, type RepairOutcome } from './indexFile';
-import { reportApplied, repairPointer, unusableClause } from './notices';
+import { refusalNotice, reportApplied } from './notices';
 import { pruneMissing } from './orderIndex';
 import { isQuarantinePath, quarantineFolderPath } from './quarantine';
 
@@ -190,42 +190,30 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			// never seen one, and these appear in the vault unannounced, so
 			// the row has to answer "what is this file and why is it here"
 			// before it offers to delete anything.
-			{
-				name: 'Delete the kept copies of unreadable order notes',
-				desc:
-					'When the order note cannot be read — a bad hand edit, or a sync conflict — this plugin rebuilds it from whatever it can recover, ' +
+			//
+			// Gated on the store being usable, not merely on copies existing —
+			// but paired with the row below rather than being the only offer.
+			// Every word of this description assumes a rebuild has happened;
+			// that is what makes a kept copy a leftover worth clearing. While
+			// the note is unreadable no rebuild has happened, so the same files
+			// are not leftovers at all: if recovery found nothing, a kept copy
+			// can be the last place the orders still exist. Hiding the action
+			// outright in that state was the earlier answer, and it was wrong
+			// for a reason the wording argument never reached: a repair that
+			// gives up leaves one copy per attempt behind and *stays* unusable
+			// (`quarantineThenRebuild`), so the state that creates the files
+			// was exactly the state with no control for them anywhere in the
+			// plugin. Two rows with exclusive `visible` split the two offers
+			// instead of suppressing one; `deleteQuarantinesRow` keeps their
+			// shared render half from drifting apart.
+			this.deleteQuarantinesRow(
+				'Delete the kept copies of unreadable order notes',
+				'When the order note cannot be read — a bad hand edit, or a sync conflict — this plugin rebuilds it from whatever it can recover, ' +
 					'and keeps the unreadable version beside it as a separate note so nothing is thrown away. ' +
 					'Those kept copies are only useful for checking whether an order went missing in the rebuild. ' +
 					'Once you are satisfied nothing is, they can go.',
-				// Gated on the store being usable, not merely on copies
-				// existing — but paired with the row below rather than being the
-				// only offer. Every word of the description above assumes a
-				// rebuild has happened; that is what makes a kept copy a
-				// leftover worth clearing. While the note is unreadable no
-				// rebuild has happened, so the same files are not leftovers at
-				// all: if recovery found nothing, a kept copy can be the last
-				// place the orders still exist, and this wording would present
-				// it as spent.
-				//
-				// Hiding the action outright in that state was the earlier
-				// answer, and it was wrong for a reason the wording argument
-				// never reached: a repair that gives up leaves one copy per
-				// attempt behind and *stays* unusable
-				// (`quarantineThenRebuild`), so the state that creates the files
-				// was exactly the state with no control for them anywhere in the
-				// plugin. The condition below now splits the two offers instead
-				// of suppressing one.
-				visible: () => this.plugin.store.isUsable() && this.quarantineFiles().length > 0,
-				render: (setting) => {
-					setting.addButton((button) =>
-						button
-							.setButtonText('Delete')
-							.setDestructive()
-							.setDisabled(this.busy)
-							.onClick(() => void this.runDeleteQuarantines()),
-					);
-				},
-			},
+				() => this.plugin.store.isUsable() && this.quarantineFiles().length > 0,
+			),
 			// The same action while the order note is still unreadable. A
 			// separate row rather than a conditional description, because `desc`
 			// is a fixed string on a declared setting and only `visible` is
@@ -233,23 +221,13 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			// offers: above, spent copies of a note that has since been rebuilt;
 			// here, possibly the last surviving copy of orders nothing has
 			// recovered yet.
-			{
-				name: 'Delete the kept copies — the order note is still unreadable',
-				desc:
-					'When the order note cannot be read, this plugin keeps the unreadable version beside it as a separate note before trying to rebuild. ' +
+			this.deleteQuarantinesRow(
+				'Delete the kept copies — the order note is still unreadable',
+				'When the order note cannot be read, this plugin keeps the unreadable version beside it as a separate note before trying to rebuild. ' +
 					'The note here still cannot be read, so nothing has been rebuilt from these copies yet: if a saved order is missing, one of them may be the only place it still exists. ' +
 					'Deleting them cannot be undone. Repairing first, above, is almost always the better move.',
-				visible: () => !this.plugin.store.isUsable() && this.quarantineFiles().length > 0,
-				render: (setting) => {
-					setting.addButton((button) =>
-						button
-							.setButtonText('Delete')
-							.setDestructive()
-							.setDisabled(this.busy)
-							.onClick(() => void this.runDeleteQuarantines()),
-					);
-				},
-			},
+				() => !this.plugin.store.isUsable() && this.quarantineFiles().length > 0,
+			),
 			// The vault-wide counterpart to a single folder's "Clear order":
 			// the only way to undo an ordering pass over a whole subtree
 			// without right-clicking every folder in it. Last in the list, and
@@ -281,6 +259,34 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 * to the order note itself).
 	 */
 	private busy = false;
+
+	/**
+	 * One of the two "delete the kept copies" rows — same action, same button,
+	 * different words and visibility (see the comments at the call sites for
+	 * why they are two rows at all). The render half lives here once so the
+	 * two rows cannot drift apart; the wording stays declarative string
+	 * literals at the call sites, because only `visible` is re-evaluated per
+	 * render and nothing verified says a computed `name`/`desc` would be
+	 * re-read. `runDeleteQuarantines` itself re-checks `isUsable()` at the
+	 * moment of the click, so which confirmation to show never depends on
+	 * which row was clicked.
+	 */
+	private deleteQuarantinesRow(name: string, desc: string, visible: () => boolean): SettingDefinitionItem {
+		return {
+			name,
+			desc,
+			visible,
+			render: (setting) => {
+				setting.addButton((button) =>
+					button
+						.setButtonText('Delete')
+						.setDestructive()
+						.setDisabled(this.busy)
+						.onClick(() => void this.runDeleteQuarantines()),
+				);
+			},
+		};
+	}
 
 	/**
 	 * Every kept copy of an unreadable order note currently in the vault.
@@ -429,9 +435,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			});
 
 			if (!ok) {
-				new Notice(
-					`Could not remove stale entries: ${unusableClause(this.plugin.store)}. ${repairPointer('in the settings tab')}`,
-				);
+				refusalNotice('remove stale entries', this.plugin.store, 'in the settings tab');
 				return;
 			}
 			new Notice(`Removed ${removed} stale ${removed === 1 ? 'entry' : 'entries'}.`);
@@ -484,9 +488,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			});
 
 			if (!ok) {
-				new Notice(
-					`Could not clear: ${unusableClause(this.plugin.store)}. ${repairPointer('in the settings tab')}`,
-				);
+				refusalNotice('clear', this.plugin.store, 'in the settings tab');
 				return;
 			}
 			new Notice(`Cleared ${cleared} saved order${cleared === 1 ? '' : 's'}.`);

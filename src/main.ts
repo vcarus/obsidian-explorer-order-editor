@@ -2,7 +2,7 @@ import { App, Menu, MenuItem, normalizePath, Notice, Plugin, TAbstractFile, TFil
 import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
 import { folderIndexKey, IndexFileStore } from './indexFile';
-import { reportApplied, repairPointer, unusableClause } from './notices';
+import { refusalNotice, reportApplied } from './notices';
 import { applyMove, effectiveOrder } from './moveItem';
 import { OrderModal } from './OrderModal';
 import { registerOrderSync } from './orderSync';
@@ -237,14 +237,14 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		}
 
 		// `updateOrRepair`, not `update`: if the order note has since become
-		// unreadable, this is one of the three explicit user actions the store
-		// heals on, so it gets a chance to repair the note before completing
-		// the clear rather than refusing outright. Still checked, not
+		// unreadable, this is one of the explicit user actions the store heals
+		// on (`updateOrRepair`'s doc lists them), so it gets a chance to repair
+		// the note before completing the clear rather than refusing outright. Still checked, not
 		// assumed — a repair with nothing left to recover still refuses, and
 		// claiming "cleared" over that would be a plain lie about the user's
 		// data.
 		if (!(await this.store.updateOrRepair((index) => removeOrder(index, key)))) {
-			new Notice(`Could not clear: ${unusableClause(this.store)}. ${repairPointer('from elsewhere')}`);
+			refusalNotice('clear', this.store, 'from elsewhere');
 			return;
 		}
 		new Notice('Explorer order cleared.');
@@ -421,7 +421,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		if (outcome === 'unchanged') return;
 
 		if (outcome === 'refused') {
-			new Notice(`Could not move: ${unusableClause(this.store)}. ${repairPointer('from elsewhere')}`);
+			refusalNotice('move', this.store, 'from elsewhere');
 			return;
 		}
 
