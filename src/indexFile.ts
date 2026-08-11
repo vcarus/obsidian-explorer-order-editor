@@ -630,7 +630,18 @@ export class IndexFileStore {
 	 * not be followed by a wipe.
 	 */
 	async startOver(): Promise<boolean> {
-		if (this.usable) return true;
+		// Reported, not silently accepted, and this is the *likely* way to get
+		// here rather than an edge: repair answers "nothing to recover", the
+		// confirmation dialog stays open for as long as it takes to read it, a
+		// readable copy lands in that window and `onExternalModify` adopts it.
+		// The caller only asks the file explorer to re-sort, so without this the
+		// user who just agreed to lose every saved order gets no answer at all —
+		// the same silence the branch further down exists to prevent, reached by
+		// the wider path.
+		if (this.usable) {
+			this.reportNothingCleared();
+			return true;
+		}
 
 		try {
 			// Plans an empty index whatever the note turns out to hold, which
@@ -656,9 +667,7 @@ export class IndexFileStore {
 				// did not.
 				case 'already-usable':
 				case 'adopted':
-					new Notice(
-						`Explorer order editor: ${this.notePath()} became readable again before starting over, so nothing was cleared.`,
-					);
+					this.reportNothingCleared();
 					return true;
 				case 'rebuilt': {
 					const lines = [`Explorer order editor: ${this.notePath()} was rebuilt with no saved orders.`];
@@ -671,6 +680,21 @@ export class IndexFileStore {
 			console.error('[explorer-order-editor] failed to start over with an empty order index', err);
 			return false;
 		}
+	}
+
+	/**
+	 * The one sentence "start over" must never leave unsaid: it ended without
+	 * clearing anything.
+	 *
+	 * Shared by the two places that can reach that ending — the guard at the
+	 * top of `startOver` and the adopt/already-usable branch inside it — which
+	 * is the whole reason it is a method. The wording lived only in the branch
+	 * before, and the branch is the narrow window (between taking the write
+	 * chain and reading the note); the guard is the wide one, and it returned
+	 * `true` in silence.
+	 */
+	private reportNothingCleared(): void {
+		new Notice(`Explorer order editor: ${this.notePath()} became readable again before starting over, so nothing was cleared.`);
 	}
 
 	/**

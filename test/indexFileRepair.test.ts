@@ -216,13 +216,23 @@ describe('startOver()', () => {
 		expect(kept.map(([, text]) => text)).toEqual([newerBroken]);
 	});
 
-	it('does not wipe anything if the store became usable first', async () => {
+	it('does not wipe anything if the store became usable first, and says so', async () => {
 		const { store } = await loadedStore(salvageable);
 		expect(await store.repair()).toBe('healed');
+
+		resetNotices();
 		// The confirmation dialog can still be open at this point; starting
 		// over now must not discard what the heal just recovered.
 		expect(await store.startOver()).toBe(true);
 		expect(store.get('navtest')).toEqual(['a.md']);
+
+		// And must not do it silently. This is the *likely* way to reach "start
+		// over cleared nothing" — repair says nothing to recover, the dialog
+		// sits open, a readable copy lands — and it returns through the guard at
+		// the top of `startOver`, not through the branch that used to hold the
+		// only notice. Asserting the return value alone is what let that pass.
+		expect(notices).toHaveLength(1);
+		expect(notices[0] ?? '').toContain('nothing was cleared');
 	});
 });
 
