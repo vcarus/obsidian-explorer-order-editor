@@ -719,7 +719,7 @@ describe('salvageIndex without a fence', () => {
 // recoverIndex — also the only remaining coverage of the internal
 // `mergeIndexesByPrecedence` helper it's built on: that function is no
 // longer exported (recoverIndex is its only caller in src/, always with the
-// same fixed three-source [salvage, memory, backup] shape), so the general
+// same fixed [salvage, memory, backup, last unreadable text] shape), so the general
 // arbitrary-source-array properties it used to have their own describe
 // block for are now pinned down here, through recoverIndex itself.
 // ---------------------------------------------------------------------------
@@ -796,5 +796,43 @@ describe('recoverIndex', () => {
 		const result = recoverIndex('', empty, empty);
 		expect(result.index.size).toBe(0);
 		expect(result.droppedLines).toBe(0);
+	});
+
+	it('takes the last unreadable text as the lowest-precedence source, below the backup', () => {
+		// The fourth source is the oldest thing in the union, so every other
+		// source has to beat it for a key they share. It exists for the keys
+		// nothing else has at all.
+		const older = ['```json', '{', '  "InBoth": ["stale.md"],', '  "OnlyHere": ["survivor.md"]', '}', '```'].join('\n');
+		const backup = buildIndex([['InBoth', ['from-backup.md']]]);
+
+		const result = recoverIndex('no fence here', empty, backup, older);
+		expectIndexEqual(
+			result.index,
+			buildIndex([
+				['InBoth', ['from-backup.md']],
+				['OnlyHere', ['survivor.md']],
+			]),
+		);
+	});
+
+	it('recovers from the last unreadable text alone when the note it came from is gone', () => {
+		// The case the fourth source was added for: found unreadable, then
+		// deleted (a sync conflict resolved elsewhere, or by hand) before the
+		// user reached the repair row. The note reads as `''` and, on a cold
+		// start, memory and backup are both empty — so without this the repair
+		// says "nothing to recover" about orders already read once.
+		const gone = ['```json', '{', '  "navtest": ["a.md", "b.md"]', '}', '```'].join('\n');
+		const result = recoverIndex('', empty, empty, gone);
+		expectIndexEqual(result.index, buildIndex([['navtest', ['a.md', 'b.md']]]));
+	});
+
+	it('counts dropped lines from the note being replaced, never from the last unreadable text', () => {
+		// `droppedLines` is reported to the user about the text this repair is
+		// quarantining. Lines lost from an older text are not that, and adding
+		// them would overstate what this repair could not save.
+		const older = ['```json', '{', 'garbage,', '  "A": ["a.md"]', '}', '```'].join('\n');
+		const result = recoverIndex('```json\n{\n  "B": ["b.md"]\n}\n```', empty, empty, older);
+		expect(result.droppedLines).toBe(0);
+		expect(result.index.get('A')).toEqual(['a.md']);
 	});
 });

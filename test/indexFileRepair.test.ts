@@ -225,3 +225,47 @@ describe('startOver()', () => {
 		expect(store.get('navtest')).toEqual(['a.md']);
 	});
 });
+
+describe('recovering from the text a read last found unreadable', () => {
+	it('repairs a note that was deleted after it was found unreadable', async () => {
+		// Detected unreadable, then removed — a sync conflict resolved on
+		// another device, or by hand. The note now reads as nothing, and on a
+		// cold start neither memory nor the backup holds anything, so the only
+		// remaining copy of those orders is the text this store already read.
+		const { store, stub } = await loadedStore(salvageable);
+		expect(store.isUsable()).toBe(false);
+		stub.app.vault.files.delete(NOTE);
+
+		expect(await store.repair()).toBe('healed');
+		expect(store.get('navtest')).toEqual(['a.md']);
+		// Rebuilt where it was, and with no copy kept: there were no bytes on
+		// disk to preserve.
+		expect([...stub.app.vault.files.keys()]).toEqual([NOTE]);
+	});
+
+	it('is beaten by the note itself whenever the note still has the key', async () => {
+		// Lowest precedence, and it has to stay there: the older text is by
+		// definition the stalest source in the union.
+		const { store, stub } = await loadedStore(salvageable);
+		stub.app.vault.files.set(NOTE, newerBroken);
+
+		expect(await store.repair()).toBe('healed');
+		expect(store.get('navtest')).toEqual(['landed-a.md', 'landed-b.md']);
+	});
+
+	it('is beaten by what is loaded, so a repaired note is never re-recovered from the text before it', async () => {
+		// Fourth of four sources, which puts it below the in-memory index too.
+		// A note found unreadable, repaired, then broken again recovers from
+		// what the repair produced — not from the text that was there before it.
+		const { store, stub } = await loadedStore(salvageable);
+		expect(await store.repair()).toBe('healed');
+		expect(store.get('navtest')).toEqual(['a.md']);
+
+		stub.app.vault.files.set(NOTE, unsalvageable);
+		await store.load();
+		expect(store.isUsable()).toBe(false);
+
+		expect(await store.repair()).toBe('healed');
+		expect(store.get('navtest')).toEqual(['a.md']);
+	});
+});

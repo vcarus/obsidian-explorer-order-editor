@@ -20,15 +20,16 @@
  * changes anything on disk (see `applyParsed`/`markUnusable` — a hand edit
  * inside Obsidian necessarily passes through "not valid JSON yet" on every
  * autosave, and a store that healed at that moment would clobber the user
- * mid-keystroke). Healing only ever runs from `updateOrRepair`/`repair`, in
- * response to one of three explicit user actions — the order modal's save,
- * "Clear explorer order", or the settings tab's "Repair the order note" row
- * — never automatically. When it runs, it never chooses one source of truth
- * over another: it unions the unreadable note's own salvageable lines, the
- * in-memory index, and the `data.json` backup (`recoverIndex`, in
- * `orderIndex.ts`), preserves the unreadable text as a quarantine note
- * beside the original first, and only then rebuilds. `update()` itself is
- * unchanged — still synchronous, still just refuses while unusable — so
+ * mid-keystroke). Healing only ever runs from `updateOrRepair`/`repair`, and
+ * only in response to an explicit user action asking for an order to change
+ * — a save, a move, a drag, a clear, or the settings tab's "Repair the order
+ * note" row — never automatically. When it runs, it never chooses one source
+ * of truth over another: it unions the unreadable note's own salvageable
+ * lines, the in-memory index, the `data.json` backup, and the last text a
+ * read found unreadable (`recoverIndex`, in `orderIndex.ts`), preserves the
+ * unreadable text as a quarantine note beside the original first, and only
+ * then rebuilds. `update()` itself is unchanged — still synchronous, still
+ * just refuses while unusable — so
  * `orderSync.ts`'s background reactions to renames/deletes keep behaving
  * exactly as before; a rename elsewhere in the vault is not the user asking
  * this plugin to repair anything.
@@ -181,6 +182,29 @@ export class IndexFileStore {
 	private sawBlock = false;
 	/** The exact text this store itself last wrote, so the `modify` listener below can tell its own write apart from an external one. `null` until the first write. */
 	private lastWrittenText: string | null = null;
+	/**
+	 * The text of the last read that came back unreadable, kept only for as
+	 * long as the store stays unusable (`markUsable` drops it) and used only as
+	 * the lowest-precedence recovery source in `healThenUpdate`.
+	 *
+	 * It is not a plan and must never become one — planning from a snapshot is
+	 * exactly what `quarantineThenRebuild` re-reads to avoid, and this is
+	 * beaten by every source that could be fresher, including the note as it
+	 * reads at the moment of the repair. What it covers is the case where that
+	 * note has since stopped existing: found unreadable, then deleted by a sync
+	 * conflict resolution or by hand before the user got to the repair row. The
+	 * note-side salvage then has nothing to work on, and on a cold start
+	 * neither the in-memory index nor the backup holds anything either, so
+	 * without this the repair reports "nothing to recover" while the orders
+	 * were sitting in text this store had already read.
+	 *
+	 * Its lifetime is exactly one unusable stretch. Every path into that state
+	 * replaces it (`markUnusable` takes the text it judged), and `markUsable`
+	 * clears it, so it can never speak for a note two repairs ago — a text kept
+	 * past the moment the store reads cleanly again could only ever resurrect
+	 * orders something has since legitimately replaced.
+	 */
+	private lastUnreadableText: string | null = null;
 	private writeTimerId: number | null = null;
 	/** See `awaitIndexing`. Reset on every successful write. */
 	private indexingRetries = 0;
@@ -237,7 +261,7 @@ export class IndexFileStore {
 		// "this note has no json block" a fresh note, or a note whose block was
 		// destroyed? Read only when that question actually arises.
 		const hadBlockBefore = result.status === 'empty' ? (await this.readBackup()).size > 0 : false;
-		this.applyParsed(result, hadBlockBefore);
+		this.applyParsed(result, text, hadBlockBefore);
 	}
 
 	/**
@@ -291,13 +315,13 @@ export class IndexFileStore {
 	 * what routes it to `salvageIndex` and the repair path — and salvage reads
 	 * whatever survived, fence or no fence.
 	 */
-	private applyParsed(result: ParseResult, hadBlockBefore = false): void {
+	private applyParsed(result: ParseResult, text: string, hadBlockBefore = false): void {
 		if (result.status === 'invalid') {
-			this.markUnusable(result.reason);
+			this.markUnusable(result.reason, text);
 			return;
 		}
 		if (result.status === 'empty' && (this.index.size > 0 || hadBlockBefore)) {
-			this.markUnusable(MISSING_BLOCK_REASON);
+			this.markUnusable(MISSING_BLOCK_REASON, text);
 			return;
 		}
 		// The one place a read can prove a block is really there. Recorded even
@@ -407,9 +431,10 @@ export class IndexFileStore {
 	 * change anything on disk.
 	 *
 	 * 1. Builds the recovered index — a union of the unreadable note's own
-	 *    salvageable lines, the in-memory index, and the `data.json` backup
-	 *    (`recoverIndex`). If that union is empty, there is nothing to
-	 *    recover: stops here, touches nothing, stays unusable. Destroying
+	 *    salvageable lines, the in-memory index, the `data.json` backup, and
+	 *    the last text a read found unreadable (`recoverIndex`). If that union
+	 *    is empty, there is nothing to recover: stops here, touches nothing,
+	 *    stays unusable. Destroying
 	 *    the only copy of something in order to replace it with an empty one
 	 *    is the one outcome that must never happen, so this is the one case
 	 *    healing refuses even to try. `startOver` is the explicit, confirmed
@@ -429,6 +454,11 @@ export class IndexFileStore {
 	 */
 	private async healThenUpdate(mutate: (index: OrderIndex) => OrderIndex): Promise<RepairOutcome> {
 		const backup = await this.readBackup();
+		// Read once, outside the loop, for the same reason `backup` is: neither
+		// can change while this runs — nothing between here and the write
+		// re-reads the backup, and `lastUnreadableText` only moves when the
+		// store's usability does, which ends the loop either way.
+		const lastUnreadable = this.lastUnreadableText ?? '';
 
 		try {
 			// Recovery is re-derived per attempt, from whatever the note holds
@@ -437,7 +467,7 @@ export class IndexFileStore {
 			// between carries its own salvageable lines, and planning from the
 			// older text would discard them while claiming to repair.
 			const outcome = await this.quarantineThenRebuild((text) => {
-				const { index: recovered, droppedLines } = recoverIndex(text, this.index, backup);
+				const { index: recovered, droppedLines } = recoverIndex(text, this.index, backup, lastUnreadable);
 				if (recovered.size === 0) return null;
 				return { index: mutate(recovered), droppedLines };
 			});
@@ -928,6 +958,10 @@ export class IndexFileStore {
 			const blockWasStored = this.sawBlock || this.lastWrittenText !== null || (await this.readBackup()).size > 0;
 
 			let becameUnusable: string | null = null;
+			// The text the refusal below was decided against, kept for the same
+			// reason `markUnusable`'s other callers pass theirs: it is the only
+			// copy of a note that may be gone by the time anyone repairs.
+			let refusedText = '';
 			await app.vault.process(existing, (data) => {
 				// The disk may have changed since `load()` (or since the last
 				// write) — a sync client could have landed a corrupt or
@@ -943,6 +977,7 @@ export class IndexFileStore {
 				const parsed = parseIndex(data);
 				if (parsed.status === 'invalid') {
 					becameUnusable = parsed.reason;
+					refusedText = data;
 					return data; // unchanged
 				}
 				// `empty` is the other half of that distinction, and it has to
@@ -958,6 +993,7 @@ export class IndexFileStore {
 				// path is never entered at all.
 				if (parsed.status === 'empty' && blockWasStored) {
 					becameUnusable = MISSING_BLOCK_REASON;
+					refusedText = data;
 					return data; // unchanged
 				}
 				const next = serializeIndex(data, this.index);
@@ -970,7 +1006,7 @@ export class IndexFileStore {
 			});
 
 			if (becameUnusable !== null) {
-				this.markUnusable(becameUnusable);
+				this.markUnusable(becameUnusable, refusedText);
 			} else {
 				this.indexingRetries = 0;
 				await this.persistBackup(this.index);
@@ -1004,17 +1040,24 @@ export class IndexFileStore {
 		// would otherwise be accepted as normal. The backup is the other half of
 		// the proof, so this path consults it too.
 		const hadBlockBefore = result.status === 'empty' ? (await this.readBackup()).size > 0 : false;
-		this.applyParsed(result, hadBlockBefore);
+		this.applyParsed(result, text, hadBlockBefore);
 		requestFileExplorerResort(this.host.app);
 	}
 
 	/**
 	 * Detection only — never writes, never heals (see the module doc
-	 * comment). It deliberately keeps no copy of the text it found
-	 * unreadable: healing re-reads the note itself, inside the write that
-	 * replaces it, because any copy taken here can be superseded before that
-	 * write lands — and acting on a superseded one is what destroyed
-	 * salvageable orders before `quarantineThenRebuild` was made to re-plan.
+	 * comment).
+	 *
+	 * The text it found unreadable is kept (`lastUnreadableText`), and the
+	 * distinction that makes that safe is worth stating exactly, because the
+	 * opposite of it is a bug this file has already had: healing re-reads the
+	 * note itself, inside the write that replaces it, since any copy taken here
+	 * can be superseded before that write lands — and *planning* from a
+	 * superseded copy is what destroyed salvageable orders before
+	 * `quarantineThenRebuild` was made to re-plan. What is kept here is not a
+	 * plan and never becomes one: it is the last-resort recovery source, below
+	 * every source that could be fresher, and it exists for the case where the
+	 * note being re-read has ceased to exist entirely.
 	 *
 	 * Also cancels any debounced write still armed from before this ran: it
 	 * would only find `!this.usable` and no-op when it fired anyway
@@ -1022,9 +1065,13 @@ export class IndexFileStore {
 	 * fewer thing that could still be pending if a heal starts before it
 	 * would have fired.
 	 */
-	private markUnusable(reason: string): void {
+	private markUnusable(reason: string, text: string): void {
 		this.usable = false;
 		this.reason = reason;
+		// Not a plan, and not consulted while anything fresher exists — see the
+		// field's own doc comment. Every caller has the text in hand already,
+		// which is why it is a parameter rather than another read.
+		this.lastUnreadableText = text;
 		if (this.writeTimerId !== null) {
 			window.clearTimeout(this.writeTimerId);
 			this.writeTimerId = null;
@@ -1043,5 +1090,9 @@ export class IndexFileStore {
 		this.usable = true;
 		this.reason = null;
 		this.noticeShown = false;
+		// Deliberately dropped here rather than left to age: a readable note is
+		// the newer truth, and a text kept past this point could only ever
+		// resurrect orders that something has since legitimately replaced.
+		this.lastUnreadableText = null;
 	}
 }

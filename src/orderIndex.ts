@@ -386,8 +386,8 @@ export function salvageIndex(noteText: string): SalvageResult {
  *
  * Not exported: `recoverIndex` below is its only caller — nothing else in
  * `src/` needs an arbitrary-length precedence merge, and `recoverIndex`'s own
- * fixed three-source shape (salvage/memory/backup) is what every other
- * module actually wants.
+ * fixed shape (salvage / memory / backup / last unreadable text) is what every
+ * other module actually wants.
  */
 function mergeIndexesByPrecedence(sources: readonly OrderIndex[]): OrderIndex {
 	const merged = new Map<string, readonly string[]>();
@@ -406,7 +406,7 @@ export interface RecoveryResult {
 }
 
 /**
- * Builds the index `IndexFileStore` heals with, as a union of three
+ * Builds the index `IndexFileStore` heals with, as a union of four
  * sources rather than a choice between them, in this precedence:
  *
  * 1. `salvageIndex(unreadableText)` — what the broken note's text actually
@@ -417,16 +417,32 @@ export interface RecoveryResult {
  *    made since, filling in keys salvage lost entirely (not merely garbled,
  *    but a line the corruption ate outright — a truncated file, say).
  * 3. `backupIndex` — the last `data.json` backup (see `indexFile.ts`),
- *    filling in whatever both of the above are still missing.
+ *    filling in whatever the two above are still missing.
+ * 4. `lastUnreadableText` — the text of the read that first found the note
+ *    unreadable, salvaged the same way source 1 is. Lowest precedence
+ *    because it is the oldest thing here and every other source supersedes
+ *    it; present at all because the note it came from need not still exist
+ *    by the time a repair runs. A note found broken and then deleted leaves
+ *    source 1 with an empty string to work on, and on a cold start sources 2
+ *    and 3 are empty too — see `indexFile.ts`'s field of the same name.
  *
  * Never destroys anything: it can only add keys none of the higher-
  * precedence sources had, never remove or override one. Deciding whether the
  * result is *usable* (non-empty) is the caller's job — see the module doc
  * comment in `indexFile.ts` for why an empty result must never be written.
+ *
+ * `droppedLines` counts only what source 1 lost, and deliberately so: it is
+ * reported to the user about the text being replaced and quarantined in this
+ * repair, not about every text ever salvaged along the way.
  */
-export function recoverIndex(unreadableText: string, memoryIndex: OrderIndex, backupIndex: OrderIndex): RecoveryResult {
+export function recoverIndex(
+	unreadableText: string,
+	memoryIndex: OrderIndex,
+	backupIndex: OrderIndex,
+	lastUnreadableText = '',
+): RecoveryResult {
 	const salvage = salvageIndex(unreadableText);
-	const index = mergeIndexesByPrecedence([salvage.index, memoryIndex, backupIndex]);
+	const index = mergeIndexesByPrecedence([salvage.index, memoryIndex, backupIndex, salvageIndex(lastUnreadableText).index]);
 	return { index, droppedLines: salvage.droppedLines };
 }
 
