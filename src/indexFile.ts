@@ -708,8 +708,8 @@ export class IndexFileStore {
 				if (current !== null && file === null) {
 					console.error(
 						`[explorer-order-editor] cannot repair ${path}: it exists on disk but the vault has not indexed it, ` +
-							'so it cannot be replaced atomically. A cold start does this briefly; a path with a dot-prefixed ' +
-							'component (".obsidian/…") does it permanently, since the vault walk skips those. ' +
+							'so it cannot be replaced atomically. A cold start does this briefly; any path component ' +
+							'beginning with a dot does it permanently, since the vault walk skips those subtrees. ' +
 							'The note was not changed and no copy was made.',
 					);
 					return { kind: 'gave-up', copies };

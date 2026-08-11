@@ -527,11 +527,25 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 * dialog — unlike every other destructive row here, which asks first and
 	 * only then goes busy. They can: their question is answerable before
 	 * anything runs (are there files, are there stale keys). This one's
-	 * question is *produced by* the repair, so it cannot be asked first, and
-	 * releasing `busy` to await the answer re-enabled the button underneath the
-	 * open dialog — the row is still visible, since the store is still
-	 * unusable. A second click there stacks a second dialog and a second
-	 * `startOver` behind it.
+	 * question is *produced by* the repair, so it cannot be asked first.
+	 *
+	 * The hazard this used to claim for that — a second click landing on the
+	 * row underneath the open dialog and stacking a second `startOver` behind
+	 * it — is not real. Obsidian gives every modal its own `.modal-container`
+	 * at `--layer-modal` spanning the viewport, with a `.modal-bg` filling it
+	 * and `pointer-events` left alone on both; the dialog's container is
+	 * appended after the settings window's, so a click aimed at anything
+	 * beneath it hits that background instead and dismisses the dialog.
+	 * Derived from the app's own CSS and confirmed by hand on 2026-08-11 — see
+	 * `docs/dev/obsidian-internals.md`. Recorded rather than quietly deleted,
+	 * because the same wrong mechanism was about to be applied to
+	 * `runDeleteQuarantines` as a bug fix.
+	 *
+	 * The single window stays regardless, on the grounds that do hold: a repair
+	 * is genuinely in flight for as long as the dialog is open, disabled is how
+	 * a row says so, and keyboard focus is not fenced as obviously as the
+	 * pointer is. Cheap insurance — not the load-bearing guard it was described
+	 * as.
 	 */
 	private async runRepair(): Promise<void> {
 		this.busy = true;
