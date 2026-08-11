@@ -8,28 +8,11 @@
  * a reason in a test proves the test agrees with itself.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { IndexFileStore, type IndexFileHost } from '../src/indexFile';
+import { IndexFileStore } from '../src/indexFile';
 import { repairPointer, unusableClause } from '../src/notices';
 import { serializeIndex } from '../src/orderIndex';
-import { DEFAULT_SETTINGS } from '../src/settings';
-import { StubPlugin, installTimers, resetNotices } from './stubs/obsidian';
-
-const NOTE = 'explorer-order.md';
-
-// Nothing here schedules a write today, but every store built below is a real
-// one, and `update()`/`markUnusable` reach `window` timers node does not have.
-// Installed unconditionally so the first assertion that drives a mutation
-// through one of these stores fails for its own reason rather than with
-// `ReferenceError: window is not defined`.
-installTimers();
-
-/** See the identically-shaped helper in `indexFileRepair.test.ts` for why the cast is the only one. */
-function makeHost(): { host: IndexFileHost; stub: StubPlugin } {
-	const stub = new StubPlugin();
-	const host = stub as unknown as IndexFileHost;
-	host.settings = { ...DEFAULT_SETTINGS, indexPath: NOTE };
-	return { host, stub };
-}
+import { NOTE, makeHost } from './helpers';
+import { resetNotices } from './stubs/obsidian';
 
 async function storeThatFailedToLoad(noteText: string, backup?: string): Promise<IndexFileStore> {
 	const { host, stub } = makeHost();

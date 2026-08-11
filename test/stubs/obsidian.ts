@@ -33,6 +33,10 @@
  * `update()` and no test can reach it. That gap is not hypothetical: it is why
  * a guard that refused every first write into a block-less note went in green.
  *
+ * Installed once for every test file by `test/setup.ts` (`setupFiles` in
+ * `vitest.config.ts`) — no file has to remember to call it, which is how the
+ * gap above stayed open. Idempotent (`??=`), so calling it again is harmless.
+ *
  * Node's own timers, only reachable under the name the plugin uses.
  */
 export function installTimers(): void {

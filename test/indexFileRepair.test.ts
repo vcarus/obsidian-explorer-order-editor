@@ -8,43 +8,10 @@
  * `testvault/` is still what decides whether a change works.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { IndexFileStore, type IndexFileHost } from '../src/indexFile';
+import { IndexFileStore } from '../src/indexFile';
 import { serializeIndex, setOrder } from '../src/orderIndex';
-import { DEFAULT_SETTINGS } from '../src/settings';
-import { StubPlugin, installTimers, notices, resetNotices } from './stubs/obsidian';
-
-const NOTE = 'explorer-order.md';
-
-// Not optional, and not only for the tests below that write: `update()` arms a
-// debounced write through `window.setTimeout` and `markUnusable` clears it
-// through `window.clearTimeout`, neither of which node has. Every test here
-// used to reach `repair()` with an identity mutation, which returns before
-// scheduling anything — so the omission was invisible until the first test that
-// actually changed the index, which is exactly one of the ones below.
-installTimers();
-
-/**
- * The stub is imported by path, never by mapping `obsidian` to it in
- * `test/tsconfig.json`. A mapping would apply to `src/**` as well — this
- * project compiles those too — and every module here would then be checked
- * against the stub's tiny surface instead of the real API, which is the one
- * check that actually protects the plugin. Types come from the real package
- * everywhere; only the runtime module is substituted, by the alias in
- * `vitest.config.ts`.
- *
- * The cast is where those two facts meet, and it is the only place they do.
- * It is honest at run time precisely because of that alias.
- *
- * Settings are spread from `DEFAULT_SETTINGS` rather than naming the one
- * field the store reads, so a key added later cannot leave this compiling
- * against a shape the plugin no longer has.
- */
-function makeHost(): { host: IndexFileHost; stub: StubPlugin } {
-	const stub = new StubPlugin();
-	const host = stub as unknown as IndexFileHost;
-	host.settings = { ...DEFAULT_SETTINGS, indexPath: NOTE };
-	return { host, stub };
-}
+import { NOTE, makeHost } from './helpers';
+import { StubPlugin, notices, resetNotices } from './stubs/obsidian';
 
 /** A note whose fence is present but holds nothing any line can be salvaged from. */
 const unsalvageable = '```json\n{\n  totally broken\n}\n```\n';

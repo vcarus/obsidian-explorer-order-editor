@@ -8,21 +8,10 @@
  * what decides whether a change works.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { IndexFileStore, type IndexFileHost } from '../src/indexFile';
+import { IndexFileStore } from '../src/indexFile';
 import { serializeIndex, setOrder } from '../src/orderIndex';
-import { DEFAULT_SETTINGS } from '../src/settings';
-import { StubPlugin, installTimers, resetNotices } from './stubs/obsidian';
-
-installTimers();
-
-const NOTE = 'explorer-order.md';
-
-function makeHost(): { host: IndexFileHost; stub: StubPlugin } {
-	const stub = new StubPlugin();
-	const host = stub as unknown as IndexFileHost;
-	host.settings = { ...DEFAULT_SETTINGS, indexPath: NOTE };
-	return { host, stub };
-}
+import { NOTE, makeHost } from './helpers';
+import { resetNotices } from './stubs/obsidian';
 
 beforeEach(() => {
 	resetNotices();
@@ -77,7 +66,33 @@ describe('a note whose json block is missing', () => {
 		expect(stub.app.vault.files.get(NOTE)).toBe('Someone removed the block.\n');
 	});
 
-	it('is refused on the strength of the backup alone, across a restart', async () => {
+	it('is refused by the write path on the strength of the backup alone', async () => {
+		// The load-path twin below never reaches `performWrite` — `load()`
+		// refuses first — so until this test existed, `blockWasStored`'s backup
+		// term could be deleted with every test still green. Here the store has
+		// to be usable first (no note at all at load time, so `sawBlock` is
+		// false and `lastWrittenText` is null), and the block-less note lands
+		// *between* the user's edit and the debounced write: the backup is then
+		// the only witness the write path has.
+		const { host, stub } = makeHost();
+		await stub.saveData({ indexBackup: serializeIndex('', new Map([['navtest', ['a.md']]])) });
+
+		const store = new IndexFileStore(host);
+		await store.load();
+		expect(store.isUsable()).toBe(true);
+
+		expect(store.update((i) => setOrder(i, 'navtest', ['a.md', 'b.md']))).toBe(true);
+		// A sync client lands a block-less copy of the note before the write
+		// fires — the vault now has a file where load() saw none.
+		stub.app.vault.files.set(NOTE, 'Block-less after a sync landed.\n');
+		await store.flush();
+
+		expect(store.isUsable()).toBe(false);
+		expect(store.unusableReason()).toBe('Its json block is missing');
+		expect(stub.app.vault.files.get(NOTE)).toBe('Block-less after a sync landed.\n');
+	});
+
+	it('is refused at load on the strength of the backup alone, across a restart', async () => {
 		// No `sawBlock`, no `lastWrittenText` — a fresh store that never read a
 		// good block this session. `data.json` is the only witness left, and it
 		// has to be enough.

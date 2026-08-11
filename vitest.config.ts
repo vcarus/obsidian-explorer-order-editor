@@ -3,6 +3,9 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
 	test: {
 		include: ['test/**/*.test.ts'],
+		// Installs the stub's window timers before every file, so no test file
+		// has to remember to — see test/setup.ts for the gap this closes.
+		setupFiles: ['./test/setup.ts'],
 	},
 	resolve: {
 		// Test-only, and it stays that way by construction: the production
