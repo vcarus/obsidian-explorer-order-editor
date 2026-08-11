@@ -40,6 +40,26 @@ export function reportApplied(app: App, autoRefresh: boolean, done: 'Saved' | 'C
 }
 
 /**
+ * A reason written as a standalone sentence ("Its json block is missing"),
+ * re-cased to sit inside one.
+ *
+ * Every reason `IndexFileStore` can record is capitalized — they are authored
+ * that way in `orderIndex.ts` and in `MISSING_BLOCK_REASON`, because each is
+ * also shown as its own sentence in the Notice raised when the store goes
+ * unusable. This is the one place they get embedded mid-sentence, so it is the
+ * one place that has to lower the capital. Without it all seven refusal
+ * notices read "Could not save: the order note Its json block is missing",
+ * against `CLAUDE.md`'s "UI copy is sentence case".
+ *
+ * Only the first character, and nothing cleverer: every existing reason is an
+ * ordinary sentence, and one that had to start with an acronym would be worth
+ * rewording at the reason rather than special-casing here.
+ */
+function asClause(reason: string): string {
+	return reason.charAt(0).toLowerCase() + reason.slice(1);
+}
+
+/**
  * `the order note <why it cannot be written>` — the shared middle of every
  * refusal notice, so the fallback wording for "the store never said why" is
  * written once.
@@ -50,9 +70,14 @@ export function reportApplied(app: App, autoRefresh: boolean, done: 'Saved' | 'C
  * it again", "or check the console for details"). Only the middle was ever
  * really the same, and forcing the rest through one template would have meant
  * a parameter per caller.
+ *
+ * Being that middle is also why the re-casing above belongs here and not at
+ * the seven call sites, nor in the reasons themselves: a reason has to read as
+ * a sentence where the store announces it, and as a clause here.
  */
 export function unusableClause(store: IndexFileStore): string {
-	return `the order note ${store.unusableReason() ?? 'could not be repaired'}`;
+	const reason = store.unusableReason();
+	return `the order note ${reason === null ? 'could not be repaired' : asClause(reason)}`;
 }
 
 /**
