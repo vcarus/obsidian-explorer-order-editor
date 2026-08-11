@@ -90,7 +90,6 @@ export class Vault {
 	files = new Map<string, string>();
 	failCreate: string | null = null;
 	failProcess: string | null = null;
-	private handlers: ((file: TAbstractFile) => void)[] = [];
 
 	adapter = {
 		exists: async (path: string): Promise<boolean> => this.files.has(path),
@@ -123,8 +122,17 @@ export class Vault {
 		return next;
 	}
 
+	/**
+	 * Accepts a listener and deliberately never calls it — "the disk changed
+	 * and nothing has told the store" is the state several tests here need, and
+	 * the only way to hold a stub in it is to have no dispatch at all.
+	 *
+	 * So the handler is not kept. A list of listeners nothing reads would
+	 * suggest there is an `emit` somewhere, and the next person wanting to
+	 * simulate an external modify would reasonably go looking for it; the
+	 * returned reference is only what `registerEvent` expects to be handed.
+	 */
 	on(_event: string, handler: (file: TAbstractFile) => void): { handler: typeof handler } {
-		this.handlers.push(handler);
 		return { handler };
 	}
 }

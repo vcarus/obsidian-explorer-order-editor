@@ -182,9 +182,9 @@ describe('startOver()', () => {
 		// would put an empty block over them, and the quarantine copy beside it
 		// holds the *old* text, so they would survive nowhere.
 		//
-		// The stub reproduces it without any timing games: it registers the
-		// `modify` handler and never fires it, which is exactly "the disk
-		// changed and nothing has told the store".
+		// The stub reproduces it without any timing games: it accepts the
+		// `modify` handler and has no way to fire it, which is exactly "the
+		// disk changed and nothing has told the store".
 		const { store, stub } = await loadedStore(unsalvageable);
 		expect(store.isUsable()).toBe(false);
 
