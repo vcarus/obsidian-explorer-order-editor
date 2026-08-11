@@ -157,17 +157,41 @@ export class Vault {
 	}
 
 	/**
-	 * Accepts a listener and deliberately never calls it — "the disk changed
-	 * and nothing has told the store" is the state several tests here need, and
-	 * the only way to hold a stub in it is to have no dispatch at all.
+	 * Accepts a listener and **never dispatches to it on its own**. "The disk
+	 * changed and nothing has told the store" is the state several tests here
+	 * need, and writing to `files` must keep leaving them in it — so no path
+	 * through this class calls a handler.
 	 *
-	 * So the handler is not kept. A list of listeners nothing reads would
-	 * suggest there is an `emit` somewhere, and the next person wanting to
-	 * simulate an external modify would reasonably go looking for it; the
-	 * returned reference is only what `registerEvent` expects to be handed.
+	 * The handlers are kept, though, so a test that wants the *other* state can
+	 * ask for it in as many words with `fire` below. They were originally
+	 * discarded, on the reasoning that a list nothing reads would imply an
+	 * `emit` that did not exist; the answer to that turned out to be an `emit`
+	 * that does exist and is never implicit, rather than no way to reach
+	 * `onExternalModify` from a test at all.
 	 */
-	on(_event: string, handler: (file: TAbstractFile) => void): { handler: typeof handler } {
+	private handlers = new Map<string, ((file: TAbstractFile, oldPath?: string) => void)[]>();
+
+	on(event: string, handler: (file: TAbstractFile, oldPath?: string) => void): { handler: typeof handler } {
+		const forEvent = this.handlers.get(event) ?? [];
+		forEvent.push(handler);
+		this.handlers.set(event, forEvent);
 		return { handler };
+	}
+
+	/**
+	 * Runs the listeners for `event` against `path`, the way Obsidian would
+	 * after something else on the machine touched the note. `oldPath` is what a
+	 * `rename` carries. Explicit on purpose: the write into `files` that
+	 * precedes it is still silent, which is what every other test in this repo
+	 * depends on.
+	 *
+	 * Returns nothing. `onExternalModify` is fired and not awaited by the store
+	 * either (`void this.onExternalModify(file)`), so a caller that needs it
+	 * settled awaits something the store exposes — `flush()` — rather than this.
+	 */
+	fire(event: string, path: string, oldPath?: string): void {
+		const file = new TFile(path, path.slice(path.lastIndexOf('/') + 1));
+		for (const handler of this.handlers.get(event) ?? []) handler(file, oldPath);
 	}
 }
 
@@ -204,7 +228,17 @@ export class Plugin {
 	app = new App();
 	private data: Record<string, unknown> | null = null;
 
+	/**
+	 * Makes `loadData` throw, for the same reason `Vault.failCreate` exists:
+	 * the failure branch is the point. `data.json` being unreadable is not
+	 * "there is no backup" — it is "nothing is known about the backup" — and
+	 * the store has one verdict (`backupSuggestsBlock`) that must come out
+	 * differently for the two.
+	 */
+	failLoadData: string | null = null;
+
 	async loadData(): Promise<Record<string, unknown> | null> {
+		if (this.failLoadData !== null) throw new Error(this.failLoadData);
 		return this.data;
 	}
 
@@ -212,8 +246,46 @@ export class Plugin {
 		this.data = data;
 	}
 
+	/**
+	 * Deliberately *not* a copy of `main.ts`'s serialized version. The real one
+	 * chains these so the settings and the index backup cannot interleave on
+	 * `data.json`; reproducing that chain here would only prove the stub
+	 * serializes, since in a test the stub *is* the implementation — the same
+	 * trap the header warns about. Nothing here starts two overlapping calls,
+	 * so the plain read-modify-write is what the tests actually need, and a
+	 * future test that does interleave will fail loudly against this rather
+	 * than pass against a second implementation of the fix.
+	 */
+	async updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+		const data = await this.loadData();
+		await this.saveData(mutate({ ...data }));
+	}
+
+	/** `main.ts` writes the whole settings object; the tests that reach this only care that it round-trips through `updateData`. */
+	settings: Record<string, unknown> = {};
+
+	async saveSettings(): Promise<void> {
+		await this.updateData((data) => ({ ...data, ...this.settings }));
+	}
+
 	registerEvent(_ref: unknown): void {}
-	register(_cb: () => void): void {}
+
+	/**
+	 * Retained, not discarded, so a test can run a component's teardown the
+	 * way `Component.unload` does. This models nothing about *when* Obsidian
+	 * drains these — that fact is established in `obsidian-internals.md` from
+	 * `obsidian.asar`, and a stub asserting it would only prove the stub. It
+	 * exists so a test can ask what *our* teardown does when it runs.
+	 */
+	registered: (() => void)[] = [];
+	register(cb: () => void): void {
+		this.registered.push(cb);
+	}
+
+	/** Runs the registered teardowns, newest first, as `Component.unload` does. */
+	runTeardowns(): void {
+		while (this.registered.length > 0) this.registered.pop()?.();
+	}
 }
 
 export class Modal {}

@@ -1,8 +1,8 @@
-import { App, ButtonComponent, Menu, Modal, Notice, normalizePath, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
+import { App, ButtonComponent, Menu, Modal, Notice, Platform, setIcon, setTooltip, TFolder } from 'obsidian';
 import Sortable from 'sortablejs';
 import { SORT_CHOICES, sortEntries, timestampFor, type SortChoice, type SortableEntry, type SortKey } from './entrySort';
 import { explorerOrderNames } from './explorerSort';
-import { folderIndexKey, requestFileExplorerResort, type IndexFileStore } from './indexFile';
+import { folderIndexKey, indexNotePath, requestFileExplorerResort, type IndexFileStore } from './indexFile';
 import { refusalNotice, reportApplied } from './notices';
 import { breadcrumbSegments, folderShortName, isSameOrder, navigationLabel, openingRowOrder, type BreadcrumbSegment } from './navigation';
 import { setOrder } from './orderIndex';
@@ -286,7 +286,7 @@ export class OrderModal extends Modal {
 		// dead end only reachable by navigating into it in the first place.
 		const breadcrumbTail = this.renderBreadcrumbs();
 
-		const siblings = entriesFor(this.folder, normalizePath(this.settings.indexPath));
+		const siblings = entriesFor(this.folder, indexNotePath(this.settings));
 		const soleEntry = siblings.length === 1 ? siblings[0] : undefined;
 		if (siblings.length === 0 || soleEntry !== undefined) {
 			if (soleEntry === undefined) {

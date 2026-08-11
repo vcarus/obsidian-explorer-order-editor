@@ -64,6 +64,17 @@ export function madeUsable(previous: StoreHealth, blockProven: boolean): UsableH
  * reason `blockProven` is above: the caller has the judged text in hand, and
  * it may be the only copy of a note that is gone by the time anyone repairs.
  *
+ * `blockProven` is required here too, and it used to not be — this arm simply
+ * forwarded `previous.sawBlock`, which is the same evidence-dropping shape
+ * `madeUsable`'s signature was designed to make impossible, left standing on
+ * the other transition. Every caller has proof and none could state it:
+ * `parseIndex` answers `invalid` only once a fence has been located (no fence
+ * is `empty`), the `empty`-but-unusable branch is *defined* by a witness that
+ * a block was there, and the write path's refusal is gated on
+ * `blockWasStored`. The cost of not recording it is a store that later meets a
+ * block-less note, believes none was ever written here, and appends a fresh
+ * empty block over a vault's worth of orders.
+ *
  * `firstNotice` is true exactly when this stretch of unusability has not yet
  * told the user — a fresh break, or the first break after a recovery. That is
  * the same thing as "this transition crossed from usable", so it is read
@@ -78,9 +89,10 @@ export function madeUnusable(
 	previous: StoreHealth,
 	reason: string,
 	unreadableText: string,
+	blockProven: boolean,
 ): { readonly health: UnusableHealth; readonly firstNotice: boolean } {
 	return {
-		health: { usable: false, sawBlock: previous.sawBlock, reason, lastUnreadableText: unreadableText },
+		health: { usable: false, sawBlock: previous.sawBlock || blockProven, reason, lastUnreadableText: unreadableText },
 		firstNotice: previous.usable,
 	};
 }

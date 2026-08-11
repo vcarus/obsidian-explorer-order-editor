@@ -14,7 +14,8 @@
 import { normalizePath, type Plugin, type TFile, type TFolder } from 'obsidian';
 import type { DropSide } from './dropZone';
 import { explorerOrderNames } from './explorerSort';
-import { folderIndexKey, type IndexFileStore } from './indexFile';
+import { folderIndexKey, indexNotePath, type IndexFileStore } from './indexFile';
+import { openingRowOrder } from './navigation';
 import { setOrder } from './orderIndex';
 import { insertNameBeside, moveNameInOrder, type RowMove } from './rowMove';
 import type { ExplorerOrderEditorSettings } from './settings';
@@ -33,15 +34,29 @@ export interface MoveItemHost extends Plugin {
  * `folder`'s current order, as the user sees it right now, with the order
  * index note itself excluded — it is never orderable.
  *
- * Prefers `explorerOrderNames` (`explorerSort.ts`): it reads back through
- * this plugin's own render patch, so it already reflects either a saved
- * order or the file explorer's own current sort setting — exactly what is
- * on screen right now. Falls back to `entriesFor(folder)`'s names only when
- * that returns `null` (no file-explorer leaf to consult, or its internals
- * didn't match what this plugin expects) — see `explorerOrderNames`'s own
- * doc comment for when that happens.
+ * Exactly the question `OrderModal` answers when it opens a level, so it is
+ * the same call: `openingRowOrder` (`navigation.ts`) prefers
+ * `explorerOrderNames` — read back through this plugin's own render patch, so
+ * it already reflects either a saved order or the file explorer's own sort
+ * setting, whatever is on screen right now — and falls back to the *stored*
+ * order reconciled against the live siblings when the explorer cannot be
+ * consulted (no file-explorer leaf, or one still deferred; see
+ * `explorerOrderNames`'s own doc comment). `mergeOrder` inside it is also
+ * what drops the index note from the explorer's names, which the render patch
+ * re-appends unless "hide" is on: a name with no matching sibling is dropped,
+ * and `entriesFor` leaves the index note out of the siblings on purpose.
  *
- * Synchronous: both sources already are (`store.get` is a `Map` lookup;
+ * That fallback used to be `entriesFor`'s names alone — folders-first
+ * alphabetical, consulting nothing. It read as harmless because this function
+ * only reads; it was not, because `orderToWriteFrom` reads *in order to
+ * write*. Start Obsidian with the file explorer collapsed or its leaf still
+ * deferred, press "move up", and a hand-built order was replaced by an
+ * alphabetical guess plus one nudge — with a perfectly healthy store holding
+ * the right answer the entire time, and no error anywhere. The dialog already
+ * had the correct fallback; these two disagreed about the same question,
+ * which is why they are now one call.
+ *
+ * Synchronous: every source already is (`store.get` is a `Map` lookup;
  * `folder.children` is already in memory), so there is no reason for this to
  * be async and every caller benefits from not having to await it.
  *
@@ -52,24 +67,9 @@ export interface MoveItemHost extends Plugin {
  * gets replaced by the view that stood in for it.
  */
 export function effectiveOrder(host: MoveItemHost, folder: TFolder): readonly string[] {
-	const indexNotePath = normalizePath(host.settings.indexPath);
-
-	const fromExplorer = explorerOrderNames(host.app, folder);
-	if (fromExplorer === null) {
-		// entriesFor (folderEntries.ts) already excludes the index note by path
-		// — nothing further to filter here.
-		return entriesFor(folder, indexNotePath).map((entry) => entry.name);
-	}
-
-	// explorerOrderNames reads through the render patch, which re-appends the
-	// index note at the end unless "hide" is on — so unlike the fallback
-	// above, it can still be present here. Find its name (if it lives in this
-	// folder at all) by matching path against folder's own live children,
-	// same identity `entryForChild` uses, and filter that one name out.
-	for (const child of folder.children) {
-		if (child.path === indexNotePath) return fromExplorer.filter((name) => name !== child.name);
-	}
-	return fromExplorer;
+	const siblings = entriesFor(folder, indexNotePath(host.settings));
+	const stored = host.store.get(folderIndexKey(folder));
+	return openingRowOrder(explorerOrderNames(host.app, folder), stored, siblings).map((entry) => entry.name);
 }
 
 /**

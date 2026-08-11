@@ -1,8 +1,8 @@
-import { App, Menu, MenuItem, normalizePath, Notice, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
+import { App, Menu, MenuItem, Notice, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
 import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
-import { explorerViews } from './fileExplorerLeaves';
-import { folderIndexKey, IndexFileStore } from './indexFile';
+import { focusedExplorerView } from './fileExplorerLeaves';
+import { folderIndexKey, IndexFileStore, isIndexNote } from './indexFile';
 import { refusalNotice, reportApplied } from './notices';
 import { applyMove, effectiveOrder } from './moveItem';
 import { OrderModal } from './OrderModal';
@@ -44,8 +44,8 @@ interface MenuItemWithSubmenu extends MenuItem {
  *
  * Also the type `isFileExplorerFocusView` below narrows to: a deferred file
  * explorer leaf's view has no `tree` at all, only a real one does, so probing
- * for it is what tells the two apart before `explorerFocusedItem` trusts
- * either `containerEl` or `tree` on the result.
+ * for it is what tells the two apart before `focusedExplorerView` trusts
+ * `containerEl`, or `moveHotkeyTarget` trusts `tree`, on the result.
  */
 interface FileExplorerFocus extends View {
 	tree?: { focusedItem?: { file?: unknown } | null } | null;
@@ -71,42 +71,82 @@ function hasSubmenu(item: MenuItem): item is MenuItemWithSubmenu {
 }
 
 /**
- * The file explorer's focused row, but only while the explorer actually holds
- * keyboard focus.
+ * What the move hotkeys act on: the file explorer's focused row while the
+ * explorer holds keyboard focus, and the active note otherwise.
  *
- * That condition is the whole point of this function. Reading `focusedItem`
- * unconditionally is what a competitor does, and it means a hotkey pressed
- * while editing a note moves whatever row the explorer happened to be left
- * on — the wrong item, silently, with no way for the user to connect cause to
- * effect. Scoping it to "the explorer has focus" makes the rule one sentence
- * long: the hotkey moves the row you are on when you are in the tree, and the
- * note you are in otherwise.
+ * That condition is the whole point. Reading `focusedItem` unconditionally is
+ * what a competitor does, and it means a hotkey pressed while editing a note
+ * moves whatever row the explorer happened to be left on — the wrong item,
+ * silently, with no way for the user to connect cause to effect. Scoping it to
+ * "the explorer has focus" makes the rule one sentence long: the hotkey moves
+ * the row you are on when you are in the tree, and the note you are in
+ * otherwise.
  *
- * Focus is read through `containerEl.ownerDocument` rather than the global
- * `document` so this still answers correctly in a popped-out window.
+ * Both halves of that sentence live here, and they did not always. This used
+ * to answer `TFile | TFolder | null` and leave the caller to write
+ * `?? getActiveFile()`, which collapsed two different `null`s: "no explorer
+ * has focus" (fall through to the note — correct) and "the explorer has focus
+ * but no row does" (nothing to act on). Click the explorer's empty space or
+ * its header and press the hotkey, and the second one silently became the
+ * first: the plugin reordered the note open in the editor, in some other
+ * folder entirely, with no success Notice — because by design the reordered
+ * row *is* the feedback, and that row was off screen. Three states cannot be
+ * returned as two, so the fall-through happens in here, where the third one
+ * still exists.
  *
- * Iterates real file explorer views only — `explorerViews` (`fileExplorerLeaves.ts`)
- * filters out deferred leaves before this function ever sees them, using
- * `isFileExplorerFocusView` above as the realness probe. Among the real ones,
- * with two explorers open the one that matters is whichever holds focus; at
- * most one can, so the first that does is the whole answer — a focused leaf
- * whose tree has no focused row resolves to `null` outright rather than
- * falling through to some other, unfocused explorer.
+ * `focusedExplorerView` (`fileExplorerLeaves.ts`) does the walking, with
+ * `isFileExplorerFocusView` above as the realness probe, and reads focus
+ * through `containerEl.ownerDocument` so a popped-out explorer answers
+ * correctly.
  */
-function explorerFocusedItem(app: App): TFile | TFolder | null {
-	for (const view of explorerViews(app, isFileExplorerFocusView)) {
-		const { containerEl } = view;
-		if (!containerEl.contains(containerEl.ownerDocument.activeElement)) continue;
+function moveHotkeyTarget(app: App): TFile | TFolder | null {
+	const view = focusedExplorerView(app, isFileExplorerFocusView);
+	if (view === undefined) return app.workspace.getActiveFile();
 
-		const file: unknown = view.tree?.focusedItem?.file;
-		return file instanceof TFile || file instanceof TFolder ? file : null;
-	}
-	return null;
+	const file: unknown = view.tree?.focusedItem?.file;
+	return file instanceof TFile || file instanceof TFolder ? file : null;
 }
 
 export default class ExplorerOrderEditorPlugin extends Plugin {
 	settings: ExplorerOrderEditorSettings = DEFAULT_SETTINGS;
 	store!: IndexFileStore;
+
+	/**
+	 * Set by `onunload` and read by `whenLayoutReady` below. `Component` has
+	 * `_loaded` already, but it is private and unexported, so this is the same
+	 * fact stated in a member this plugin owns rather than reached for through
+	 * the internals.
+	 */
+	private unloaded = false;
+
+	/**
+	 * `onLayoutReady`, minus the callbacks that would otherwise fire into a
+	 * plugin that is already gone.
+	 *
+	 * Obsidian's queue has no cancel:
+	 * `onLayoutReady=function(e){null===this.onLayoutReadyCallbacks?e():this.onLayoutReadyCallbacks.push({pluginId:…,callback:e})}`
+	 * — it never checks whether the plugin that queued an entry is still
+	 * enabled when it drains (verified in `obsidian-internals.md`). And
+	 * `Component.unload` drains `_events` only `if(this._loaded)`, so anything
+	 * `register()`ed *after* unload is pushed onto an array that will never be
+	 * drained.
+	 *
+	 * Those two together make an unguarded callback permanent. Disable the
+	 * plugin during startup before layout-ready — a multi-second window on a
+	 * large vault, and the ordinary hot-reload cycle in `testvault/` — and
+	 * `installExplorerSort` would still write its wrapper onto
+	 * `FileExplorerView.prototype`, `installExplorerDrag` would still arm its
+	 * capture listeners, and both would hand their removers to a `register()`
+	 * that no longer drains. A disabled plugin then keeps rendering orders out
+	 * of a dead store and keeps intercepting drops into it, and re-enabling
+	 * stacks a live wrapper on top of the dead one.
+	 */
+	private whenLayoutReady(run: () => void): void {
+		this.app.workspace.onLayoutReady(() => {
+			if (this.unloaded) return;
+			run();
+		});
+	}
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -122,20 +162,20 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 
 		// Deferred to onLayoutReady to sit out the vault's startup indexing
 		// flood of rename-like events.
-		this.app.workspace.onLayoutReady(() => registerOrderSync(this));
+		this.whenLayoutReady(() => registerOrderSync(this));
 
 		// A separate onLayoutReady call, for an unrelated reason: the file
 		// explorer leaf itself need not exist yet (it can still be a
 		// deferred/lazy leaf this early). installExplorerSort retries on its
 		// own until it succeeds, so this only has to run once.
-		this.app.workspace.onLayoutReady(() => installExplorerSort(this));
+		this.whenLayoutReady(() => installExplorerSort(this));
 
 		// Same reasoning, same retry-until-success shape, for the tree's own
 		// drag-and-drop: installExplorerDrag needs the same file
 		// explorer leaf/view installExplorerSort does, and is independent of
 		// it otherwise, so it gets its own onLayoutReady call rather than
 		// being folded into the one above.
-		this.app.workspace.onLayoutReady(() => installExplorerDrag(this));
+		this.whenLayoutReady(() => installExplorerDrag(this));
 
 		this.registerEvent(
 			this.app.workspace.on('file-menu', (menu, file) => {
@@ -186,7 +226,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 				id: `move-${move}`,
 				name,
 				checkCallback: (checking) => {
-					const target = explorerFocusedItem(this.app) ?? this.app.workspace.getActiveFile();
+					const target = moveHotkeyTarget(this.app);
 					if (target === null) return false;
 					const parent = target.parent;
 					if (parent === null) return false;
@@ -194,7 +234,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 					// The index note is never orderable. `effectiveOrder`
 					// already leaves it out, so this only turns "the move would
 					// be a no-op" into "the command is not offered".
-					if (target instanceof TFile && target.path === normalizePath(this.settings.indexPath)) return false;
+					if (isIndexNote(target, this.settings)) return false;
 
 					const order = effectiveOrder(this, parent);
 					if (moveNameInOrder(order, target.name, move) === null) return false;
@@ -207,6 +247,13 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		// Read by `whenLayoutReady`. Set here rather than from a `register()`
+		// teardown: `Component.unload` drains those and *then* calls this, both
+		// in the same synchronous block, so either place is set long before the
+		// layout-ready queue drains — and this one needs no note about
+		// registration order to stay correct.
+		this.unloaded = true;
+
 		// Best-effort: performs any write `IndexFileStore`'s debounce hasn't
 		// flushed yet, so disabling/reloading the plugin right after a save
 		// can't drop it. Not awaited — `onunload` isn't guaranteed to be
@@ -234,13 +281,37 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		};
 	}
 
+	/**
+	 * Serializes every read-modify-write of `data.json`, so the two writers
+	 * that share the file — this plugin's settings and `IndexFileStore`'s
+	 * index backup — cannot interleave.
+	 *
+	 * Merging alone is not enough, which is what both writers used to do.
+	 * `loadData` → `saveData` is a read and a write with an `await` between
+	 * them; two of those started close together both read the same snapshot,
+	 * and the one that writes second silently reverts the other's key. The
+	 * chain makes the pair atomic with respect to the other writer.
+	 *
+	 * `catch` on the stored chain, not on the returned promise: a failed write
+	 * must not wedge every later one, but it still has to reach the caller.
+	 */
+	private dataChain: Promise<void> = Promise.resolve();
+
+	async updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+		const run = this.dataChain.then(async () => {
+			const data = (await this.loadData()) as Record<string, unknown> | null;
+			await this.saveData(mutate({ ...data }));
+		});
+		this.dataChain = run.catch(() => undefined);
+		return run;
+	}
+
 	async saveSettings(): Promise<void> {
-		// Read-modify-write, not a blind `saveData(this.settings)`: `data.json`
-		// is shared with `IndexFileStore`'s index backup under a
-		// key this settings object doesn't know about, and a wholesale
-		// overwrite from this stale-by-construction object would erase it.
-		const data = (await this.loadData()) as Record<string, unknown> | null;
-		await this.saveData({ ...data, ...this.settings });
+		// Not a blind `saveData(this.settings)`: `data.json` is shared with
+		// `IndexFileStore`'s index backup under a key this settings object
+		// doesn't know about, and a wholesale overwrite from this
+		// stale-by-construction object would erase it.
+		await this.updateData((data) => ({ ...data, ...this.settings }));
 	}
 
 	private async clearOrderFor(folder: TFolder): Promise<void> {
@@ -409,7 +480,7 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		const parent = file.parent;
 		if (parent === null) return [];
 
-		if (file instanceof TFile && file.path === normalizePath(this.settings.indexPath)) return [];
+		if (isIndexNote(file, this.settings)) return [];
 
 		const order = effectiveOrder(this, parent);
 		return MOVE_MENU_ITEMS.filter(([move]) => moveNameInOrder(order, file.name, move) !== null);

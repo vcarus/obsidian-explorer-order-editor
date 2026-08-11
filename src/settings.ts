@@ -11,9 +11,9 @@
  *   type anyway so the path is configurable by hand, and so exposing it
  *   later is a UI change rather than a data-shape change.
  */
-import { App, normalizePath, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
+import { App, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
 import { ConfirmModal } from './ConfirmModal';
-import { requestFileExplorerResort, type IndexFileStore, type RepairOutcome } from './indexFile';
+import { indexNotePath, requestFileExplorerResort, type IndexFileStore, type RepairOutcome } from './indexFile';
 import { refusalNotice, reportApplied } from './notices';
 import { pruneMissing } from './orderIndex';
 import { isQuarantinePath, quarantineFolderPath } from './quarantine';
@@ -303,7 +303,7 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 * row exists to clean up — the note can have been deleted by hand since.
 	 */
 	private quarantineFiles(): readonly TFile[] {
-		const notePath = normalizePath(this.plugin.settings.indexPath);
+		const notePath = indexNotePath(this.plugin.settings);
 		const folderPath = quarantineFolderPath(notePath);
 		const folder = folderPath === null ? this.app.vault.getRoot() : this.app.vault.getFolderByPath(folderPath);
 		if (folder === null) return [];

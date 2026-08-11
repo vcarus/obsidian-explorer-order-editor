@@ -24,9 +24,9 @@
  * the DOM the file explorer builds, never calls a private renderer, and
  * always falls back to the explorer's own result on any error.
  */
-import { App, normalizePath, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
-import { firstExplorerView } from './fileExplorerLeaves';
-import { folderIndexKey, type IndexFileStore } from './indexFile';
+import { App, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
+import { actingExplorerView, firstExplorerView } from './fileExplorerLeaves';
+import { folderIndexKey, indexNotePath, type IndexFileStore } from './indexFile';
 import { mergeOrder } from './orderIndex';
 import { aroundPrototypeMethod } from './patch';
 import type { ExplorerOrderEditorSettings } from './settings';
@@ -100,7 +100,7 @@ function buildReplacement(host: ExplorerSortHost): (original: GetSortedFolderIte
 			const items = original.call(this, folder);
 
 			try {
-				const indexNotePath = normalizePath(host.settings.indexPath);
+				const notePath = indexNotePath(host.settings);
 				const stored = store.get(folderIndexKey(folder));
 
 				// Entries derived in the *items' own* order — this is what
@@ -122,7 +122,7 @@ function buildReplacement(host: ExplorerSortHost): (original: GetSortedFolderIte
 					// our own.
 					if (!(file instanceof TFile) && !(file instanceof TFolder)) return items;
 
-					if (file instanceof TFile && file.path === indexNotePath) {
+					if (file instanceof TFile && file.path === notePath) {
 						indexFileItem = item;
 						continue;
 					}
@@ -239,6 +239,22 @@ export function installExplorerSort(host: ExplorerSortHost): void {
  * Either way it is exactly what the tree is rendering, which is what makes
  * this correct rather than a second, possibly-diverging guess.
  *
+ * Asks the *focused* explorer before the first one. They are the same view
+ * whenever only one is open, and when two are they disagree exactly where it
+ * matters: for a folder with no stored order this method falls through to the
+ * original, which sorts by `this.sortOrder` — per-view state. Reading `[0]`
+ * meant that dragging a row in the second explorer computed its new order
+ * from the *first* explorer's sort and wrote that, reshuffling the whole
+ * folder into a sort the user was not looking at. `moveHotkeyTarget`
+ * (`main.ts`) already resolves the *target* from the focused view, so this
+ * was also the two halves of one action disagreeing about which explorer it
+ * was happening in.
+ *
+ * Focus is a proxy, and one place it is provably wrong: `OrderModal` reaches
+ * here through `openingRowOrder`, and by then the focus is inside the dialog,
+ * so the dialog always gets the `actingExplorerView` fallback. Recorded in
+ * `review-backlog.md` (H5) rather than papered over here.
+ *
  * Returns `null`, never throws, whenever the file explorer can't be
  * consulted: no file-explorer leaf, a view that isn't (yet) recognizable as
  * one (`isFileExplorerView`), or a row whose `.file` isn't a `TFile`/
@@ -247,7 +263,7 @@ export function installExplorerSort(host: ExplorerSortHost): void {
  */
 export function explorerOrderNames(app: App, folder: TFolder): readonly string[] | null {
 	try {
-		const view = firstExplorerView(app, isFileExplorerView);
+		const view = actingExplorerView(app, isFileExplorerView);
 		if (view === undefined) return null;
 
 		const items = view.getSortedFolderItems(folder);

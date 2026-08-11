@@ -34,9 +34,9 @@
  * exactly as before; a rename elsewhere in the vault is not the user asking
  * this plugin to repair anything.
  */
-import { App, Notice, normalizePath, Plugin, TFile, TFolder, type View } from 'obsidian';
+import { App, Notice, normalizePath, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
 import { explorerViews } from './fileExplorerLeaves';
-import { parseIndex, recoverIndex, serializeIndex, type OrderIndex, type ParseResult } from './orderIndex';
+import { fillGapsFrom, parseIndex, recoverIndex, serializeIndex, type OrderIndex, type ParseResult } from './orderIndex';
 import { INITIAL_HEALTH, madeUnusable, madeUsable, type StoreHealth } from './storeHealth';
 import { rebuildStepFor } from './rebuildStep';
 import { findFreeQuarantinePath } from './quarantine';
@@ -106,6 +106,8 @@ type RebuildOutcome = { readonly copies: readonly string[] } & (
 const WRITE_DEBOUNCE_MS = 200;
 /** See `awaitIndexing`: ~5s of retries at `WRITE_DEBOUNCE_MS` apiece. */
 const MAX_INDEXING_RETRIES = 25;
+/** See `retryFailedWrite`: far fewer than the indexing retries, because an I/O error that repeats is not going to settle on its own. */
+const MAX_WRITE_RETRIES = 3;
 
 /**
  * Structural slice of `Plugin`, matching `ExplorerSortHost`/`OrderSyncHost`
@@ -113,6 +115,55 @@ const MAX_INDEXING_RETRIES = 25;
  */
 export interface IndexFileHost extends Plugin {
 	settings: ExplorerOrderEditorSettings;
+	/**
+	 * A serialized read-modify-write of `data.json` (`main.ts`). Required
+	 * rather than each writer doing its own `loadData`/`saveData` pair: this
+	 * store's backup and the settings object share one file, and merging on
+	 * write only prevents a *blind* overwrite — it does nothing about two
+	 * cycles interleaving, which silently reverts whichever of the two read
+	 * first. See `persistBackup`.
+	 */
+	updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<void>;
+	/** Persists `settings` (`main.ts`), through `updateData`. Needed here so the store can follow a rename of the note it owns. */
+	saveSettings(): Promise<void>;
+}
+
+/**
+ * Where the order index note lives, normalized — the single owner of "which
+ * file is the index note".
+ *
+ * It was computed at eight call sites and compared against at six, in three
+ * different shapes (`instanceof TFile` first, `.path ===` alone, or through a
+ * local named `indexNotePath`). None of them were wrong, which is exactly the
+ * problem: the `normalizePath` is not decoration — a user who types
+ * `/Order.md` or `notes//order.md` into settings gets a `settings.indexPath`
+ * that matches no `TFile.path` anywhere, and a site that forgot the call
+ * would fail only for those users, only on that one feature, and silently.
+ * Same reasoning that gave the deferred-leaf walk (`fileExplorerLeaves.ts`)
+ * and the rebuild decision (`rebuildStep.ts`) one home each.
+ */
+export function indexNotePath(settings: ExplorerOrderEditorSettings): string {
+	return normalizePath(settings.indexPath);
+}
+
+/**
+ * Whether `file` is the order index note: the one file this plugin owns, and
+ * the one file it must never offer to reorder, drop beside, or list as a
+ * sibling.
+ *
+ * Takes an abstract file and answers `false` for folders, so callers stop
+ * pairing the comparison with their own `instanceof` — a folder can never
+ * share the note's path anyway, and the two spellings differing between call
+ * sites is what made this look like six unrelated checks.
+ *
+ * A type predicate, not a `boolean`, because the `instanceof` it absorbs was
+ * load-bearing at two of those sites: the vault event handlers are handed a
+ * `TAbstractFile`, and narrowing it is how they reach a `TFile`-typed
+ * continuation. A plain `boolean` would have made each of them keep the
+ * `instanceof` anyway, which is the duplication this exists to remove.
+ */
+export function isIndexNote(file: TAbstractFile, settings: ExplorerOrderEditorSettings): file is TFile {
+	return file instanceof TFile && file.path === indexNotePath(settings);
 }
 
 /**
@@ -209,6 +260,8 @@ export class IndexFileStore {
 	private writeTimerId: number | null = null;
 	/** See `awaitIndexing`. Reset on every successful write. */
 	private indexingRetries = 0;
+	/** See `retryFailedWrite`. Separate from `indexingRetries` because the two wait for different things and give up at very different counts. */
+	private writeRetries = 0;
 	/** Serializes writes so two overlapping `Vault.process` calls on the index note can never interleave — same reason `orderSync.ts`'s coordinator chains its own ops. */
 	private writeChain: Promise<void> = Promise.resolve();
 	private disposed = false;
@@ -216,21 +269,90 @@ export class IndexFileStore {
 	constructor(private readonly host: IndexFileHost) {
 		this.host.registerEvent(
 			this.host.app.vault.on('modify', (file) => {
-				if (!(file instanceof TFile) || file.path !== this.notePath()) return;
+				if (!isIndexNote(file, this.host.settings)) return;
 				void this.onExternalModify(file);
+			}),
+		);
+		// The index note is the one file this plugin owns, and `modify` was the
+		// only thing watching it. `orderSync.ts` maintains every *other* path
+		// in the vault against these two events and deliberately leaves this
+		// one out of its remit — so until these existed, nothing at all
+		// observed the note being renamed or deleted out from under the store.
+		this.host.registerEvent(
+			this.host.app.vault.on('rename', (file, oldPath) => {
+				if (!(file instanceof TFile) || oldPath !== this.notePath()) return;
+				void this.onIndexNoteRenamed(file.path);
+			}),
+		);
+		this.host.registerEvent(
+			this.host.app.vault.on('delete', (file) => {
+				if (!isIndexNote(file, this.host.settings)) return;
+				this.onIndexNoteDeleted();
 			}),
 		);
 		this.host.register(() => {
 			this.disposed = true;
-			if (this.writeTimerId !== null) {
-				window.clearTimeout(this.writeTimerId);
-				this.writeTimerId = null;
-			}
+			// Commits the pending write rather than just cancelling it — this
+			// callback runs *before* `main.ts`'s `onunload`, so cancelling here
+			// leaves `flush()` nothing to find. See `commitPendingWrite`.
+			this.commitPendingWrite();
 		});
 	}
 
 	private notePath(): string {
-		return normalizePath(this.host.settings.indexPath);
+		return indexNotePath(this.host.settings);
+	}
+
+	/**
+	 * Follows the note to where the user put it, rather than carrying on
+	 * writing to a path nothing lives at any more.
+	 *
+	 * Not following was worse than it looks. `indexPath` still named the old
+	 * path, so the next write recreated a note there with every saved order,
+	 * while the renamed copy — no longer matching `indexNotePath` — stopped
+	 * being hidden by `explorerSort` and appeared in the tree as a second,
+	 * stale index note beside the fresh one.
+	 *
+	 * A rename is an explicit user action on a file this plugin owns, and
+	 * "the data file is wherever I moved it" is the only reading of it that
+	 * does not produce a duplicate. Announced, because a setting changing on
+	 * its own is exactly the kind of thing that must not happen quietly.
+	 */
+	private async onIndexNoteRenamed(newPath: string): Promise<void> {
+		// Replaced, not mutated: the fields are `readonly`, and `settings.ts`
+		// swaps the whole object on every change too.
+		this.host.settings = { ...this.host.settings, indexPath: newPath };
+		try {
+			await this.host.saveSettings();
+		} catch (err) {
+			console.error('[explorer-order-editor] failed to save the renamed order note path', err);
+		}
+		new Notice(`Explorer order editor: the order note moved to ${newPath}, so the setting now points there.`);
+	}
+
+	/**
+	 * Says what will happen, and changes nothing.
+	 *
+	 * Deleting this note has two honest readings and no way to tell them
+	 * apart from a vault event: "start over" (which is how `load()` reads an
+	 * absent note at startup) and "a sync client removed it". Acting on the
+	 * first means dropping every saved order out of memory on a background
+	 * event, with the `data.json` backup left holding a copy that nothing
+	 * would go on to consult. Acting on the second means what already
+	 * happened before this existed — the next write silently recreates the
+	 * note with every order the user just deleted.
+	 *
+	 * So this does neither, and instead removes the silence: the orders are
+	 * still loaded, the note comes back on the next change, and "Start over"
+	 * in settings is the explicit action that actually clears them. That one
+	 * already exists, already confirms, and already quarantines.
+	 */
+	private onIndexNoteDeleted(): void {
+		if (this.index.size === 0) return;
+		new Notice(
+			`Explorer order editor: ${this.notePath()} was deleted, but its saved orders are still loaded and it will be recreated on the next change. ` +
+				'Use "Start over" in settings to clear them for good.',
+		);
 	}
 
 	/**
@@ -264,7 +386,7 @@ export class IndexFileStore {
 		// cannot make on its own at startup, where nothing is loaded yet: is
 		// "this note has no json block" a fresh note, or a note whose block was
 		// destroyed? Read only when that question actually arises.
-		const hadBlockBefore = result.status === 'empty' ? (await this.readBackup()).size > 0 : false;
+		const hadBlockBefore = result.status === 'empty' ? await this.backupSuggestsBlock() : false;
 		this.applyParsed(result, text, hadBlockBefore);
 	}
 
@@ -337,11 +459,39 @@ export class IndexFileStore {
 	 */
 	private applyParsed(result: ParseResult, text: string, hadBlockBefore: boolean): void {
 		if (result.status === 'invalid') {
-			this.markUnusable(result.reason, text);
+			// Proof, not optimism: `parseIndex` reaches `invalid` only once
+			// `findJsonBlock` has located a fence — a note with no fence at all
+			// comes back `empty`. So a block is at this path; it is the content
+			// that cannot be read.
+			this.markUnusable(result.reason, text, true);
 			return;
 		}
 		if (result.status === 'empty' && (this.index.size > 0 || hadBlockBefore)) {
-			this.markUnusable(MISSING_BLOCK_REASON, text);
+			// The condition on this branch *is* the proof: a non-empty in-memory
+			// index or a witness from before means a block existed here, which
+			// is the whole reason a missing one is damage rather than a blank
+			// slate.
+			this.markUnusable(MISSING_BLOCK_REASON, text, true);
+			return;
+		}
+		// A good parse arriving while this store's own debounced write is still
+		// armed. `this.index` holds a change the note does not yet, so adopting
+		// the disk copy would discard the user's reorder from memory — and then
+		// the armed timer would persist the replacement, taking it off disk as
+		// well. Gone from screen, memory and note, with `isUsable()` still true
+		// and nothing logged: the failure mode this whole file is organized
+		// against.
+		//
+		// The same hazard `quarantineThenRebuild` already guards before its
+		// fresh read, with the same answer — what is in memory is newer.
+		// Nothing on the note is lost by keeping it: the armed write serializes
+		// the entire block from `this.index` regardless, so whatever landed here
+		// was going to be replaced the moment the debounce fired.
+		//
+		// `load()` reaches this too and is unaffected: no write can be armed
+		// before the first `update()`.
+		if (result.status === 'ok' && this.writeTimerId !== null) {
+			this.markUsable(true);
 			return;
 		}
 		// A read that parses is proof a block is really there, and it counts even
@@ -504,7 +654,9 @@ export class IndexFileStore {
 	 * does inside it has to be assignment, not accumulation.
 	 */
 	private async healThenUpdate(mutate: (index: OrderIndex) => OrderIndex): Promise<RepairOutcome> {
-		const backup = await this.readBackup();
+		// Unreadable and empty are the same to a recovery *source*; the
+		// distinction `readBackup` draws is for `backupSuggestsBlock`.
+		const backup = (await this.readBackup()) ?? new Map();
 		// Read once, outside the loop, for the same reason `backup` is: neither
 		// can change while this runs — nothing between here and the write
 		// re-reads the backup, and `lastUnreadableText` only moves when the
@@ -517,11 +669,19 @@ export class IndexFileStore {
 			// went unusable. A differently-broken version that arrives in
 			// between carries its own salvageable lines, and planning from the
 			// older text would discard them while claiming to repair.
-			const outcome = await this.quarantineThenRebuild((text) => {
-				const { index: recovered, droppedLines } = recoverIndex(text, this.index, backup, lastUnreadable);
-				if (recovered.size === 0) return null;
-				return { index: mutate(recovered), droppedLines };
-			});
+			const outcome = await this.quarantineThenRebuild(
+				(text) => {
+					const { index: recovered, droppedLines } = recoverIndex(text, this.index, backup, lastUnreadable);
+					if (recovered.size === 0) return null;
+					return { index: mutate(recovered), droppedLines };
+				},
+				// The adopt path's union. Deliberately not `planFor` above: that
+				// one calls `mutate`, and `updateOrRepair`'s contract counts
+				// those calls — the adopted index gets `mutate` applied once,
+				// afterwards, by the `this.update(mutate)` in the `'adopted'`
+				// case below.
+				(adopted) => fillGapsFrom(adopted, this.index, backup, lastUnreadable),
+			);
 
 			const kept = this.keptClause(outcome.copies);
 
@@ -625,7 +785,7 @@ export class IndexFileStore {
 	 * interleave with the rebuild's own — exactly the overlap `writeChain`
 	 * exists to prevent.
 	 */
-	private async quarantineThenRebuild(planFor: (text: string) => RebuildPlan | null): Promise<RebuildOutcome> {
+	private async quarantineThenRebuild(planFor: (text: string) => RebuildPlan | null, fillGaps: (adopted: OrderIndex) => OrderIndex): Promise<RebuildOutcome> {
 		return this.runExclusive(async () => {
 			const { app } = this.host;
 			const path = this.notePath();
@@ -676,11 +836,21 @@ export class IndexFileStore {
 					// The note fixed itself while this was queued or while a
 					// confirmation dialog was open — only what `onExternalModify`
 					// was about to do anyway.
-					case 'adopt':
-						this.index = step.index;
+					//
+					// Through `fillGaps`, not as a straight replacement: this is
+					// a recovery path like the rebuild below, and the same union
+					// rule applies. Replacing outright discarded memory, the
+					// backup (which this then overwrote with the smaller
+					// adopted index) and the kept unreadable text in one step,
+					// with nothing quarantined — `copies` is empty here — and
+					// the store reporting itself healthy afterwards.
+					case 'adopt': {
+						const adopted = fillGaps(step.index);
+						this.index = adopted;
 						this.markUsable(true);
-						await this.persistBackup(step.index);
+						await this.persistBackup(adopted);
 						return { kind: 'adopted', copies };
+					}
 					case 'nothing-to-recover':
 						return { kind: 'nothing-to-recover', copies };
 					// Reported as `'gave-up'` rather than as its own outcome: the
@@ -756,7 +926,15 @@ export class IndexFileStore {
 			// A newer, differently-broken version arriving while the dialog was
 			// open is kept as its own copy rather than being written over on
 			// the strength of a snapshot from before it existed.
-			const outcome = await this.quarantineThenRebuild(() => ({ index: new Map(), droppedLines: 0 }));
+			const outcome = await this.quarantineThenRebuild(
+				() => ({ index: new Map(), droppedLines: 0 }),
+				// Identity, where `healThenUpdate` unions: this is the one
+				// caller with nothing it wants back. The user confirmed
+				// starting over, so resurrecting keys from memory or the backup
+				// into a note that healed itself would be undoing the request.
+				// Adopting is reported as "nothing was cleared" either way.
+				(adopted) => adopted,
+			);
 
 			const kept = this.keptClause(outcome.copies);
 
@@ -969,14 +1147,24 @@ export class IndexFileStore {
 	}
 
 	/**
-	 * Persists a copy of `index` into this plugin's own `data.json`, merged
-	 * into the same stored object as the settings — read
-	 * fresh and written back with only `INDEX_BACKUP_KEY` changed, rather
-	 * than overwriting the whole object from a stale in-memory copy, so this
-	 * never fights `main.ts`'s `saveSettings()` (which merges the same way)
-	 * over the file. Serialized with `orderIndex.ts`'s own `serializeIndex`
-	 * against an empty starting note — there is no second encoding here, just
-	 * the note-text format stored as a string instead of written to a file.
+	 * Persists a copy of `index` into this plugin's own `data.json`, alongside
+	 * the settings, through `host.updateData` — which is the only reason this
+	 * does not fight `main.ts`'s `saveSettings()` over the file.
+	 *
+	 * Both used to run their own `loadData` → `saveData` pair, each merging
+	 * into what it had read. Merging prevents a *blind* overwrite and nothing
+	 * else: with no shared lock, a settings toggle clicked while a backup
+	 * write was in flight had both cycles holding the same snapshot, and
+	 * whichever wrote second reverted the other. In one direction that costs
+	 * a backup generation — the third source in `recoverIndex`, and the
+	 * `hadBlockBefore` witness — which only ever surfaces later, as orders
+	 * that "could not be recovered". In the other it costs the toggle, which
+	 * looks correct in `this.plugin.settings` and in the settings tab until
+	 * the next restart.
+	 *
+	 * Serialized with `orderIndex.ts`'s own `serializeIndex` against an empty
+	 * starting note — there is no second encoding here, just the note-text
+	 * format stored as a string instead of written to a file.
 	 *
 	 * Never a source of truth on its own (see `readBackup`) — best-effort:
 	 * failures are logged, not surfaced, since losing a backup write changes
@@ -986,26 +1174,33 @@ export class IndexFileStore {
 	private async persistBackup(index: OrderIndex): Promise<void> {
 		try {
 			const text = serializeIndex('', index);
-			const data = (await this.host.loadData()) as Record<string, unknown> | null;
-			await this.host.saveData({ ...data, [INDEX_BACKUP_KEY]: text });
+			await this.host.updateData((data) => ({ ...data, [INDEX_BACKUP_KEY]: text }));
 		} catch (err) {
 			console.error('[explorer-order-editor] failed to back up the order index to data.json', err);
 		}
 	}
 
 	/**
-	 * Reads the `data.json` backup, for `healThenUpdate` only — never called
-	 * from `load()`. That asymmetry is deliberate: a missing index note
-	 * (file === null in `load()`) means the user removed it to start over,
+	 * Reads the `data.json` backup as a *recovery source*: an empty index for
+	 * anything short of a cleanly parsed backup (missing, wrong shape,
+	 * corrupt), and `null` for the one case that is not an answer at all —
+	 * `loadData()` itself threw, so nothing is known about what is stored.
+	 *
+	 * Never called from `load()` with the note absent. That asymmetry is
+	 * deliberate: a missing index note means the user removed it to start over
 	 * and must not have its content resurrected from a backup; only a note
-	 * that *exists but does not parse* — the only path that can ever mark
-	 * this store unusable — is eligible for recovery at all. Returns an
-	 * empty index for anything short of a cleanly parsed backup (missing,
-	 * wrong shape, corrupt) — `recoverIndex` treats a missing source the
-	 * same as an empty one, so this never needs to distinguish "no backup
-	 * yet" from "backup unreadable."
+	 * that *exists but does not parse* is eligible for recovery at all.
+	 *
+	 * The `null` exists because this answers two different questions.
+	 * `recoverIndex` wants a source, and "unreadable" and "empty" are the same
+	 * to it. `backupSuggestsBlock` below wants *evidence*, and there they are
+	 * opposites: an empty result is positive evidence that no block was ever
+	 * written at this path, and a caught exception is no evidence at all.
+	 * Collapsing the two let a transient `loadData` failure be read as proof
+	 * of a fresh start, which is the one verdict the write path must never
+	 * reach by accident.
 	 */
-	private async readBackup(): Promise<OrderIndex> {
+	private async readBackup(): Promise<OrderIndex | null> {
 		try {
 			const data = (await this.host.loadData()) as Record<string, unknown> | null;
 			const text = data?.[INDEX_BACKUP_KEY];
@@ -1014,8 +1209,25 @@ export class IndexFileStore {
 			return parsed.status === 'ok' ? parsed.index : new Map();
 		} catch (err) {
 			console.error('[explorer-order-editor] failed to read the order index backup from data.json', err);
-			return new Map();
+			return null;
 		}
+	}
+
+	/**
+	 * Whether the backup is evidence that a json block was once written at
+	 * this path — with "could not be read" answering **yes**.
+	 *
+	 * The two mistakes here are not symmetric, which is the whole reason this
+	 * is a named rule rather than `.size > 0` written out at each of its three
+	 * call sites. A wrong `true` refuses a write and routes the user to the
+	 * repair path, where the order is still on disk and still recoverable. A
+	 * wrong `false` lets `performWrite` append a fresh block over a note that
+	 * held every saved order in the vault, and `lastWrittenText` then makes
+	 * the resulting `modify` look like our own write, so nothing detects it.
+	 */
+	private async backupSuggestsBlock(): Promise<boolean> {
+		const backup = await this.readBackup();
+		return backup === null || backup.size > 0;
 	}
 
 	/**
@@ -1047,17 +1259,35 @@ export class IndexFileStore {
 	}
 
 	/**
+	 * Turns an armed debounce into a write on the chain; does nothing when
+	 * none is armed.
+	 *
+	 * One owner, because the two callers run in a fixed order and it is the
+	 * unhelpful one. `Component.unload` drains the callbacks handed to
+	 * `register()` and only *then* calls `onunload` (verified against
+	 * `obsidian.asar` — `obsidian-internals.md`), so the store's teardown
+	 * always runs before `main.ts` reaches `flush()`. While the cancel lived
+	 * in that teardown alone, `flush()` arrived to find `writeTimerId` already
+	 * null, skipped straight to awaiting an unchanged chain, and a reorder
+	 * made within the debounce window of quitting or disabling the plugin was
+	 * lost from disk entirely — the exact case both `flush()` and
+	 * `performWrite`'s `disposed` comment exist to cover.
+	 */
+	private commitPendingWrite(): void {
+		if (this.writeTimerId === null) return;
+		window.clearTimeout(this.writeTimerId);
+		this.writeTimerId = null;
+		this.enqueueWrite();
+	}
+
+	/**
 	 * Performs any pending write now, and waits for one already in flight.
 	 * Callers that need a write to have actually landed (rather than merely
 	 * be reflected in memory, which `update()` already guarantees
 	 * synchronously) await this.
 	 */
 	async flush(): Promise<void> {
-		if (this.writeTimerId !== null) {
-			window.clearTimeout(this.writeTimerId);
-			this.writeTimerId = null;
-			this.enqueueWrite();
-		}
+		this.commitPendingWrite();
 		await this.writeChain;
 	}
 
@@ -1098,18 +1328,25 @@ export class IndexFileStore {
 
 	/**
 	 * The actual `Vault.process`/`vault.create` write. Never throws: an
-	 * unexpected I/O error is logged and the write is simply lost until the
-	 * next `update()` schedules another attempt — `this.index` still holds
-	 * the change in memory regardless, so nothing the caller already did is
-	 * undone, only the persistence of it is delayed.
+	 * unexpected I/O error is logged and handed to `retryFailedWrite`, which
+	 * re-arms the debounce a bounded number of times and then tells the user
+	 * the change is not on disk. `this.index` holds it in memory throughout,
+	 * so nothing the caller already did is undone.
+	 *
+	 * Which is worth stating precisely, because this comment used to claim
+	 * "only the persistence of it is delayed" while nothing existed to delay
+	 * it to: the catch logged and stopped, and the order lived in memory
+	 * alone until the next restart silently loaded a note without it.
 	 */
 	private async performWrite(): Promise<void> {
-		// Deliberately NOT guarded on `disposed`. `main.ts`'s `onunload` calls
-		// `flush()` precisely so a change made moments before the plugin is
-		// disabled or reloaded still lands, and Obsidian gives no guarantee
-		// that `onunload` runs before the callbacks handed to `register()` —
-		// so if this bailed on `disposed`, that final write would be dropped
-		// exactly in the case it exists for. Writing a change the user already
+		// Deliberately NOT guarded on `disposed`. A change made moments before
+		// the plugin is disabled or reloaded still has to land, and by the time
+		// it does `disposed` is always already true: `Component.unload` drains
+		// the `register()` callbacks before calling `onunload`, so the store's
+		// teardown has run long before `main.ts` reaches `flush()`. That
+		// teardown is itself what puts this write on the chain
+		// (`commitPendingWrite`), so bailing on `disposed` here would drop the
+		// write in exactly the case it exists for. Writing a change the user already
 		// made, a moment later than expected, is harmless; losing it is not.
 		// `disposed` still stops new debounce timers being armed
 		// (`scheduleWrite`) and stops reacting to external edits
@@ -1143,6 +1380,7 @@ export class IndexFileStore {
 				this.lastWrittenText = text;
 				await app.vault.create(path, text);
 				this.indexingRetries = 0;
+				this.writeRetries = 0;
 				await this.persistBackup(this.index);
 				return;
 			}
@@ -1158,7 +1396,7 @@ export class IndexFileStore {
 			// ordinary write path (which is what runs after every reorder, and
 			// has written this note at least once by definition) keeps costing
 			// zero extra `data.json` reads.
-			const blockWasStored = this.health.sawBlock || this.lastWrittenText !== null || (await this.readBackup()).size > 0;
+			const blockWasStored = this.health.sawBlock || this.lastWrittenText !== null || (await this.backupSuggestsBlock());
 
 			let becameUnusable: string | null = null;
 			// The text the refusal below was decided against, kept for the same
@@ -1209,14 +1447,55 @@ export class IndexFileStore {
 			});
 
 			if (becameUnusable !== null) {
-				this.markUnusable(becameUnusable, refusedText);
+				// Only reachable via `blockWasStored`, which is the evidence.
+				this.markUnusable(becameUnusable, refusedText, true);
 			} else {
 				this.indexingRetries = 0;
+				this.writeRetries = 0;
 				await this.persistBackup(this.index);
 			}
 		} catch (err) {
 			console.error('[explorer-order-editor] failed to write the order index', err);
+			this.retryFailedWrite();
 		}
+	}
+
+	/**
+	 * Re-arms the debounce after a write threw, and tells the user once the
+	 * retries are spent.
+	 *
+	 * Without this the catch above was the end of the story: nothing re-armed
+	 * `scheduleWrite` (only `update()` and `awaitIndexing` do), so the order
+	 * lived on in `this.index` and nowhere else. `persistBackup` never runs on
+	 * this path either, so not even the backup held it. Meanwhile the caller
+	 * had already said "Explorer order saved." — `update()` returns `true`
+	 * synchronously, which is the whole point of the debounce — and the next
+	 * restart would `load()` an index that had quietly lost the change. That
+	 * gap is what made the doc comment on `performWrite` false when it said
+	 * only the *persistence* was delayed: nothing was delaying it.
+	 *
+	 * Bounded, and low. `awaitIndexing` retries 25 times because it is waiting
+	 * for something that genuinely does resolve on its own (the vault
+	 * finishing its walk). A `Vault.process` that throws is a deleted note, a
+	 * lock, a full disk or a permission problem — none of which a fourth
+	 * attempt 200ms later is likely to fix, and each attempt re-reads and
+	 * re-writes the note.
+	 *
+	 * The Notice is the point of the whole function, and it is deliberately
+	 * not silent-with-a-console-line like `persistBackup`'s failure: this one
+	 * contradicts something the user was already told.
+	 */
+	private retryFailedWrite(): void {
+		this.writeRetries += 1;
+		if (this.writeRetries <= MAX_WRITE_RETRIES) {
+			this.scheduleWrite();
+			return;
+		}
+		this.writeRetries = 0;
+		new Notice(
+			`Explorer order editor: could not write ${this.notePath()}, so the last order change is not saved. ` +
+				'It is still applied in this session — reorder something again once the problem is fixed, or check the console for the error.',
+		);
 	}
 
 	/**
@@ -1242,7 +1521,7 @@ export class IndexFileStore {
 		// client landing a block-less copy of a note that *did* hold orders
 		// would otherwise be accepted as normal. The backup is the other half of
 		// the proof, so this path consults it too.
-		const hadBlockBefore = result.status === 'empty' ? (await this.readBackup()).size > 0 : false;
+		const hadBlockBefore = result.status === 'empty' ? await this.backupSuggestsBlock() : false;
 		this.applyParsed(result, text, hadBlockBefore);
 		requestFileExplorerResort(this.host.app);
 	}
@@ -1263,8 +1542,8 @@ export class IndexFileStore {
 	 * fewer thing that could still be pending if a heal starts before it
 	 * would have fired.
 	 */
-	private markUnusable(reason: string, text: string): void {
-		const { health, firstNotice } = madeUnusable(this.health, reason, text);
+	private markUnusable(reason: string, text: string, blockProven: boolean): void {
+		const { health, firstNotice } = madeUnusable(this.health, reason, text, blockProven);
 		this.health = health;
 		if (this.writeTimerId !== null) {
 			window.clearTimeout(this.writeTimerId);

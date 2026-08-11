@@ -4,6 +4,12 @@
  * open in (`openingRowOrder`). Kept free of `obsidian` — `OrderModal.ts`
  * imports it and so has no unit-test surface at all, the same reason
  * `rowMove.ts` exists as its own module rather than living inline there.
+ *
+ * `openingRowOrder` has since outgrown the modal: `moveItem.ts`'s
+ * `effectiveOrder` asks the identical question ("what order is this folder in
+ * right now, preferring what the explorer renders") and used to answer it
+ * with a second, diverging fallback that ignored the stored order — H3 in
+ * `review-backlog.md`. One question, one implementation.
  */
 import { mergeOrder } from './orderIndex';
 import type { Entry } from './types';
