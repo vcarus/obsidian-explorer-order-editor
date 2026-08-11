@@ -33,29 +33,7 @@ export function displayLabel(entry: Entry): string {
 }
 
 /**
- * The name-comparison primitive behind `fallbackEntryOrder` below and, in
- * `entrySort.ts`, `sortEntries`: `localeCompare` with `numeric: true` (see
- * `fallbackEntryOrder`'s doc comment for why that option is there), falling
- * through to a plain code-unit comparison when `localeCompare` calls two
- * different names equal.
- *
- * That fallthrough is not defensive padding. `localeCompare` treats
- * canonically-equivalent strings as equal — measured on this machine,
- * `'café.md'.normalize('NFC').localeCompare('café.md'.normalize('NFD'),
- * undefined, {numeric: true})` is `0`, even though the two forms differ in
- * length (7 code units vs 8). The filesystem guarantees full names are
- * unique within a folder, but not that every device agrees on which
- * normalization form a given name is stored in, so name alone is not a
- * total order. Without a second, code-unit-level tiebreak, a
- * canonically-equivalent pair would fall through `Array.prototype.sort`'s
- * stability to whatever order they arrived in — which traces back to
- * `folder.children`, i.e. the filesystem's own enumeration, not guaranteed
- * consistent across devices — so two machines could serialize two different
- * index byte streams for what a user would call the same vault state.
- * Comparing code units directly always breaks the tie, because two distinct
- * normalization forms of the same string always differ in code units.
- *
- * The collator is built once here rather than through
+ * The collator `compareNames` runs on, built once here rather than through
  * `a.localeCompare(b, undefined, { numeric: true })` at every comparison.
  * Those two are specified to mean the same thing — `localeCompare` with an
  * options object is defined as constructing a collator with them and calling
@@ -72,6 +50,29 @@ export function displayLabel(entry: Entry): string {
  */
 const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true });
 
+/**
+ * The name-comparison primitive behind `fallbackEntryOrder` below and, in
+ * `entrySort.ts`, `sortEntries`: `NAME_COLLATOR` above — `localeCompare`'s
+ * comparison with `numeric: true` (see `fallbackEntryOrder`'s doc comment for
+ * why that option is there) — falling through to a plain code-unit comparison
+ * when the collator calls two different names equal.
+ *
+ * That fallthrough is not defensive padding. `localeCompare` treats
+ * canonically-equivalent strings as equal — measured on this machine,
+ * `'café.md'.normalize('NFC').localeCompare('café.md'.normalize('NFD'),
+ * undefined, {numeric: true})` is `0`, even though the two forms differ in
+ * length (7 code units vs 8). The filesystem guarantees full names are
+ * unique within a folder, but not that every device agrees on which
+ * normalization form a given name is stored in, so name alone is not a
+ * total order. Without a second, code-unit-level tiebreak, a
+ * canonically-equivalent pair would fall through `Array.prototype.sort`'s
+ * stability to whatever order they arrived in — which traces back to
+ * `folder.children`, i.e. the filesystem's own enumeration, not guaranteed
+ * consistent across devices — so two machines could serialize two different
+ * index byte streams for what a user would call the same vault state.
+ * Comparing code units directly always breaks the tie, because two distinct
+ * normalization forms of the same string always differ in code units.
+ */
 export function compareNames(a: string, b: string): number {
 	const collated = NAME_COLLATOR.compare(a, b);
 	if (collated !== 0) return collated;
