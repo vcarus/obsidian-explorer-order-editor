@@ -172,8 +172,22 @@ export class Vault {
 }
 
 export class Workspace {
+	/**
+	 * What `getLeavesOfType` answers with, for every type — this stub does not
+	 * model per-type filtering, only "does a test care about leaves at all".
+	 * Defaults to `[]` so every test that never touches this keeps behaving
+	 * exactly as before: `fileExplorerLeaves.ts` and its four callers see no
+	 * leaves and fall back the same way they always have.
+	 *
+	 * Settable, not fixed, because the whole point of the module this exists
+	 * for is choosing *among* leaves — a deferred one ahead of a real one, two
+	 * real ones open at once — and a stub that can only ever return `[]` can't
+	 * put a test in front of that choice at all.
+	 */
+	leaves: unknown[] = [];
+
 	getLeavesOfType(_type: string): unknown[] {
-		return [];
+		return this.leaves;
 	}
 }
 

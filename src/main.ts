@@ -1,6 +1,7 @@
 import { App, Menu, MenuItem, normalizePath, Notice, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
 import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
+import { explorerViews } from './fileExplorerLeaves';
 import { folderIndexKey, IndexFileStore } from './indexFile';
 import { refusalNotice, reportApplied } from './notices';
 import { applyMove, effectiveOrder } from './moveItem';
@@ -40,9 +41,19 @@ interface MenuItemWithSubmenu extends MenuItem {
  * declared locally and the value that comes out of it is re-checked with
  * `instanceof` before use — `file` is typed `unknown` on purpose, so that
  * checking it is the only way to get anything out of it.
+ *
+ * Also the type `isFileExplorerFocusView` below narrows to: a deferred file
+ * explorer leaf's view has no `tree` at all, only a real one does, so probing
+ * for it is what tells the two apart before `explorerFocusedItem` trusts
+ * either `containerEl` or `tree` on the result.
  */
 interface FileExplorerFocus extends View {
 	tree?: { focusedItem?: { file?: unknown } | null } | null;
+}
+
+function isFileExplorerFocusView(view: View): view is FileExplorerFocus {
+	const candidate = view as Partial<FileExplorerFocus>;
+	return typeof candidate.tree === 'object' && candidate.tree !== null;
 }
 
 /**
@@ -74,19 +85,19 @@ function hasSubmenu(item: MenuItem): item is MenuItemWithSubmenu {
  * Focus is read through `containerEl.ownerDocument` rather than the global
  * `document` so this still answers correctly in a popped-out window.
  *
- * Every leaf is checked, not just `[0]`: `getLeavesOfType` returns deferred
- * leaves too (`explorerDrag.ts` documents the trap), and with two explorers
- * open the one that matters is whichever holds focus. At most one can, so the
- * first leaf that does is the whole answer — a focused leaf whose tree has no
- * focused row resolves to `null` outright rather than falling through to some
- * other, unfocused explorer.
+ * Iterates real file explorer views only — `explorerViews` (`fileExplorerLeaves.ts`)
+ * filters out deferred leaves before this function ever sees them, using
+ * `isFileExplorerFocusView` above as the realness probe. Among the real ones,
+ * with two explorers open the one that matters is whichever holds focus; at
+ * most one can, so the first that does is the whole answer — a focused leaf
+ * whose tree has no focused row resolves to `null` outright rather than
+ * falling through to some other, unfocused explorer.
  */
 function explorerFocusedItem(app: App): TFile | TFolder | null {
-	for (const leaf of app.workspace.getLeavesOfType('file-explorer')) {
-		const { containerEl } = leaf.view;
+	for (const view of explorerViews(app, isFileExplorerFocusView)) {
+		const { containerEl } = view;
 		if (!containerEl.contains(containerEl.ownerDocument.activeElement)) continue;
 
-		const view = leaf.view as Partial<FileExplorerFocus>;
 		const file: unknown = view.tree?.focusedItem?.file;
 		return file instanceof TFile || file instanceof TFolder ? file : null;
 	}

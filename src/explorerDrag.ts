@@ -45,6 +45,7 @@
  */
 import { App, normalizePath, Notice, TFile, TFolder, type View } from 'obsidian';
 import { dropSideFor, scrollStepFor, type DropSide, type RowKind } from './dropZone';
+import { explorerViews } from './fileExplorerLeaves';
 import { applyDrop, type MoveItemHost } from './moveItem';
 import { refusalNotice, reportApplied, repairPointer, unusableClause } from './notices';
 
@@ -106,6 +107,14 @@ interface AppWithDragManager extends App {
  * is real before trusting its `containerEl` to still be the element the
  * real file explorer keeps using, rather than one a still-loading
  * placeholder view will discard.
+ *
+ * The iteration this predicate feeds — walking every `file-explorer` leaf and
+ * skipping deferred ones — moved to `fileExplorerLeaves.ts` (`explorerViews`)
+ * once it turned out to be the same loop, copied, at every one of these
+ * call sites. The predicate itself did not move with it, and stays here
+ * independent of `explorerSort.ts`'s and `indexFile.ts`'s own predicates, for
+ * the reason above: what "real" means is different at each call site, and
+ * only the loop around it was ever duplicated.
  */
 interface FileExplorerViewHandle {
 	requestSort(): void;
@@ -654,18 +663,18 @@ function armCaptureListeners(host: MoveItemHost, containerEl: HTMLElement): void
  * capture handlers, so a single drop would be written more than once. Holding
  * the elements weakly means a destroyed view's element stays collectable.
  *
- * Every `file-explorer` leaf is armed, not just `[0]`: `getLeavesOfType`
- * matches on view type and so returns deferred leaves too, whose views have
- * none of the members this needs — so indexing `[0]` would skip a real
- * explorer sitting behind a deferred one.
+ * Every real `file-explorer` view is armed, not just the first: `explorerViews`
+ * (`fileExplorerLeaves.ts`) walks every leaf `getLeavesOfType` returns and
+ * filters to the ones `isFileExplorerViewHandle` above recognizes as real,
+ * which is what keeps a deferred leaf's placeholder view — sitting ahead of
+ * or behind a real one in the list — from ever reaching `armCaptureListeners`.
  */
 export function installExplorerDrag(host: MoveItemHost): void {
 	const armed = new WeakSet<HTMLElement>();
 
 	const armAll = (): void => {
-		for (const leaf of host.app.workspace.getLeavesOfType('file-explorer')) {
-			if (!isFileExplorerViewHandle(leaf.view)) continue;
-			const { containerEl } = leaf.view;
+		for (const view of explorerViews(host.app, isFileExplorerViewHandle)) {
+			const { containerEl } = view;
 			if (armed.has(containerEl)) continue;
 			armed.add(containerEl);
 			armCaptureListeners(host, containerEl);

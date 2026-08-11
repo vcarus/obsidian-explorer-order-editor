@@ -34,7 +34,8 @@
  * exactly as before; a rename elsewhere in the vault is not the user asking
  * this plugin to repair anything.
  */
-import { App, Notice, normalizePath, Plugin, TFile, TFolder } from 'obsidian';
+import { App, Notice, normalizePath, Plugin, TFile, TFolder, type View } from 'obsidian';
+import { explorerViews } from './fileExplorerLeaves';
 import { parseIndex, recoverIndex, serializeIndex, type OrderIndex, type ParseResult } from './orderIndex';
 import { INITIAL_HEALTH, madeUnusable, madeUsable, type StoreHealth } from './storeHealth';
 import { rebuildStepFor } from './rebuildStep';
@@ -138,6 +139,11 @@ interface FileExplorerViewLike {
 	requestSort(): void;
 }
 
+function isFileExplorerViewLike(view: View): view is View & FileExplorerViewLike {
+	const candidate = view as Partial<FileExplorerViewLike>;
+	return typeof candidate.requestSort === 'function';
+}
+
 /**
  * Asks the file explorer to recompute and redraw, the same effect
  * `IndexFileStore`'s own external-change handling needs and every mutation
@@ -147,25 +153,29 @@ interface FileExplorerViewLike {
  *
  * `requestSort` is not part of Obsidian's public typed API — it lives on the
  * file explorer's own internal view subclass. Declared as its own narrow,
- * independent interface rather than imported from `explorerSort.ts` (which
- * declares the same member for its own reason): `explorerSort.ts` needs the
- * `IndexFileStore` type from this file, so the reverse import this file
- * would need to reuse its interface would be circular.
+ * independent interface rather than reusing `explorerSort.ts`'s
+ * `FileExplorerView` (which declares the same member for its own reason) —
+ * not because of a circular import any more. `fileExplorerLeaves.ts` now owns
+ * the leaf-finding this function needs and depends on neither this module nor
+ * `explorerSort.ts`, so that circularity is gone. What still keeps this
+ * interface local and one field wide is the same discipline every other
+ * internal-API touchpoint here follows: declare only the member actually read
+ * at this call site, rather than pulling in a richer interface for the one
+ * field of it this function uses (`explorerDrag.ts`'s own
+ * `FileExplorerViewHandle` makes the identical choice for the identical
+ * reason).
  *
- * Every `file-explorer` leaf is asked, not just `[0]`: `getLeavesOfType`
- * matches on view type and so returns deferred leaves too, whose views lack
- * `requestSort` — indexing `[0]` would skip a real explorer sitting behind a
- * deferred one (`explorerDrag.ts` documents the same trap for its own
- * install), and with two real explorers open both are showing the order that
- * just changed.
+ * Every `file-explorer` leaf is asked, not just the first: with two real
+ * explorers open, both are showing the order that just changed.
+ * `explorerViews` (`fileExplorerLeaves.ts`) is what finds all of them and
+ * skips deferred leaves along the way — see that module for why a deferred
+ * leaf's view has no `requestSort` to call in the first place.
  *
  * Returns `false` when no leaf's view exposes `requestSort` — never throws.
  */
 export function requestFileExplorerResort(app: App): boolean {
 	let asked = false;
-	for (const leaf of app.workspace.getLeavesOfType('file-explorer')) {
-		const view = leaf.view as Partial<FileExplorerViewLike>;
-		if (typeof view.requestSort !== 'function') continue;
+	for (const view of explorerViews(app, isFileExplorerViewLike)) {
 		view.requestSort();
 		asked = true;
 	}

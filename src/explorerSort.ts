@@ -25,6 +25,7 @@
  * always falls back to the explorer's own result on any error.
  */
 import { App, normalizePath, Plugin, TAbstractFile, TFile, TFolder, type View } from 'obsidian';
+import { firstExplorerView } from './fileExplorerLeaves';
 import { folderIndexKey, type IndexFileStore } from './indexFile';
 import { mergeOrder } from './orderIndex';
 import { aroundPrototypeMethod } from './patch';
@@ -208,18 +209,13 @@ function installOnView(host: ExplorerSortHost, view: FileExplorerView): void {
  * file explorer view is not expected to stop being one.
  */
 export function installExplorerSort(host: ExplorerSortHost): void {
-	// Every leaf is tried, not just `[0]`: `getLeavesOfType` returns deferred
-	// leaves too, whose views fail `isFileExplorerView`, so `[0]` alone would
-	// skip a real explorer sitting behind a deferred one (`explorerDrag.ts`
-	// documents the same trap for its own install). One real view is enough —
-	// the patch lands on the shared prototype, which covers every instance.
+	// One real view is enough — the patch lands on the shared prototype, which
+	// covers every instance.
 	const tryInstall = (): boolean => {
-		for (const leaf of host.app.workspace.getLeavesOfType('file-explorer')) {
-			if (!isFileExplorerView(leaf.view)) continue;
-			installOnView(host, leaf.view);
-			return true;
-		}
-		return false;
+		const view = firstExplorerView(host.app, isFileExplorerView);
+		if (view === undefined) return false;
+		installOnView(host, view);
+		return true;
 	};
 
 	if (tryInstall()) return;
@@ -251,13 +247,7 @@ export function installExplorerSort(host: ExplorerSortHost): void {
  */
 export function explorerOrderNames(app: App, folder: TFolder): readonly string[] | null {
 	try {
-		// First *real* view, not `[0]`: a deferred leaf ahead of a real one
-		// would otherwise read as "no explorer to consult" — same trap every
-		// other leaf lookup here now sidesteps (see `installExplorerSort`).
-		const view = app.workspace
-			.getLeavesOfType('file-explorer')
-			.map((leaf) => leaf.view)
-			.find(isFileExplorerView);
+		const view = firstExplorerView(app, isFileExplorerView);
 		if (view === undefined) return null;
 
 		const items = view.getSortedFolderItems(folder);
