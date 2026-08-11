@@ -191,48 +191,46 @@ export type DropOutcome = 'moved' | 'unchanged' | 'refused' | 'move-failed' | 'm
  * parent fails its own guard), so this is a belt-and-suspenders check, not a
  * path expected to be hit.
  *
- * Two shapes, same as `applyMove` above for the same-folder case, plus a
- * third for the cross-folder one:
- *
- * Same folder (`dragged.parent === dest`, reference comparison — both are
- * live `TFolder` objects resolved from the same vault): take `dest`'s
- * `orderToWriteFrom`, splice `dragged.name` beside `anchor.name`, and
- * write it — no rename involved, so this is `applyMove`'s shape exactly,
- * `insertNameBeside` standing in for `moveNameInOrder`.
- *
- * Cross folder: order matters here, and it is deliberately "make sure the
- * store can be written at all, *then* compute the destination order, *then*
- * rename, and only write the order after the rename actually lands":
+ * One sequence, branching exactly once — on whether `dragged` already lives
+ * in `dest` (`dragged.parent !== dest`, reference comparison: both are live
+ * `TFolder` objects resolved from the same vault). The same-folder case is
+ * `applyMove`'s shape exactly, `insertNameBeside` standing in for
+ * `moveNameInOrder`; the cross-folder case runs the identical sequence with
+ * the rename spliced in before the write. The ordering is deliberate —
+ * "make sure the store can be written at all, *then* compute the destination
+ * order, *then* rename, and only write the order after the rename actually
+ * lands":
  *
  * 0. The heal inside `orderToWriteFrom` — a no-op when the store is already
  *    usable, an attempt when it is not, and a `null` (reported as
  *    `'refused'`) when it cannot be healed. Happening before the read is that
- *    function's whole point; happening before step 3 is this branch's own
- *    requirement, and is what keeps the irreversible rename from running when
- *    step 4 is already known to be impossible.
- * 1. `insertNameBeside(orderToWriteFrom(host, dest), dragged.name, anchor.name,
- *    side)` is computed against `dest`'s *current* order, before `dragged`
- *    has moved anywhere — `insertNameBeside` tolerates `dragged.name` not yet
+ *    function's whole point; happening before step 3 is what keeps the
+ *    irreversible rename from running when step 4 is already known to be
+ *    impossible.
+ * 1. `insertNameBeside` is computed against `dest`'s *current* order, before
+ *    `dragged` has moved anywhere — it tolerates `dragged.name` not yet
  *    being a member of that order, which is exactly the cross-folder case.
  *    `null` here would mean `anchor.name` isn't in `dest`'s own order, which
  *    should not be reachable (the caller resolved `anchor` from a row
  *    `dest` is currently rendering) — handled as `'unchanged'` anyway, on the
  *    same "trust the null contract, not the specific reason" basis
  *    `applyMove` already follows.
- * 2. The destination path is built from `dest.path`/`dest.isRoot()` rather
- *    than assuming what the vault root's `TFolder.path` literally is (`''`
- *    vs `'/'`) — the same root-path trap this codebase avoids everywhere
- *    else (`folderIndexKey`, `orderSync.ts`'s rename handling).
- * 3. `fileManager.renameFile` actually performs the move. A failure here
- *    (most commonly a name collision already at the destination) is caught
- *    and reported as `'move-failed'` — **no** order is written in that case,
- *    keeping the on-disk move and the saved order from ever disagreeing
- *    about whether it happened.
- * 4. Only once the rename has actually succeeded is the destination's order
- *    written, using the order computed in step 1. Step 0 makes a refusal here
- *    unlikely but not impossible — the store can go unusable in between — so
- *    this reports `'moved-unsaved'` rather than `'refused'`, the file having
- *    moved either way.
+ * 2. Cross-folder only: the destination path is built from
+ *    `dest.path`/`dest.isRoot()` rather than assuming what the vault root's
+ *    `TFolder.path` literally is (`''` vs `'/'`) — the same root-path trap
+ *    this codebase avoids everywhere else (`folderIndexKey`, `orderSync.ts`'s
+ *    rename handling).
+ * 3. Cross-folder only: `fileManager.renameFile` actually performs the move.
+ *    A failure here (most commonly a name collision already at the
+ *    destination) is caught and reported as `'move-failed'` — **no** order is
+ *    written in that case, keeping the on-disk move and the saved order from
+ *    ever disagreeing about whether it happened.
+ * 4. The write. A refusal here maps to two different outcomes because the
+ *    two cases have done two different amounts of damage: same-folder renamed
+ *    nothing, so `'refused'` truthfully promises nothing happened; after a
+ *    rename the file has moved either way, so it is `'moved-unsaved'` — step
+ *    0 makes this unlikely but not impossible, since the store can go
+ *    unusable in between.
  *
  * Computing the destination order *before* the rename, rather than after, is
  * what keeps this from racing `orderSync.ts`: that module reacts to the same
@@ -255,55 +253,36 @@ export async function applyDrop(
 	const dest = anchor.parent;
 	if (dest === null) return { outcome: 'unchanged' };
 
-	if (dragged.parent === dest) {
-		// Same heal-before-reading rule as everywhere else that computes a
-		// write from an existing order (`orderToWriteFrom`). This branch renames
-		// nothing, so `'refused'` stays the honest answer when the store cannot
-		// be written — but the read still has to happen on a healed store, or
-		// the order this drop computes is a permutation of the fallback view.
-		const order = await orderToWriteFrom(host, dest);
-		if (order === null) return { outcome: 'refused' };
+	const needsRename = dragged.parent !== dest;
 
-		const next = insertNameBeside(order, dragged.name, anchor.name, side);
-		if (next === null) return { outcome: 'unchanged' };
-
-		const accepted = await host.store.updateOrRepair((index) => setOrder(index, folderIndexKey(dest), next));
-		return { outcome: accepted ? 'moved' : 'refused' };
-	}
-
-	// Heal before reading, which is where this rule was first needed and from
-	// where it has since been generalized — `orderToWriteFrom` carries the
-	// argument now, and every path that computes a write from an existing order
-	// goes through it.
-	//
-	// Healing before the *rename* is this branch's own additional requirement:
-	// `renameFile` is the one step in this function that cannot be undone, so
-	// finding out afterwards that the store will not accept the write leaves
-	// the file moved with nothing recording where it belongs — precisely the
-	// state the step-3 note above claims this ordering prevents.
-	//
-	// Not a new healing trigger: the `updateOrRepair` at the foot of this
-	// function already healed on a drop, which is one of the explicit user
-	// actions healing is allowed to run for. This only moves that same heal
-	// earlier in the sequence.
+	// Heal-before-reading, like every path that computes a write from an
+	// existing order (`orderToWriteFrom` carries the argument). Healing before
+	// the *rename* matters too: `renameFile` is the one step here that cannot
+	// be undone, so a store that cannot be written has to be found out before
+	// it, not after. Not a new healing trigger — the `updateOrRepair` at the
+	// foot of this function already healed on a drop; this only runs the same
+	// heal earlier in the sequence.
 	const order = await orderToWriteFrom(host, dest);
 	if (order === null) return { outcome: 'refused' };
 
 	const next = insertNameBeside(order, dragged.name, anchor.name, side);
 	if (next === null) return { outcome: 'unchanged' };
 
-	const newPath = normalizePath(dest.isRoot() ? dragged.name : `${dest.path}/${dragged.name}`);
-	try {
-		await host.app.fileManager.renameFile(dragged, newPath);
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		return { outcome: 'move-failed', error: message };
+	if (needsRename) {
+		const newPath = normalizePath(dest.isRoot() ? dragged.name : `${dest.path}/${dragged.name}`);
+		try {
+			await host.app.fileManager.renameFile(dragged, newPath);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			return { outcome: 'move-failed', error: message };
+		}
 	}
 
-	// `'moved-unsaved'`, not `'refused'`: the rename above already landed. The
-	// heal makes this branch unlikely rather than impossible — the store can
-	// still go unusable between it and here, since `onExternalModify` is free
-	// to run across either await.
+	// After a rename the refusal is `'moved-unsaved'`, not `'refused'`: the
+	// rename already landed, and the heal above makes this unlikely rather
+	// than impossible — the store can still go unusable between the two, since
+	// `onExternalModify` is free to run across either await. With no rename,
+	// nothing irreversible has happened and `'refused'` stays the honest word.
 	const accepted = await host.store.updateOrRepair((index) => setOrder(index, folderIndexKey(dest), next));
-	return { outcome: accepted ? 'moved' : 'moved-unsaved' };
+	return { outcome: accepted ? 'moved' : needsRename ? 'moved-unsaved' : 'refused' };
 }
