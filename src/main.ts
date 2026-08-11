@@ -158,6 +158,26 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		// default order and then visibly snap once this resolves.
 		await this.store.load();
 
+		// Quitting the app is not an unload. Obsidian's own beforeunload handler
+		// saves the layout and fires this event; it never unloads plugins, so
+		// neither `onunload` below nor anything handed to `register()` runs on
+		// the way out (verified in `obsidian-internals.md`). Without this, a
+		// reorder made inside the debounce window and then followed by Cmd+Q
+		// was lost — which is most of what the flush in `onunload` was written
+		// to prevent, covered only for the disable/hot-reload path.
+		//
+		// `tasks.add` is the mechanism Obsidian gives for exactly this: a
+		// non-empty task list makes it hold the quit behind a "Saving..."
+		// notice until the promises settle, so the write actually lands rather
+		// than racing the process going away. Best effort by the API's own
+		// admission ("not guaranteed to actually run"), which is why the
+		// debounce is short and this is a backstop rather than the plan.
+		this.registerEvent(
+			this.app.workspace.on('quit', (tasks) => {
+				tasks.add(() => this.store.flush());
+			}),
+		);
+
 		this.addSettingTab(new ExplorerOrderEditorSettingTab(this.app, this));
 
 		// Deferred to onLayoutReady to sit out the vault's startup indexing
