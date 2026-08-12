@@ -40,6 +40,7 @@ import { fillGapsFrom, parseIndex, recoverIndex, serializeIndex, type OrderIndex
 import { INITIAL_HEALTH, madeUnusable, madeUsable, type StoreHealth } from './storeHealth';
 import { rebuildStepFor } from './rebuildStep';
 import { findFreeQuarantinePath } from './quarantine';
+import type { DataRead } from './pluginData';
 import type { ExplorerOrderEditorSettings } from './settings';
 
 /** The top-level key this plugin's `data.json` stores the index backup under, alongside settings — see `persistBackup`/`readBackup`. */
@@ -116,15 +117,32 @@ const MAX_WRITE_RETRIES = 3;
 export interface IndexFileHost extends Plugin {
 	settings: ExplorerOrderEditorSettings;
 	/**
+	 * `data.json`, read through the distinction `loadData` drops
+	 * (`pluginData.ts` for what that is, `main.ts` for the I/O).
+	 * Contract: it does not throw — every failure arrives as `'unreadable'`.
+	 */
+	readData(): Promise<DataRead>;
+	/**
 	 * A serialized read-modify-write of `data.json` (`main.ts`). Required
 	 * rather than each writer doing its own `loadData`/`saveData` pair: this
 	 * store's backup and the settings object share one file, and merging on
 	 * write only prevents a *blind* overwrite — it does nothing about two
 	 * cycles interleaving, which silently reverts whichever of the two read
 	 * first. See `persistBackup`.
+	 *
+	 * `'refused'` is a decision, not a failure: the file could not be read, so
+	 * it was left exactly as it is (`mergedData`). A rejected promise means the
+	 * *write* failed, which is a different thing and leaves different evidence.
 	 */
-	updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<void>;
-	/** Persists `settings` (`main.ts`), through `updateData`. Needed here so the store can follow a rename of the note it owns. */
+	updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<'written' | 'refused'>;
+	/**
+	 * Persists `settings` (`main.ts`), through `updateData`. Needed here so the
+	 * store can follow a rename of the note it owns.
+	 *
+	 * Contract: it does not reject. It owns reporting its own failure, because
+	 * its five callers are toggle handlers and this store's rename follower,
+	 * none of which can do anything about one.
+	 */
 	saveSettings(): Promise<void>;
 }
 
@@ -322,11 +340,11 @@ export class IndexFileStore {
 		// Replaced, not mutated: the fields are `readonly`, and `settings.ts`
 		// swaps the whole object on every change too.
 		this.host.settings = { ...this.host.settings, indexPath: newPath };
-		try {
-			await this.host.saveSettings();
-		} catch (err) {
-			console.error('[explorer-order-editor] failed to save the renamed order note path', err);
-		}
+		// No `try`/`catch`: `saveSettings` does not reject (its contract on
+		// `IndexFileHost`), and it says so itself when it could not persist —
+		// catching here only added a second, less specific message for the
+		// same event.
+		await this.host.saveSettings();
 		new Notice(`Explorer order editor: the order note moved to ${newPath}, so the setting now points there.`);
 	}
 
@@ -1181,6 +1199,11 @@ export class IndexFileStore {
 	private async persistBackup(index: OrderIndex): Promise<void> {
 		try {
 			const text = serializeIndex('', index);
+			// The outcome is deliberately not logged here. A refusal means
+			// `readData` just said "unreadable" and logged that itself, one
+			// line naming the cause; a second line per refused write would say
+			// the same thing again, at error level, for something that is a
+			// decision rather than a failure.
 			await this.host.updateData((data) => ({ ...data, [INDEX_BACKUP_KEY]: text }));
 		} catch (err) {
 			console.error('[explorer-order-editor] failed to back up the order index to data.json', err);
@@ -1191,7 +1214,7 @@ export class IndexFileStore {
 	 * Reads the `data.json` backup as a *recovery source*: an empty index for
 	 * anything short of a cleanly parsed backup (missing, wrong shape,
 	 * corrupt), and `null` for the one case that is not an answer at all —
-	 * `loadData()` itself threw, so nothing is known about what is stored.
+	 * the file could not be read, so nothing is known about what is stored.
 	 *
 	 * Never called from `load()` with the note absent. That asymmetry is
 	 * deliberate: a missing index note means the user removed it to start over
@@ -1202,18 +1225,39 @@ export class IndexFileStore {
 	 * `recoverIndex` wants a source, and "unreadable" and "empty" are the same
 	 * to it. `backupSuggestsBlock` below wants *evidence*, and there they are
 	 * opposites: an empty result is positive evidence that no block was ever
-	 * written at this path, and a caught exception is no evidence at all.
-	 * Collapsing the two let a transient `loadData` failure be read as proof
-	 * of a fresh start, which is the one verdict the write path must never
-	 * reach by accident.
+	 * written at this path, and an unreadable file is no evidence at all.
+	 * Collapsing the two let a `data.json` failure be read as proof of a fresh
+	 * start, which is the one verdict the write path must never reach by
+	 * accident.
+	 *
+	 * **That is why this goes through `readData` and not `loadData`.** The
+	 * distinction used to be drawn by a `catch` here, and Obsidian does not
+	 * throw: a corrupt or unreadable `data.json` comes back as `undefined`
+	 * (see `DataRead`), which landed on `typeof text !== 'string'` and produced
+	 * the "no block was ever written" verdict — the exact reading this was
+	 * written to remove, one layer further up. The `catch` stays as a belt:
+	 * `readData` promises not to throw, and a broken promise must not decide
+	 * this question either.
 	 */
 	private async readBackup(): Promise<OrderIndex | null> {
 		try {
-			const data = (await this.host.loadData()) as Record<string, unknown> | null;
-			const text = data?.[INDEX_BACKUP_KEY];
-			if (typeof text !== 'string') return new Map();
+			const read = await this.host.readData();
+			if (read.status === 'unreadable') return null;
+			if (read.status === 'absent') return new Map();
+			const text = read.data[INDEX_BACKUP_KEY];
+			// The key has never been written at this path. The only shape here
+			// that is positive evidence of a fresh start.
+			if (text === undefined) return new Map();
+			// Present but unusable — a half-merged `data.json`, a hand edit, a
+			// shape from some other version. That the key exists at all is
+			// proof a backup was once written, and a backup is only ever
+			// written after a block was: answering "no block was ever stored"
+			// from this is the same mistake as reading an unreadable file as an
+			// empty one, one level in. An empty backup is not this case — an
+			// empty index serializes to a `{}` block and parses as `ok`.
+			if (typeof text !== 'string') return null;
 			const parsed = parseIndex(text);
-			return parsed.status === 'ok' ? parsed.index : new Map();
+			return parsed.status === 'ok' ? parsed.index : null;
 		} catch (err) {
 			console.error('[explorer-order-editor] failed to read the order index backup from data.json', err);
 			return null;

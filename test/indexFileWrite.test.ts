@@ -210,35 +210,93 @@ describe('an external modify arriving while a write is still armed', () => {
 });
 
 describe('an unreadable data.json', () => {
-	it('does not let a caught loadData failure read as proof no block was ever written', async () => {
-		// Cold start with no note: `sawBlock` is false and `lastWrittenText` is
-		// null, so the backup is the only witness `blockWasStored` has — and a
-		// throwing `loadData` used to answer it with an empty index, i.e. "this
-		// path never held a block". The user reorders, a block-less copy of a
-		// note that did hold orders lands, and the write appends a fresh block
-		// over it: the outcome `applyParsed`'s own comment calls the worst
-		// available, reached through a caught exception.
+	/**
+	 * Cold start with no note: `sawBlock` is false and `lastWrittenText` is
+	 * null, so the backup is the only witness `blockWasStored` has — and an
+	 * unreadable `data.json` used to answer it with an empty index, i.e. "this
+	 * path never held a block". The user reorders, a block-less copy of a note
+	 * that did hold orders lands, and the write appends a fresh block over it:
+	 * the outcome `applyParsed`'s own comment calls the worst available.
+	 */
+	async function reorderAgainstABlockLessNote(stub: StubPlugin, store: IndexFileStore): Promise<void> {
+		expect(store.update((i) => setOrder(i, 'navtest', ['a.md', 'b.md']))).toBe(true);
+		stub.app.vault.files.set(NOTE, 'Block-less after a sync landed.\n');
+		await store.flush();
+	}
+
+	it('does not let an unreadable data.json read as proof no block was ever written', async () => {
+		// `unreadableData`, not `failLoadData`: Obsidian returns `undefined`
+		// here and never throws, so this is the path a user actually reaches —
+		// a corrupt or unreadable file, not an exception. The `catch` this
+		// verdict used to depend on cannot run in the real app at all.
 		const { host, stub } = makeHost();
 		const store = new IndexFileStore(host);
 		await store.load();
 		expect(store.isUsable()).toBe(true);
 
-		stub.failLoadData = 'data.json is locked';
-
-		expect(store.update((i) => setOrder(i, 'navtest', ['a.md', 'b.md']))).toBe(true);
-		stub.app.vault.files.set(NOTE, 'Block-less after a sync landed.\n');
-		await store.flush();
+		stub.unreadableData = true;
+		await reorderAgainstABlockLessNote(stub, store);
 
 		expect(store.isUsable()).toBe(false);
 		expect(store.unusableReason()).toBe('Its json block is missing');
 		expect(stub.app.vault.files.get(NOTE)).toBe('Block-less after a sync landed.\n');
 	});
 
-	it('still treats a readable, empty data.json as the fresh start it is', async () => {
-		// The other side: this must not become "always refuse". With
-		// `data.json` readable and holding no backup, a block-less note really
-		// is a blank slate and the block gets appended.
+	it('reaches the same verdict when a host breaks the no-throw contract', async () => {
+		// `readBackup`'s own `try`/`catch` has exactly one way in: a `readData`
+		// that throws, which `IndexFileHost` says cannot happen. So that is
+		// what this sets up — not a throwing `loadData`, which the real
+		// `readData` would have absorbed into `'unreadable'` anyway.
+		const { host, stub } = makeHost();
+		const store = new IndexFileStore(host);
+		await store.load();
+
+		stub.failReadData = 'data.json is locked';
+		await reorderAgainstABlockLessNote(stub, store);
+
+		expect(store.isUsable()).toBe(false);
+		expect(store.unusableReason()).toBe('Its json block is missing');
+		expect(stub.app.vault.files.get(NOTE)).toBe('Block-less after a sync landed.\n');
+	});
+
+	it('treats a backup key that is present but unusable as evidence, not as a fresh start', async () => {
+		// The key existing is proof a backup was written here, and a backup is
+		// only ever written after a block was — so a corrupt one answers the
+		// same "yes, a block existed" an unreadable file does. Reading it as
+		// `new Map()` was the fixed bug's own shape, one level in: a
+		// half-merged `data.json` plus a block-less note, and the write
+		// appends a fresh block over every saved order.
+		const { host, stub } = makeHost();
+		await stub.saveData({ indexBackup: '```json\n{ not json at all\n```\n' });
+		const store = new IndexFileStore(host);
+		await store.load();
+
+		await reorderAgainstABlockLessNote(stub, store);
+
+		expect(store.isUsable()).toBe(false);
+		expect(store.unusableReason()).toBe('Its json block is missing');
+		expect(stub.app.vault.files.get(NOTE)).toBe('Block-less after a sync landed.\n');
+	});
+
+	it('still treats an absent data.json as the fresh start it is', async () => {
+		// The other side: this must not become "always refuse". With no
+		// `data.json` at all — a first install — a block-less note really is a
+		// blank slate and the block gets appended.
 		const { store, stub } = await loadedStore('Some notes of my own.\n');
+
+		expect(store.update((i) => setOrder(i, 'navtest', ['a.md']))).toBe(true);
+		await store.flush();
+
+		expect(store.isUsable()).toBe(true);
+		expect(stub.app.vault.files.get(NOTE) ?? '').toContain('navtest');
+	});
+
+	it('still treats a readable data.json with no backup key as a fresh start', async () => {
+		// The third `DataRead` case, which the two above do not reach: the file
+		// is there and parses, it simply holds no backup. That is positive
+		// evidence of a fresh start, and must stay distinct from `undefined`.
+		const { store, stub } = await loadedStore('Some notes of my own.\n');
+		await stub.saveData({ autoRefresh: true });
 
 		expect(store.update((i) => setOrder(i, 'navtest', ['a.md']))).toBe(true);
 		await store.flush();

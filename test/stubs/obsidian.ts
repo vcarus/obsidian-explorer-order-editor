@@ -25,7 +25,12 @@
  * written from the same wrong assumption would have agreed with the code and
  * gone green. See `docs/dev/obsidian-internals.md` before trusting any
  * intuition about the real thing.
+ *
+ * The one import below is the exception that proves the rule: `pluginData.ts`
+ * is a pure leaf of *ours*, and calling it is how the double is kept from
+ * owning a second copy of a decision `src/` already makes.
  */
+import { classifyData, mergedData, type DataRead } from '../../src/pluginData';
 
 /**
  * `IndexFileStore` schedules its debounced writes through `window.setTimeout`,
@@ -229,17 +234,52 @@ export class Plugin {
 	private data: Record<string, unknown> | null = null;
 
 	/**
-	 * Makes `loadData` throw, for the same reason `Vault.failCreate` exists:
-	 * the failure branch is the point. `data.json` being unreadable is not
-	 * "there is no backup" — it is "nothing is known about the backup" — and
-	 * the store has one verdict (`backupSuggestsBlock`) that must come out
-	 * differently for the two.
+	 * The real shape of an unreadable `data.json`, and the one to reach for.
+	 *
+	 * Obsidian's `Plugin.loadData()` **does not throw** when the file cannot be
+	 * read or does not parse: `Vault.readJson` logs it and returns `undefined`
+	 * (and `null`, separately, when the file is genuinely absent). Verified
+	 * against `obsidian.asar`; the greps are in
+	 * `docs/dev/obsidian-internals.md`.
+	 *
+	 * This flag existed only as `failLoadData` below until 2026-08-12, which
+	 * modelled a failure Obsidian never produces — so the code under test was
+	 * green against a `catch` that could not run in the real app, while the
+	 * value it was there to prevent (`undefined` reading as "no backup was
+	 * ever written") flowed straight through. The header's warning about stubs
+	 * that agree with the wrong assumption, in one variable.
 	 */
-	failLoadData: string | null = null;
+	unreadableData = false;
 
-	async loadData(): Promise<Record<string, unknown> | null> {
-		if (this.failLoadData !== null) throw new Error(this.failLoadData);
+	/**
+	 * Makes `readData` itself throw — a host that breaks the no-throw contract
+	 * `IndexFileHost` states, which is the only thing `readBackup`'s own
+	 * `try`/`catch` can still be reached by.
+	 *
+	 * It replaced a `failLoadData` that made `loadData` throw. That one modelled
+	 * a failure Obsidian cannot produce *and* let the double reject where the
+	 * real `readData` returns `'unreadable'` — so the test written against it
+	 * was exercising a path the app has no door to.
+	 */
+	failReadData: string | null = null;
+
+	async loadData(): Promise<Record<string, unknown> | null | undefined> {
+		if (this.unreadableData) return undefined;
 		return this.data;
+	}
+
+	/**
+	 * The real classifier, called — not a copy of it.
+	 *
+	 * It lived here as its own mapping for about an hour, and in that hour the
+	 * copy already lost the non-object arm: `[1,2]` in `data.json` classified
+	 * as `'ok'` under test and `'unreadable'` in the app. Same lesson as
+	 * `unreadableData` above, one field over. `classifyData` imports nothing,
+	 * so pulling it in creates no cycle with the `obsidian` alias.
+	 */
+	async readData(): Promise<DataRead> {
+		if (this.failReadData !== null) throw new Error(this.failReadData);
+		return classifyData(await this.loadData());
 	}
 
 	async saveData(data: Record<string, unknown>): Promise<void> {
@@ -255,17 +295,33 @@ export class Plugin {
 	 * so the plain read-modify-write is what the tests actually need, and a
 	 * future test that does interleave will fail loudly against this rather
 	 * than pass against a second implementation of the fix.
+	 *
+	 * The *policy* is a different matter and is shared: `mergedData` decides
+	 * whether this may write at all. A double that wrote where the real one
+	 * refuses would quietly cover the case the refusal exists for.
 	 */
-	async updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
-		const data = await this.loadData();
-		await this.saveData(mutate({ ...data }));
+	async updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<'written' | 'refused'> {
+		const next = mergedData(await this.readData(), mutate);
+		if (next === null) return 'refused';
+		await this.saveData(next);
+		return 'written';
 	}
 
 	/** `main.ts` writes the whole settings object; the tests that reach this only care that it round-trips through `updateData`. */
 	settings: Record<string, unknown> = {};
 
+	/**
+	 * Swallows, because the real one does and `indexFile.ts` now depends on it:
+	 * `onIndexNoteRenamed` dropped its own `try`/`catch` on the strength of the
+	 * "does not reject" contract, so a double that rejected would let that
+	 * deletion look safe here while the app got an unhandled rejection.
+	 */
 	async saveSettings(): Promise<void> {
-		await this.updateData((data) => ({ ...data, ...this.settings }));
+		try {
+			await this.updateData((data) => ({ ...data, ...this.settings }));
+		} catch {
+			// The real one reports; nothing here needs to.
+		}
 	}
 
 	registerEvent(_ref: unknown): void {}

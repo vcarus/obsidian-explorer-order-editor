@@ -40,6 +40,45 @@ export function reportApplied(app: App, autoRefresh: boolean, done: 'Saved' | 'C
 }
 
 /**
+ * `data.json` could not be read at startup, so every setting is at its
+ * default for this session.
+ *
+ * Said out loud rather than logged, because the settings tab will show the
+ * defaults as though they were the user's own choices, and one of the values
+ * behind them is where the order note lives: with a custom location
+ * unreadable, the store looks at the default path and finds nothing. The
+ * orders themselves are safe — this is the one thing worth saying about a
+ * failure whose whole visible symptom is "my settings look wrong".
+ */
+export function dataUnreadable(): void {
+	new Notice(
+		'Could not read data.json, so the settings for this plugin are showing their defaults for now — including where the order note is kept. ' +
+			'Saved orders are untouched and that file will not be overwritten. See the console, then reload the plugin once it can be read again.',
+	);
+}
+
+/**
+ * A settings change that could not be persisted.
+ *
+ * The toggle stays where the user put it for this session, so silence here
+ * would be a lie of exactly the kind `retryFailedWrite` exists to prevent on
+ * the write side: the UI says the change took, and the next restart disagrees.
+ *
+ * `cause` separates the refusal (`updateData` would not replace a file it
+ * could not read, and the file is intact) from a write that failed on its own
+ * (it may not be) — the two send the user to look at different things. A
+ * closed set rather than a boolean for the reason `reportApplied` gives above:
+ * a third failure mode should have to pick a sentence that exists.
+ */
+export function settingNotSaved(cause: 'unreadable' | 'write-failed'): void {
+	new Notice(
+		cause === 'unreadable'
+			? "Could not save this plugin's settings: data.json could not be read, so it was left as it is rather than overwritten. The change applies for this session only."
+			: "Could not save this plugin's settings: writing data.json failed. See the console. The change applies for this session only.",
+	);
+}
+
+/**
  * A reason written as a standalone sentence ("Its json block is missing"),
  * re-cased to sit inside one.
  *

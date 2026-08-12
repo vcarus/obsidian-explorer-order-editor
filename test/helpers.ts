@@ -27,8 +27,21 @@ import { StubPlugin } from './stubs/obsidian';
 /** The index note path every store-backed test uses. */
 export const NOTE = 'explorer-order.md';
 
+/**
+ * The members of `IndexFileHost` that are *ours* rather than `Plugin`'s.
+ *
+ * The cast below erases structural checking wholesale, which is fine for the
+ * Obsidian half (that is the point of a stub) and not fine for this half: when
+ * `readData` was added to the contract, nothing anywhere would have failed had
+ * the stub not grown it too — lint, both tsc projects and vitest all stay
+ * green until some test happens to reach it, and then it fails as
+ * `this.host.readData is not a function`, blamed on whichever test ran first.
+ * Annotating the construction puts that one gate back.
+ */
+type HostSurface = Pick<IndexFileHost, 'readData' | 'updateData' | 'saveSettings'>;
+
 export function makeHost(): { host: IndexFileHost; stub: StubPlugin } {
-	const stub = new StubPlugin();
+	const stub: StubPlugin & HostSurface = new StubPlugin();
 	const host = stub as unknown as IndexFileHost;
 	host.settings = { ...DEFAULT_SETTINGS, indexPath: NOTE };
 	return { host, stub };

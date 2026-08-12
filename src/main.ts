@@ -3,7 +3,8 @@ import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
 import { focusedExplorerView } from './fileExplorerLeaves';
 import { folderIndexKey, IndexFileStore, isIndexNote } from './indexFile';
-import { refusalNotice, reportApplied } from './notices';
+import { dataUnreadable, refusalNotice, reportApplied, settingNotSaved } from './notices';
+import { classifyData, mergedData, type DataRead } from './pluginData';
 import { applyMove, effectiveOrder } from './moveItem';
 import { OrderModal } from './OrderModal';
 import { registerOrderSync } from './orderSync';
@@ -287,8 +288,54 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		void this.store.flush();
 	}
 
+	/**
+	 * `data.json`, with "could not read it" kept apart from "nothing stored
+	 * there" — see `DataRead` for why Obsidian's own API drops that difference
+	 * and for the asar evidence that it never throws.
+	 *
+	 * The one owner of that classification, for the same reason
+	 * `indexNotePath` owns "which file is the index note": three call sites
+	 * read this file (settings, the settings write, the store's backup) and
+	 * each had its own nullish check, all three of which read `undefined` as
+	 * an empty file.
+	 *
+	 * Does not throw, which is what `IndexFileHost.readData` promises: a
+	 * caller deciding what an unreadable file means must not also have to
+	 * decide what a thrown one means.
+	 */
+	async readData(): Promise<DataRead> {
+		try {
+			const read = classifyData(await this.loadData());
+			// Logged here, in the arm that is actually reachable, and not only
+			// in the catch below: every notice this raises says "see the
+			// console", and until this line existed there was nothing there to
+			// see. Obsidian logs its own "failed to read JSON" for a failed
+			// read, but says nothing at all for valid json that is not an
+			// object — which `classifyData` also calls unreadable.
+			if (read.status === 'unreadable') {
+				console.error(`[explorer-order-editor] could not read ${this.manifest.dir ?? ''}/data.json: it is missing, unreadable or not a json object`);
+			}
+			return read;
+		} catch (err) {
+			// Obsidian does not throw here (`pluginData.ts`), so this is a belt
+			// against a future where it does — and the reason the contract can
+			// promise callers that every failure arrives as `'unreadable'`.
+			console.error('[explorer-order-editor] failed to read data.json', err);
+			return { status: 'unreadable' };
+		}
+	}
+
 	private async loadSettings(): Promise<void> {
-		const data = (await this.loadData()) as Partial<ExplorerOrderEditorSettings> | null;
+		const read = await this.readData();
+		// Defaults, and say so. Carrying on in silence would leave the user
+		// looking at a settings tab that disagrees with the file on disk, and
+		// `indexPath` is in here: with a custom location unreadable, the store
+		// looks for the order note at the default path, finds nothing, and a
+		// later reorder writes a second one there. The orders themselves are
+		// untouched — this is a Notice, not a repair, and `updateData` refuses
+		// to write over the file it could not read.
+		if (read.status === 'unreadable') dataUnreadable();
+		const data = (read.status === 'ok' ? read.data : {}) as Partial<ExplorerOrderEditorSettings>;
 		// Picked field by field, not `{...DEFAULT_SETTINGS, ...data}`: `data`
 		// is whatever `data.json` currently holds, which can also
 		// carry `IndexFileStore`'s index backup (see `saveSettings` below).
@@ -297,11 +344,11 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		// and it would then ride along on every future `saveSettings()` call,
 		// potentially overwriting a fresher backup with a stale one.
 		this.settings = {
-			autoRefresh: data?.autoRefresh ?? DEFAULT_SETTINGS.autoRefresh,
-			hideIndexFile: data?.hideIndexFile ?? DEFAULT_SETTINGS.hideIndexFile,
-			dragToReorder: data?.dragToReorder ?? DEFAULT_SETTINGS.dragToReorder,
-			showMoveActions: data?.showMoveActions ?? DEFAULT_SETTINGS.showMoveActions,
-			indexPath: data?.indexPath ?? DEFAULT_SETTINGS.indexPath,
+			autoRefresh: data.autoRefresh ?? DEFAULT_SETTINGS.autoRefresh,
+			hideIndexFile: data.hideIndexFile ?? DEFAULT_SETTINGS.hideIndexFile,
+			dragToReorder: data.dragToReorder ?? DEFAULT_SETTINGS.dragToReorder,
+			showMoveActions: data.showMoveActions ?? DEFAULT_SETTINGS.showMoveActions,
+			indexPath: data.indexPath ?? DEFAULT_SETTINGS.indexPath,
 		};
 	}
 
@@ -321,21 +368,47 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 	 */
 	private dataChain: Promise<void> = Promise.resolve();
 
-	async updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<void> {
+	async updateData(mutate: (data: Record<string, unknown>) => Record<string, unknown>): Promise<'written' | 'refused'> {
 		const run = this.dataChain.then(async () => {
-			const data = (await this.loadData()) as Record<string, unknown> | null;
-			await this.saveData(mutate({ ...data }));
+			// The merge-or-refuse policy is `mergedData` (`pluginData.ts`), not
+			// written out here, so the test double runs the same one: a double
+			// that accepts writes in the case this refuses would let a test
+			// assert "the backup was not clobbered" against the double.
+			const next = mergedData(await this.readData(), mutate);
+			if (next === null) return 'refused' as const;
+			await this.saveData(next);
+			return 'written' as const;
 		});
-		this.dataChain = run.catch(() => undefined);
+		this.dataChain = run.then(
+			() => undefined,
+			() => undefined,
+		);
 		return run;
 	}
 
 	async saveSettings(): Promise<void> {
-		// Not a blind `saveData(this.settings)`: `data.json` is shared with
-		// `IndexFileStore`'s index backup under a key this settings object
-		// doesn't know about, and a wholesale overwrite from this
-		// stale-by-construction object would erase it.
-		await this.updateData((data) => ({ ...data, ...this.settings }));
+		try {
+			// Not a blind `saveData(this.settings)`: `data.json` is shared with
+			// `IndexFileStore`'s index backup under a key this settings object
+			// doesn't know about, and a wholesale overwrite from this
+			// stale-by-construction object would erase it.
+			const outcome = await this.updateData((data) => ({ ...data, ...this.settings }));
+			// A refusal arrives as a value and a broken write as an exception,
+			// which is the difference the two sentences turn on: the refusal
+			// left `data.json` exactly as it is, a failed write did not. Saying
+			// "could not be read" about a full disk sends the user to look at
+			// the wrong thing.
+			if (outcome === 'refused') settingNotSaved('unreadable');
+		} catch (err) {
+			// Caught here rather than at the five callers — toggle handlers and
+			// the store's rename follower, none of which can do anything about
+			// it, and a rejection they don't await lands as an unhandled one.
+			// The setting stays changed in memory for this session (undoing it
+			// would be a second surprise), and saying so is what stops that
+			// from being a silent lie about persistence.
+			console.error('[explorer-order-editor] failed to save settings', err);
+			settingNotSaved('write-failed');
+		}
 	}
 
 	private async clearOrderFor(folder: TFolder): Promise<void> {

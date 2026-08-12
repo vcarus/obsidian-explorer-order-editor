@@ -141,6 +141,13 @@ folder rather than the file, and git conflict markers leave both sides' folders
 intact. If none of the three yields anything, the note is left exactly as it
 is — a repair never replaces your only copy with an empty one.
 
+Two other messages mean something else. If an order could not be written — a
+full disk, a locked file — the plugin says so and keeps showing the new order,
+so fix the cause and reorder something soon after: that writes everything the
+session is still holding. If it says it could not read its own `data.json`,
+your saved orders are safe in the note, but settings show their defaults and
+changes to them will not stick, so fix that file and reload the plugin.
+
 ## Known limitations
 
 - An order is keyed by folder path, so a folder renamed or moved **while this
