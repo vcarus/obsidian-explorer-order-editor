@@ -139,11 +139,12 @@ export interface IndexFileHost extends Plugin {
 	 * Persists `settings` (`main.ts`), through `updateData`. Needed here so the
 	 * store can follow a rename of the note it owns.
 	 *
-	 * Contract: it does not reject. It owns reporting its own failure, because
-	 * its five callers are toggle handlers and this store's rename follower,
-	 * none of which can do anything about one.
+	 * Contract: it does not reject, and it reports its own failure to the user.
+	 * The outcome comes back as a value so a caller that is about to *announce*
+	 * the change — this store's rename follower — can avoid announcing one that
+	 * did not reach disk.
 	 */
-	saveSettings(): Promise<void>;
+	saveSettings(): Promise<'saved' | 'not-saved'>;
 }
 
 /**
@@ -344,8 +345,20 @@ export class IndexFileStore {
 		// `IndexFileHost`), and it says so itself when it could not persist —
 		// catching here only added a second, less specific message for the
 		// same event.
-		await this.host.saveSettings();
-		new Notice(`Explorer order editor: the order note moved to ${newPath}, so the setting now points there.`);
+		const saved = await this.host.saveSettings();
+		// Two sentences, because the second half is the part that stops being
+		// true when the save did not land: the setting points at the new path
+		// for this session either way, but only a saved one is still pointing
+		// there after a restart — and that is exactly when the old path gets a
+		// duplicate note, which is what this whole method exists to prevent.
+		// Announcing it unconditionally would have handed the user the
+		// reassuring half to act on, right after `saveSettings` said the
+		// opposite.
+		new Notice(
+			saved === 'saved'
+				? `Explorer order editor: the order note moved to ${newPath}, so the setting now points there.`
+				: `Explorer order editor: the order note moved to ${newPath}. This session follows it, but the setting could not be saved — fix that first, or the old path comes back on restart.`,
+		);
 	}
 
 	/**

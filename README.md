@@ -146,7 +146,9 @@ full disk, a locked file — the plugin says so and keeps showing the new order,
 so fix the cause and reorder something soon after: that writes everything the
 session is still holding. If it says it could not read its own `data.json`,
 your saved orders are safe in the note, but settings show their defaults and
-changes to them will not stick, so fix that file and reload the plugin.
+changes to them will not stick until it can be read: repair or delete that
+file and the plugin picks it up by itself, or press **Read it again** in its
+settings.
 
 ## Known limitations
 

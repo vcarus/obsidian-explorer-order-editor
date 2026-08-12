@@ -87,8 +87,12 @@ export const DEFAULT_SETTINGS: ExplorerOrderEditorSettings = {
  */
 export interface SettingsHost extends Plugin {
 	settings: ExplorerOrderEditorSettings;
-	saveSettings(): Promise<void>;
+	saveSettings(): Promise<'saved' | 'not-saved'>;
 	store: IndexFileStore;
+	/** True while `data.json` could not be read, so every row below shows a default rather than a choice. */
+	settingsAreDefaulted(): boolean;
+	/** Re-reads `data.json` on demand; `true` once the real settings are back. */
+	reloadSettings(): Promise<boolean>;
 }
 
 export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
@@ -108,6 +112,32 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 	 */
 	getSettingDefinitions(): SettingDefinitionItem[] {
 		return [
+			// First, and above the settings themselves, because while it is
+			// visible every row below it is showing a default rather than a
+			// choice — including where the order note is kept. A Notice fired
+			// once when this happened; a tab opened later would otherwise
+			// present the defaults as the user's own.
+			//
+			// Obsidian usually clears this row without anyone pressing the
+			// button: it calls `onExternalSettingsChange` when the file changes
+			// and refreshes this tab itself. The button is for the cases that
+			// misses — a failed write raised the mtime threshold, or a platform
+			// where the config-file watch does not reach here.
+			{
+				name: "This plugin's settings could not be read",
+				desc:
+					'The settings below are defaults, not your saved values, and changes to them will not be kept. ' +
+					'Saved orders are unaffected — they live in the order note. Repair or delete data.json in this plugin folder, then read it again.',
+				visible: () => this.plugin.settingsAreDefaulted(),
+				render: (setting) => {
+					setting.addButton((button) =>
+						button
+							.setButtonText('Read it again')
+							.setDisabled(this.busy)
+							.onClick(() => void this.runReloadSettings()),
+					);
+				},
+			},
 			{
 				name: 'Automatically refresh after saving',
 				desc: 'Update the file explorer as soon as an order is saved or cleared, instead of waiting for its next refresh.',
@@ -599,6 +629,26 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 					'Could not start over: the order note could not be rebuilt. It still holds what it did — see the console for details. ' +
 						'A kept copy of it may already have been created beside it.',
 				);
+			}
+		} finally {
+			this.busy = false;
+			this.update();
+		}
+	}
+
+	/**
+	 * Re-reads `data.json` for the row above, and says which way it went.
+	 *
+	 * Speaks on failure only. Success already announces itself twice over —
+	 * the plugin raises its own "your settings are back" Notice, and this row
+	 * disappears along with the defaults it was warning about.
+	 */
+	private async runReloadSettings(): Promise<void> {
+		this.busy = true;
+		this.update();
+		try {
+			if (!(await this.plugin.reloadSettings())) {
+				new Notice('Still could not read data.json. See the console, then repair or delete that file.');
 			}
 		} finally {
 			this.busy = false;

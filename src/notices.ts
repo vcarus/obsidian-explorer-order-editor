@@ -58,6 +58,18 @@ export function dataUnreadable(): void {
 }
 
 /**
+ * `data.json` became readable again and the real settings are back.
+ *
+ * The counterpart to `dataUnreadable`, and said out loud for the same reason:
+ * the values in the settings tab just changed under the user without them
+ * touching anything. Silence would leave the earlier warning as the last word
+ * on a condition that has since resolved.
+ */
+export function settingsRecovered(): void {
+	new Notice("Read this plugin's data.json again — your settings are back, and changes to them will be saved from now on.");
+}
+
+/**
  * A settings change that could not be persisted.
  *
  * The toggle stays where the user put it for this session, so silence here

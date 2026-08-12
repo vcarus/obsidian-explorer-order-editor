@@ -370,13 +370,38 @@ describe('the index note being renamed or deleted', () => {
 		await new Promise((resolve) => window.setTimeout(resolve, 0));
 
 		expect(host_indexPath(stub)).toBe(moved);
-		expect(notices.some((notice) => notice.includes(moved))).toBe(true);
+		// The exact set, not `notices.some(...)`: a build that also raised
+		// "could not save the setting" would satisfy an existence check while
+		// telling the user two contradictory things, one of which is the one
+		// they would act on.
+		expect(notices).toEqual([`Explorer order editor: the order note moved to ${moved}, so the setting now points there.`]);
 
 		// And the write lands on the new path, leaving nothing at the old one.
 		expect(store.update((i) => setOrder(i, 'navtest', ['b.md', 'a.md']))).toBe(true);
 		await store.flush();
 		expect(stub.app.vault.files.get(moved) ?? '').toContain('b.md');
 		expect(stub.app.vault.files.has(NOTE)).toBe(false);
+	});
+
+	it('does not promise the moved path survives a restart when the setting could not be saved', async () => {
+		// The announcement and the save disagree in exactly one case, and it is
+		// the case that produces the duplicate note this method exists to
+		// prevent: `indexPath` reverts on restart, the store writes a fresh
+		// note at the old path, and the moved one stops being hidden. So the
+		// sentence has to change, not just be accompanied by a warning.
+		const { stub } = await loadedStore(serializeIndex('', new Map([['navtest', ['a.md']]])));
+		const moved = 'notes/explorer-order.md';
+		stub.app.vault.files.set(moved, stub.app.vault.files.get(NOTE) ?? '');
+		stub.app.vault.files.delete(NOTE);
+		stub.unreadableData = true;
+		resetNotices();
+
+		stub.app.vault.fire('rename', moved, NOTE);
+		await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain('the setting could not be saved');
+		expect(notices[0]).not.toContain('so the setting now points there');
 	});
 
 	it('ignores a rename of some other note', async () => {

@@ -2,9 +2,9 @@ import { App, Menu, MenuItem, Notice, Plugin, TAbstractFile, TFile, TFolder, typ
 import { installExplorerDrag } from './explorerDrag';
 import { installExplorerSort } from './explorerSort';
 import { focusedExplorerView } from './fileExplorerLeaves';
-import { folderIndexKey, IndexFileStore, isIndexNote } from './indexFile';
-import { dataUnreadable, refusalNotice, reportApplied, settingNotSaved } from './notices';
-import { classifyData, mergedData, type DataRead } from './pluginData';
+import { folderIndexKey, IndexFileStore, isIndexNote, requestFileExplorerResort } from './indexFile';
+import { dataUnreadable, refusalNotice, reportApplied, settingNotSaved, settingsRecovered } from './notices';
+import { boolField, classifyData, holdsAll, mergedData, stringField, type DataRead } from './pluginData';
 import { applyMove, effectiveOrder } from './moveItem';
 import { OrderModal } from './OrderModal';
 import { registerOrderSync } from './orderSync';
@@ -325,17 +325,35 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * True while `data.json` could not be read, so everything in `settings` is
+	 * a default rather than the user's choice.
+	 *
+	 * Kept rather than announced and forgotten, for the reason `storeHealth`
+	 * keeps the note's: the settings tab would otherwise render defaults as if
+	 * they were chosen, `saveSettings` would have to rediscover the state by
+	 * attempting a write, and a tab opened five minutes after the Notice would
+	 * say nothing at all. `indexPath` is one of the defaulted values, so this
+	 * is also what tells `onExternalSettingsChange` whether a recovered file
+	 * means the store is now looking at the wrong note.
+	 */
+	private defaultedSettings = false;
+
+	/** @see defaultedSettings — read by the settings tab for its warning row. */
+	settingsAreDefaulted(): boolean {
+		return this.defaultedSettings;
+	}
+
 	private async loadSettings(): Promise<void> {
 		const read = await this.readData();
-		// Defaults, and say so. Carrying on in silence would leave the user
-		// looking at a settings tab that disagrees with the file on disk, and
-		// `indexPath` is in here: with a custom location unreadable, the store
-		// looks for the order note at the default path, finds nothing, and a
-		// later reorder writes a second one there. The orders themselves are
-		// untouched — this is a Notice, not a repair, and `updateData` refuses
-		// to write over the file it could not read.
-		if (read.status === 'unreadable') dataUnreadable();
-		const data = (read.status === 'ok' ? read.data : {}) as Partial<ExplorerOrderEditorSettings>;
+		const wasDefaulted = this.defaultedSettings;
+		this.defaultedSettings = read.status === 'unreadable';
+		// Once per unreadable stretch, the way `madeUnusable` does it for the
+		// note: this now runs again on every external change and on the
+		// settings tab's own retry, and a Notice per attempt would be noise
+		// about a condition the tab is already showing.
+		if (this.defaultedSettings && !wasDefaulted) dataUnreadable();
+		const data = read.status === 'ok' ? read.data : {};
 		// Picked field by field, not `{...DEFAULT_SETTINGS, ...data}`: `data`
 		// is whatever `data.json` currently holds, which can also
 		// carry `IndexFileStore`'s index backup (see `saveSettings` below).
@@ -343,13 +361,71 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		// `this.settings` at runtime (the `Partial<...>` cast doesn't strip it),
 		// and it would then ride along on every future `saveSettings()` call,
 		// potentially overwriting a fresher backup with a stale one.
+		//
+		// Typed field readers rather than `??` for the reason `boolField`
+		// documents: valid json is not the same as a usable value.
 		this.settings = {
-			autoRefresh: data.autoRefresh ?? DEFAULT_SETTINGS.autoRefresh,
-			hideIndexFile: data.hideIndexFile ?? DEFAULT_SETTINGS.hideIndexFile,
-			dragToReorder: data.dragToReorder ?? DEFAULT_SETTINGS.dragToReorder,
-			showMoveActions: data.showMoveActions ?? DEFAULT_SETTINGS.showMoveActions,
-			indexPath: data.indexPath ?? DEFAULT_SETTINGS.indexPath,
+			autoRefresh: boolField(data, 'autoRefresh', DEFAULT_SETTINGS.autoRefresh),
+			hideIndexFile: boolField(data, 'hideIndexFile', DEFAULT_SETTINGS.hideIndexFile),
+			dragToReorder: boolField(data, 'dragToReorder', DEFAULT_SETTINGS.dragToReorder),
+			showMoveActions: boolField(data, 'showMoveActions', DEFAULT_SETTINGS.showMoveActions),
+			indexPath: stringField(data, 'indexPath', DEFAULT_SETTINGS.indexPath),
 		};
+	}
+
+	/**
+	 * Obsidian's own "someone else changed your `data.json`" hook, used for
+	 * exactly one thing: recovering from having had to fall back to defaults.
+	 *
+	 * The chain is `raw` → `Plugins.onRaw` (path must be this plugin's
+	 * `data.json`) → a 50ms-debounced `_onConfigFileChange`, which calls this
+	 * only when the file's mtime is **strictly greater** than the last one this
+	 * plugin wrote, then refreshes the settings tab itself. Decompiled in
+	 * `docs/dev/obsidian-internals.md`.
+	 *
+	 * Two things make it work here, and both are worth stating because both
+	 * are easy to break:
+	 *
+	 * - `Plugin.loadData()` records that mtime only when it actually read
+	 *   something, so after an unreadable start the threshold stays at 0 and
+	 *   *any* repair fires this — including a sync client's, which typically
+	 *   preserves an older mtime and would otherwise be ignored.
+	 * - `saveData` raises the threshold to `Date.now()` **before** writing, and
+	 *   does so even when the write fails. Saving defaults over a file we could
+	 *   not read would therefore have closed this door permanently. That
+	 *   `updateData` refuses instead is what holds it open.
+	 *
+	 * Deliberately does nothing when the settings did load: adopting arbitrary
+	 * mid-session settings changes from another device is a separate feature
+	 * with its own questions (an `indexPath` moving under a loaded index), and
+	 * nothing here regresses by leaving it alone — before this hook existed,
+	 * every external change was ignored.
+	 */
+	async onExternalSettingsChange(): Promise<void> {
+		if (!this.defaultedSettings) return;
+		const before = this.settings.indexPath;
+		await this.loadSettings();
+		if (this.defaultedSettings) return;
+
+		// The store spent this session pointed at the default path. Re-reading
+		// is the whole point of recovering: whatever it loaded (usually
+		// nothing, since the note is at the path we could not read) is answered
+		// for a file that was never the user's.
+		if (this.settings.indexPath !== before) await this.store.load();
+		settingsRecovered();
+		requestFileExplorerResort(this.app);
+	}
+
+	/**
+	 * Re-reads `data.json` on demand — the settings tab's retry, and the belt
+	 * for the two cases the hook above cannot cover: a failed `saveData` has
+	 * already raised its mtime threshold to "now", and the `raw` pipeline for
+	 * hidden config paths is unverified on mobile.
+	 */
+	async reloadSettings(): Promise<boolean> {
+		await this.loadSettings();
+		if (!this.defaultedSettings) requestFileExplorerResort(this.app);
+		return !this.defaultedSettings;
 	}
 
 	/**
@@ -386,28 +462,59 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		return run;
 	}
 
-	async saveSettings(): Promise<void> {
+	/**
+	 * Persists `settings`, and — unusually — checks that it worked.
+	 *
+	 * The check is not defensive programming: `Plugin.saveData` cannot fail out
+	 * loud. It resolves through `Vault.writeJson`, whose catch discards the
+	 * error and logs nothing, so a full disk or a read-only `.obsidian`
+	 * produces a resolved promise, no console line, and a toggle that silently
+	 * disagrees with the file. Reading the file back is the only signal there
+	 * is (`docs/dev/obsidian-internals.md`), and it costs one small read on an
+	 * action a user takes a handful of times.
+	 *
+	 * Only on this path. The index backup writes through the same
+	 * `updateData` on every reorder, and there the extra read would be per
+	 * order change to tell the user something they cannot act on — the note
+	 * itself, which is where orders actually live, does report its own write
+	 * failures (`retryFailedWrite`).
+	 *
+	 * Does not reject: `indexFile.ts`'s rename follower and the settings tab's
+	 * toggles have nowhere to put an exception, which is why the outcome is a
+	 * value.
+	 */
+	async saveSettings(): Promise<'saved' | 'not-saved'> {
 		try {
 			// Not a blind `saveData(this.settings)`: `data.json` is shared with
 			// `IndexFileStore`'s index backup under a key this settings object
 			// doesn't know about, and a wholesale overwrite from this
 			// stale-by-construction object would erase it.
-			const outcome = await this.updateData((data) => ({ ...data, ...this.settings }));
-			// A refusal arrives as a value and a broken write as an exception,
-			// which is the difference the two sentences turn on: the refusal
-			// left `data.json` exactly as it is, a failed write did not. Saying
-			// "could not be read" about a full disk sends the user to look at
-			// the wrong thing.
-			if (outcome === 'refused') settingNotSaved('unreadable');
+			if ((await this.updateData((data) => ({ ...data, ...this.settings }))) === 'refused') {
+				settingNotSaved('unreadable');
+				return 'not-saved';
+			}
+			// Read-back through the same serial queue the write used, and
+			// through `readData` rather than any cache: `Vault.cachedRead` is
+			// keyed by TFile and is not in this path at all, and `adapter.read`
+			// is uncached.
+			const after = await this.readData();
+			// `{...this.settings}` because the settings type has no index
+			// signature — a structural detail, not a copy anyone needs.
+			if (after.status !== 'ok' || !holdsAll(after.data, { ...this.settings })) {
+				settingNotSaved('write-failed');
+				return 'not-saved';
+			}
+			return 'saved';
 		} catch (err) {
-			// Caught here rather than at the five callers — toggle handlers and
-			// the store's rename follower, none of which can do anything about
-			// it, and a rejection they don't await lands as an unhandled one.
-			// The setting stays changed in memory for this session (undoing it
-			// would be a second surprise), and saying so is what stops that
-			// from being a silent lie about persistence.
+			// A rejection can only come from something other than the write
+			// itself now, but it still must not reach the callers: a promise
+			// they don't await lands as an unhandled rejection. The setting
+			// stays changed in memory for this session (undoing it would be a
+			// second surprise), and saying so is what stops that from being a
+			// silent lie about persistence.
 			console.error('[explorer-order-editor] failed to save settings', err);
 			settingNotSaved('write-failed');
+			return 'not-saved';
 		}
 	}
 

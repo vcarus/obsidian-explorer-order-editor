@@ -64,6 +64,39 @@ export function classifyData(raw: unknown): DataRead {
  * in precisely the case this refuses, and any test asserting "the backup was
  * not clobbered" would then be asserting it against the double.
  */
+/**
+ * One field of a settings object, only if `data.json` really holds that type.
+ *
+ * `??` alone stops one step short of the rule `classifyData` follows: parsing
+ * successfully is not the same as being usable. `{"autoRefresh":"no"}` is
+ * valid json, and `data.autoRefresh ?? DEFAULT` puts the string `"no"` into a
+ * field typed `boolean`, where every later `if` treats it as true and nothing
+ * ever says why.
+ */
+export function boolField(data: Record<string, unknown>, key: string, fallback: boolean): boolean {
+	const value = data[key];
+	return typeof value === 'boolean' ? value : fallback;
+}
+
+/** @see boolField */
+export function stringField(data: Record<string, unknown>, key: string, fallback: string): string {
+	const value = data[key];
+	return typeof value === 'string' ? value : fallback;
+}
+
+/**
+ * Whether `data` already carries every key of `expected`, with the same value.
+ *
+ * The read-back half of a write that cannot fail out loud: Obsidian's
+ * `writeJson` catches every write error and resolves anyway (no throw, no log
+ * — see `docs/dev/obsidian-internals.md`), so comparing what came back is the
+ * only way to know the bytes landed. Shallow and key-wise on purpose: the
+ * other writer's key shares this file and must not count as a difference.
+ */
+export function holdsAll(data: Record<string, unknown>, expected: Record<string, unknown>): boolean {
+	return Object.entries(expected).every(([key, value]) => data[key] === value);
+}
+
 export function mergedData(
 	read: DataRead,
 	mutate: (data: Record<string, unknown>) => Record<string, unknown>,

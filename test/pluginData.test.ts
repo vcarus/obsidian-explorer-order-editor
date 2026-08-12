@@ -8,7 +8,7 @@
  * below are here in the order they were lost, not in the order they read.
  */
 import { describe, expect, it } from 'vitest';
-import { classifyData, mergedData } from '../src/pluginData';
+import { boolField, classifyData, holdsAll, mergedData, stringField } from '../src/pluginData';
 
 describe('classifyData', () => {
 	it('reads undefined as unreadable, because that is what a failed read returns', () => {
@@ -36,6 +36,37 @@ describe('classifyData', () => {
 		expect(classifyData([1, 2])).toEqual({ status: 'unreadable' });
 		expect(classifyData('hi')).toEqual({ status: 'unreadable' });
 		expect(classifyData(42)).toEqual({ status: 'unreadable' });
+	});
+});
+
+describe('boolField / stringField', () => {
+	it('takes the stored value when it is the right type', () => {
+		expect(boolField({ autoRefresh: false }, 'autoRefresh', true)).toBe(false);
+		expect(stringField({ indexPath: 'meta/order.md' }, 'indexPath', 'x.md')).toBe('meta/order.md');
+	});
+
+	it('falls back for a value of the wrong type, not just a missing one', () => {
+		// `{"autoRefresh":"no"}` is valid json, and `?? DEFAULT` would put that
+		// string into a `boolean` field, where every later `if` reads it as
+		// true. Same principle as classifyData's non-object arm, one level in.
+		expect(boolField({ autoRefresh: 'no' }, 'autoRefresh', true)).toBe(true);
+		expect(boolField({ autoRefresh: 0 }, 'autoRefresh', true)).toBe(true);
+		expect(boolField({}, 'autoRefresh', true)).toBe(true);
+		expect(stringField({ indexPath: 42 }, 'indexPath', 'x.md')).toBe('x.md');
+		expect(stringField({ indexPath: null }, 'indexPath', 'x.md')).toBe('x.md');
+	});
+});
+
+describe('holdsAll', () => {
+	it('ignores keys it was not asked about', () => {
+		// The other writer's key shares this file; a fresh index backup landing
+		// between the write and the read-back is not a failed settings write.
+		expect(holdsAll({ a: 1, indexBackup: 'anything' }, { a: 1 })).toBe(true);
+	});
+
+	it('is false when a key is missing or different', () => {
+		expect(holdsAll({}, { a: 1 })).toBe(false);
+		expect(holdsAll({ a: 2 }, { a: 1 })).toBe(false);
 	});
 });
 

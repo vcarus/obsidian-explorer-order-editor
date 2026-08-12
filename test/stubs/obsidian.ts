@@ -316,11 +316,16 @@ export class Plugin {
 	 * "does not reject" contract, so a double that rejected would let that
 	 * deletion look safe here while the app got an unhandled rejection.
 	 */
-	async saveSettings(): Promise<void> {
+	async saveSettings(): Promise<'saved' | 'not-saved'> {
 		try {
-			await this.updateData((data) => ({ ...data, ...this.settings }));
+			// No read-back: `main.ts` verifies because the real `saveData`
+			// cannot fail out loud, and here it is this file that decides
+			// whether it fails. Reproducing the check would only prove the
+			// double agrees with itself.
+			return (await this.updateData((data) => ({ ...data, ...this.settings }))) === 'refused' ? 'not-saved' : 'saved';
 		} catch {
 			// The real one reports; nothing here needs to.
+			return 'not-saved';
 		}
 	}
 
