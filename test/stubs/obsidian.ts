@@ -350,6 +350,7 @@ export class Plugin {
 }
 
 export class Modal {}
+export class FuzzySuggestModal {}
 export class PluginSettingTab {}
 
 /**

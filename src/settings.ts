@@ -1,19 +1,23 @@
 /**
- * Four exposed settings, plus one stored-but-not-yet-exposed value:
+ * Four toggled settings, plus one that is only ever changed by moving a file:
  *
  * - `autoRefresh`, `hideIndexFile`, `dragToReorder` and `showMoveActions`
  *   below have toggles on this tab.
  * - `indexPath` (the vault path of the order index note, read by
- *   `IndexFileStore`) is stored but deliberately not exposed. A text field
- *   here would let one typo point the plugin at a note that doesn't exist,
- *   whose only symptom is every saved order appearing to vanish at once —
- *   a bad trade for a need nobody has expressed. It lives in the settings
- *   type anyway so the path is configurable by hand, and so exposing it
- *   later is a UI change rather than a data-shape change.
+ *   `IndexFileStore`) has a row — "Order note location" — but deliberately
+ *   no text field. A text field would let one typo point the plugin at a
+ *   note that doesn't exist, whose only symptom is every saved order
+ *   appearing to vanish at once. The row instead *moves the note*: a folder
+ *   picker, one `fileManager.renameFile`, and `IndexFileStore`'s rename
+ *   listener follows it exactly as it follows a rename made by hand. The
+ *   path only ever changes to where a note demonstrably now is, so the typo
+ *   failure has no way in (issue #7: keeping the note out of the vault
+ *   root). Hand-editing `data.json` is still possible, as before.
  */
-import { App, Notice, Plugin, PluginSettingTab, TFile, type SettingDefinitionItem } from 'obsidian';
+import { App, FuzzySuggestModal, normalizePath, Notice, Plugin, PluginSettingTab, TAbstractFile, TFile, TFolder, type SettingDefinitionItem } from 'obsidian';
 import { ConfirmModal } from './ConfirmModal';
-import { indexNotePath, requestFileExplorerResort, type IndexFileStore, type RepairOutcome } from './indexFile';
+import { indexNotePath, isIndexNote, requestFileExplorerResort, type IndexFileStore, type RepairOutcome } from './indexFile';
+import { folderChoices, noteLocationRow, planNoteMove } from './notePlacement';
 import { refusalNotice, reportApplied } from './notices';
 import { pruneMissing } from './orderIndex';
 import { isQuarantinePath, quarantineFolderPath } from './quarantine';
@@ -68,8 +72,50 @@ export interface ExplorerOrderEditorSettings {
 	 * different and much ruder decision wearing the same switch.
 	 */
 	readonly showMoveActions: boolean;
-	/** See the module doc comment above. */
+	/**
+	 * See the module doc comment above. Changed only by `IndexFileStore`
+	 * following a rename of the note — from this tab's "Order note location"
+	 * row or from anywhere else — and by hand in `data.json`.
+	 */
 	readonly indexPath: string;
+}
+
+/**
+ * The vault root as `''`, everything else by path — the convention
+ * `notePlacement.ts` works in (see its module doc).
+ */
+function folderPathOf(folder: TFolder): string {
+	return folder.isRoot() ? '' : folder.path;
+}
+
+/**
+ * The folder picker behind "Order note location". Only picks; what happens
+ * with the choice is `onChoose`, so the move and its checks stay on the tab
+ * beside the rest of its actions.
+ *
+ * `/` for the root, the way Obsidian's own "Move file to…" picker shows it.
+ */
+class NoteFolderModal extends FuzzySuggestModal<TFolder> {
+	constructor(
+		app: App,
+		private readonly folders: readonly TFolder[],
+		private readonly onChoose: (folder: TFolder) => void,
+	) {
+		super(app);
+		this.setPlaceholder('Choose a folder for the order note');
+	}
+
+	getItems(): TFolder[] {
+		return [...this.folders];
+	}
+
+	getItemText(folder: TFolder): string {
+		return folder.isRoot() ? '/' : folder.path;
+	}
+
+	onChooseItem(folder: TFolder): void {
+		this.onChoose(folder);
+	}
 }
 
 export const DEFAULT_SETTINGS: ExplorerOrderEditorSettings = {
@@ -101,6 +147,27 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 		private readonly plugin: SettingsHost,
 	) {
 		super(app, plugin);
+		// "Order note location" shows where the note is and whether it can be
+		// moved, so it has to be redrawn when either changes — including after
+		// its own button. Not by awaiting the move: `fileManager.renameFile`
+		// returns *before* the rename when a link update is already in
+		// progress (it queues the rename and resolves), so an `update()` after
+		// the await could still draw the old path.
+		//
+		// This listener instead runs after the store has followed. Obsidian's
+		// `Events.trigger` calls handlers in registration order, `main.ts`
+		// constructs the store (whose constructor registers its own rename
+		// listener) before this tab, and the store's follow updates
+		// `settings.indexPath` synchronously, before its first `await` — so by
+		// the time this runs, `isIndexNote` is already asking about the new
+		// path. `create`/`delete` because the button's enabled state is "the
+		// note exists".
+		const redrawIfIndexNote = (file: TAbstractFile): void => {
+			if (isIndexNote(file, this.plugin.settings)) this.update();
+		};
+		plugin.registerEvent(app.vault.on('rename', redrawIfIndexNote));
+		plugin.registerEvent(app.vault.on('create', redrawIfIndexNote));
+		plugin.registerEvent(app.vault.on('delete', redrawIfIndexNote));
 	}
 
 	/**
@@ -157,6 +224,37 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 				name: 'Show move actions in the file explorer menu',
 				desc: 'Add move up, move down, move to top and move to bottom to the right-click menu. The four commands stay available for hotkeys either way.',
 				control: { type: 'toggle', key: 'showMoveActions' },
+			},
+			// Where the order note lives — see the module doc comment for why
+			// this is a move rather than a path field. Always visible: "where
+			// are my orders kept" is worth answering even when the answer is
+			// "nowhere yet", which is one of the two states that disable it
+			// (`noteLocationRow` says which, and why).
+			//
+			// The description is set in `render`, not as `desc`: `render` runs
+			// on every draw, whereas nothing verified says a computed `desc` is
+			// re-read (the same caution `deleteQuarantinesRow` records). The
+			// static `desc` is what Obsidian's settings search indexes.
+			{
+				name: 'Order note location',
+				desc: 'The folder the note that stores saved orders is kept in.',
+				aliases: ['index', 'folder', 'path'],
+				render: (setting) => {
+					const notePath = indexNotePath(this.plugin.settings);
+					const row = noteLocationRow({
+						notePath,
+						noteInVault: this.app.vault.getFileByPath(notePath) !== null,
+						settingsDefaulted: this.plugin.settingsAreDefaulted(),
+						keptCopies: this.quarantineFiles().length,
+					});
+					setting.setDesc(row.desc);
+					setting.addButton((button) =>
+						button
+							.setButtonText('Move…')
+							.setDisabled(this.busy || !row.canMove)
+							.onClick(() => this.openNoteFolderPicker()),
+					);
+				},
 			},
 			// The cold-start repair action: only ever visible
 			// while the store is unusable, so a healthy vault never shows it.
@@ -650,6 +748,75 @@ export class ExplorerOrderEditorSettingTab extends PluginSettingTab {
 			if (!(await this.plugin.reloadSettings())) {
 				new Notice('Still could not read data.json. See the console, then repair or delete that file.');
 			}
+		} finally {
+			this.busy = false;
+			this.update();
+		}
+	}
+
+	/**
+	 * Opens the folder picker for "Order note location". The folder the note
+	 * is already in is left out (`folderChoices`); folders inside a
+	 * dot-prefixed one never appear, because the vault does not index them —
+	 * which is right, since a note there could not be followed or hidden.
+	 */
+	private openNoteFolderPicker(): void {
+		const notePath = indexNotePath(this.plugin.settings);
+		const folders = folderChoices(this.app.vault.getAllFolders(true), folderPathOf, notePath);
+		new NoteFolderModal(this.app, folders, (folder) => void this.runMoveNote(folder)).open();
+	}
+
+	/**
+	 * Moves the order note into `folder`, keeping its file name.
+	 *
+	 * Moves and nothing else. It never sets `indexPath` and never announces
+	 * the result: `IndexFileStore`'s rename listener does both, for this move
+	 * exactly as for one made in the file explorer, including the wording for
+	 * a setting that could not be saved. Doing either here as well would be a
+	 * second Notice and a second writer of the same setting.
+	 *
+	 * Everything is re-checked at the moment of the choice rather than trusted
+	 * from when the row was drawn — the picker can stay open while sync, or
+	 * the user in another pane, changes what is there.
+	 *
+	 * The pending write is flushed first so the note is moved with the bytes
+	 * the session already holds, and so no debounced write is still waiting
+	 * to land while the rename is in flight. One that arrived in that window
+	 * would not lose data (the desktop adapter serializes its own operations,
+	 * and a write to the vacated path fails its read and is retried at the
+	 * followed one), but flushing removes the window instead of reasoning
+	 * about it.
+	 */
+	private async runMoveNote(folder: TFolder): Promise<void> {
+		const notePath = indexNotePath(this.plugin.settings);
+		const note = this.app.vault.getFileByPath(notePath);
+		const row = noteLocationRow({ notePath, noteInVault: note !== null, settingsDefaulted: this.plugin.settingsAreDefaulted(), keptCopies: this.quarantineFiles().length });
+		if (note === null || !row.canMove) {
+			new Notice(`Could not move the order note. ${row.desc}`);
+			return;
+		}
+
+		const plan = planNoteMove(notePath, folderPathOf(folder), normalizePath, (path) => this.app.vault.getAbstractFileByPath(path) !== null);
+		if (plan.kind === 'same-folder') {
+			new Notice(`The order note is already in that folder: ${notePath}.`);
+			return;
+		}
+		if (plan.kind === 'taken') {
+			new Notice(`Could not move the order note: ${plan.target} already exists. Nothing was changed.`);
+			return;
+		}
+
+		this.busy = true;
+		this.update();
+		try {
+			await this.plugin.store.flush();
+			await this.app.fileManager.renameFile(note, plan.target);
+		} catch (err) {
+			// Not "nothing was changed": `renameFile` also rewrites links, and
+			// which part failed is not visible from here. If the file did move,
+			// the rename listener has already followed and said so.
+			console.error(`[explorer-order-editor] failed to move the order note to ${plan.target}`, err);
+			new Notice(`Could not move the order note to ${plan.target}. See the console for details.`);
 		} finally {
 			this.busy = false;
 			this.update();

@@ -86,8 +86,9 @@ has nothing to say about where you wanted it, so it joins the end.
 
 ## Where the order is stored
 
-One note for the whole vault — `explorer-order.md` at the root by default —
-in a fenced `json` block, one folder per line:
+One note for the whole vault — `explorer-order.md` at the root by default,
+movable to any folder (see **Order note location** below) — in a fenced
+`json` block, one folder per line:
 
 ```json
 {
@@ -118,6 +119,14 @@ not read.
   tree's drag-and-drop exactly as Obsidian ships it.
 - **Show move actions in the file explorer menu** (off) — the four move
   entries above. The commands stay bindable to hotkeys either way.
+- **Order note location** — shows where the order note is, and **Move…** puts
+  it in another folder of your choice, keeping its file name. The plugin
+  follows the note wherever it goes, so renaming or moving it in the file
+  explorer, or renaming a folder it is in, works the same way and says so.
+  There is deliberately no path to type: the location only ever changes to
+  where the note actually is. Moving is unavailable until the note exists —
+  it is created the first time you save an order — and while kept copies of
+  an unreadable version sit beside it, since they would be left behind.
 
 Four more rows appear only when there is something for them to do: **Repair the
 order note**, **Delete the kept copies of unreadable order notes**, **Remove
