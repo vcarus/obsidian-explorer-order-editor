@@ -173,8 +173,13 @@ export default class ExplorerOrderEditorPlugin extends Plugin {
 		// than racing the process going away. Best effort by the API's own
 		// admission ("not guaranteed to actually run"), which is why the
 		// debounce is short and this is a backstop rather than the plan.
+		//
+		// Only when there is something to wait for. The hold is triggered by
+		// the list being non-empty, not by the task taking long, so adding one
+		// unconditionally put "Saving..." on every quit (issue #8).
 		this.registerEvent(
 			this.app.workspace.on('quit', (tasks) => {
+				if (!this.store.hasPendingWrite()) return;
 				tasks.add(() => this.store.flush());
 			}),
 		);

@@ -283,6 +283,8 @@ export class IndexFileStore {
 	private writeRetries = 0;
 	/** Serializes writes so two overlapping `Vault.process` calls on the index note can never interleave — same reason `orderSync.ts`'s coordinator chains its own ops. */
 	private writeChain: Promise<void> = Promise.resolve();
+	/** Links on `writeChain` that have not settled yet. Exists only so `hasPendingWrite` can answer synchronously — a promise cannot be asked whether it is done. */
+	private unsettledLinks = 0;
 	private disposed = false;
 
 	constructor(private readonly host: IndexFileHost) {
@@ -1058,11 +1060,12 @@ export class IndexFileStore {
 	 * `enqueue`), so a failure here can never poison a write queued after it.
 	 */
 	private runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+		this.unsettledLinks += 1;
 		const run = this.writeChain.then(fn);
-		this.writeChain = run.then(
-			() => undefined,
-			() => undefined,
-		);
+		const settled = (): void => {
+			this.unsettledLinks -= 1;
+		};
+		this.writeChain = run.then(settled, settled);
 		return run;
 	}
 
@@ -1319,7 +1322,12 @@ export class IndexFileStore {
 	}
 
 	private enqueueWrite(): void {
-		this.writeChain = this.writeChain.then(() => this.performWrite());
+		this.unsettledLinks += 1;
+		this.writeChain = this.writeChain
+			.then(() => this.performWrite())
+			.finally(() => {
+				this.unsettledLinks -= 1;
+			});
 	}
 
 	/**
@@ -1353,6 +1361,24 @@ export class IndexFileStore {
 	async flush(): Promise<void> {
 		this.commitPendingWrite();
 		await this.writeChain;
+	}
+
+	/**
+	 * Whether `flush()` would have anything to wait for: a debounce still
+	 * armed (including a retry's), or a write or repair already on the chain.
+	 *
+	 * Synchronous because its one caller is the `quit` handler, which has to
+	 * decide on the spot whether to hand Obsidian a task. Any task at all
+	 * makes Obsidian cancel the window close and put up "Saving...", so
+	 * answering "yes" unconditionally taxed every quit for the sake of the
+	 * few that follow a reorder by seconds (issue #8).
+	 *
+	 * The timer alone is not the answer: once it fires, or a teardown commits
+	 * it, `writeTimerId` is null while the write is still in flight — the
+	 * moment a quit most needs to wait.
+	 */
+	hasPendingWrite(): boolean {
+		return this.writeTimerId !== null || this.unsettledLinks > 0;
 	}
 
 	/**

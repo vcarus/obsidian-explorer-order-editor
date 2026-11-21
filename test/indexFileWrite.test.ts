@@ -120,6 +120,42 @@ describe('a note whose json block is missing', () => {
  * `obsidian-internals.md`, and nothing here asserts it. What these assert is
  * ours: that a write still armed at that moment reaches the note.
  */
+describe('whether quitting has anything to wait for', () => {
+	// `main.ts` asks this before handing Obsidian a quit task; a task makes
+	// Obsidian hold the window behind "Saving...", so "yes" has to mean yes.
+	it('is no for a store that was only loaded', async () => {
+		const { store } = await loadedStore(serializeIndex('', new Map([['navtest', ['a.md']]])));
+
+		expect(store.hasPendingWrite()).toBe(false);
+	});
+
+	it('is yes while the debounce is armed and no once the write has landed', async () => {
+		const { store } = await loadedStore(serializeIndex('', new Map([['navtest', ['a.md']]])));
+
+		expect(store.update((i) => setOrder(i, 'navtest', ['b.md', 'a.md']))).toBe(true);
+		expect(store.hasPendingWrite()).toBe(true);
+
+		await store.flush();
+		expect(store.hasPendingWrite()).toBe(false);
+	});
+
+	it('is still yes after the timer is gone but the write is in flight', async () => {
+		// The teardown commits the armed write: the timer is cleared and the
+		// write is on the chain, not yet on disk. Answering from the timer
+		// alone says "nothing pending" at exactly this moment.
+		const { store, stub } = await loadedStore(serializeIndex('', new Map([['navtest', ['a.md']]])));
+
+		expect(store.update((i) => setOrder(i, 'navtest', ['b.md', 'a.md']))).toBe(true);
+		stub.runTeardowns();
+		expect(stub.app.vault.files.get(NOTE) ?? '').not.toContain('b.md');
+		expect(store.hasPendingWrite()).toBe(true);
+
+		await store.flush();
+		expect(stub.app.vault.files.get(NOTE) ?? '').toContain('b.md');
+		expect(store.hasPendingWrite()).toBe(false);
+	});
+});
+
 describe('a write still armed when the plugin is torn down', () => {
 	it('lands, rather than being cancelled with the timer', async () => {
 		const { store, stub } = await loadedStore(serializeIndex('', new Map([['navtest', ['a.md']]])));
